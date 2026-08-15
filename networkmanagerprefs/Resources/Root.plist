@@ -122,6 +122,24 @@
 
 		<dict>
 			<key>cell</key> 					<string>PSGroupCell</string>
+			<key>label</key> 					<string>Write Authorization Experiment</string>
+			<key>footerText</key> 				<string>Experimental. Slot 1 only. Saves a full snapshot, writes the identical active-band set, verifies it, then restores and verifies the snapshot. It does not select or remove any band.</string>
+		</dict>
+
+		<dict>
+			<key>cell</key> 					<string>PSButtonCell</string>
+			<key>label</key> 					<string>Test Same-Value Band Write</string>
+			<key>action</key> 					<string>confirmSameValueBandWrite:</string>
+		</dict>
+
+		<dict>
+			<key>cell</key> 					<string>PSButtonCell</string>
+			<key>label</key> 					<string>Restore Saved Band Snapshot</string>
+			<key>action</key> 					<string>confirmRestoreBandSnapshot:</string>
+		</dict>
+
+		<dict>
+			<key>cell</key> 					<string>PSGroupCell</string>
 			<key>label</key> 					<string>Support</string>
 			<key>footerText</key> 				<string>Developed with ♥ by NoisyFlake &amp; Nixuge</string>
 			<key>footerAlignment</key> 			<string>1</string>

@@ -10,6 +10,10 @@
 @interface CCNMRootListController : PSListController
 - (void)showHelpAlert:(PSSpecifier *)specifier;
 - (void)showBandProbe:(PSSpecifier *)specifier;
+- (void)confirmSameValueBandWrite:(PSSpecifier *)specifier;
+- (void)confirmRestoreBandSnapshot:(PSSpecifier *)specifier;
+- (void)runSameValueBandWrite;
+- (void)restoreSavedBandSnapshot;
 @end
 
 @interface CCNMTelegramCell : PSTableCell
