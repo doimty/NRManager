@@ -1,4 +1,46 @@
 #include "CCNMRootListController.h"
+#include <dlfcn.h>
+
+@protocol CCNMCoreTelephonyClient <NSObject>
+- (instancetype)initWithQueue:(dispatch_queue_t)queue;
+- (id)getSubscriptionInfoWithError:(NSError **)error;
+- (id)getBandInfo:(id)context error:(NSError **)error;
+@end
+
+@protocol CCNMSubscriptionInfo <NSObject>
+- (NSArray *)subscriptions;
+@end
+
+@protocol CCNMSubscriptionContext <NSObject>
+- (long long)slotID;
+- (BOOL)isSimGood;
+- (BOOL)isSimPresent;
+@end
+
+@protocol CCNMBandInfo <NSObject>
+- (NSDictionary *)activeBands;
+- (NSDictionary *)supportedBands;
+@end
+
+static NSString *CCNMBandProbePath(void) {
+    return jbroot(@"/var/mobile/Library/Preferences/me.nixuge.networkmanager.bandprobe.plist");
+}
+
+static NSString *CCNMReadableObject(id object) {
+    if (!object) {
+        return @"(none)";
+    }
+
+    if ([NSJSONSerialization isValidJSONObject:object]) {
+        NSError *error = nil;
+        NSData *data = [NSJSONSerialization dataWithJSONObject:object options:NSJSONWritingPrettyPrinted error:&error];
+        if (data && !error) {
+            return [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+        }
+    }
+
+    return [object description];
+}
 
 @implementation CCNMRootListController
 
@@ -19,6 +61,95 @@
     
     [alertController addAction:dismissAction];
     [self presentViewController:alertController animated:YES completion:nil];
+}
+
+- (void)showBandProbe:(PSSpecifier *)specifier {
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        static void *coreTelephonyHandle = NULL;
+        static dispatch_once_t onceToken;
+        dispatch_once(&onceToken, ^{
+            coreTelephonyHandle = dlopen("/System/Library/Frameworks/CoreTelephony.framework/CoreTelephony", RTLD_LAZY | RTLD_LOCAL);
+        });
+
+        NSMutableArray *reports = [NSMutableArray array];
+        NSString *failure = nil;
+        Class clientClass = NSClassFromString(@"CoreTelephonyClient");
+        SEL subscriptionsSelector = @selector(getSubscriptionInfoWithError:);
+        SEL bandInfoSelector = @selector(getBandInfo:error:);
+
+        if (!coreTelephonyHandle || !clientClass) {
+            failure = @"CoreTelephonyClient is unavailable on this system.";
+        } else {
+            id<CCNMCoreTelephonyClient> client = [(id)clientClass alloc];
+            if (![client respondsToSelector:@selector(initWithQueue:)]) {
+                failure = @"CoreTelephonyClient does not expose initWithQueue:.";
+            } else {
+                client = [client initWithQueue:dispatch_get_global_queue(QOS_CLASS_UTILITY, 0)];
+                if (![client respondsToSelector:subscriptionsSelector] || ![client respondsToSelector:bandInfoSelector]) {
+                    failure = @"The required iOS 15 band-query selectors are unavailable.";
+                } else {
+                    NSError *subscriptionError = nil;
+                    id<CCNMSubscriptionInfo> subscriptionInfo = [client getSubscriptionInfoWithError:&subscriptionError];
+                    NSArray *subscriptions = [subscriptionInfo respondsToSelector:@selector(subscriptions)] ? [subscriptionInfo subscriptions] : nil;
+
+                    if (subscriptionError || subscriptions.count == 0) {
+                        failure = subscriptionError.localizedDescription ?: @"No cellular subscription context was returned.";
+                    } else {
+                        [subscriptions enumerateObjectsUsingBlock:^(id<CCNMSubscriptionContext> context, NSUInteger index, BOOL *stop) {
+                            NSError *bandError = nil;
+                            id<CCNMBandInfo> bandInfo = [client getBandInfo:context error:&bandError];
+                            NSMutableDictionary *report = [NSMutableDictionary dictionary];
+                            long long slotID = [context respondsToSelector:@selector(slotID)] ? [context slotID] : (long long)index + 1;
+                            report[@"slotID"] = @(slotID);
+                            if ([context respondsToSelector:@selector(isSimPresent)]) {
+                                report[@"isSimPresent"] = @([context isSimPresent]);
+                            }
+                            if ([context respondsToSelector:@selector(isSimGood)]) {
+                                report[@"isSimGood"] = @([context isSimGood]);
+                            }
+
+                            if (bandError || !bandInfo) {
+                                report[@"error"] = bandError.localizedDescription ?: @"No CTBandInfo object was returned.";
+                            } else {
+                                NSDictionary *activeBands = [bandInfo respondsToSelector:@selector(activeBands)] ? [bandInfo activeBands] : nil;
+                                NSDictionary *supportedBands = [bandInfo respondsToSelector:@selector(supportedBands)] ? [bandInfo supportedBands] : nil;
+                                report[@"activeBands"] = activeBands ?: @{};
+                                report[@"supportedBands"] = supportedBands ?: @{};
+                            }
+
+                            [reports addObject:report];
+                        }];
+                    }
+                }
+            }
+        }
+
+        NSDictionary *probeResult = @{
+            @"timestamp": @([[NSDate date] timeIntervalSince1970]),
+            @"subscriptions": reports,
+            @"error": failure ?: @""
+        };
+        [probeResult writeToFile:CCNMBandProbePath() atomically:YES];
+        NSString *message = failure ?: CCNMReadableObject(reports);
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            CCNMRootListController *strongSelf = weakSelf;
+            if (!strongSelf.view.window) {
+                return;
+            }
+
+            NSString *title = failure ? @"Band probe failed" : @"Band probe result";
+            UIAlertController *alertController = [UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleAlert];
+            if (!failure) {
+                [alertController addAction:[UIAlertAction actionWithTitle:@"Copy" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+                    [UIPasteboard generalPasteboard].string = message;
+                }]];
+            }
+            [alertController addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+            [strongSelf presentViewController:alertController animated:YES completion:nil];
+        });
+    });
 }
 
 - (void)viewWillAppear:(BOOL)animated {

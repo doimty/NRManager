@@ -9,6 +9,7 @@
 
 @interface CCNMRootListController : PSListController
 - (void)showHelpAlert:(PSSpecifier *)specifier;
+- (void)showBandProbe:(PSSpecifier *)specifier;
 @end
 
 @interface CCNMTelegramCell : PSTableCell
