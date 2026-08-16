@@ -66,7 +66,7 @@ Baseline: `33e50597ce124bca4a2440ba3bb4800b586730be`
 - [x] Add parser compatibility for the target device's observed raw `PID`/`UARFCN`/`DeploymentType` schema without weakening evidence; patched target output remains pending.
 - [x] Replace the single Cell Monitor copy with a bounded 10-sample read-only window and per-sample evidence.
 - [x] Re-run the independent sampling review after fixing partial-result classification; no actionable P0/P1/P2 remained.
-- [ ] Build the fixed commit in the pinned Xcode 15.4 cloud workflow and verify both artifacts.
+- [x] Build the fixed commit in the pinned Xcode 15.4 cloud workflow and verify both artifacts.
 
 ## Verification Evidence
 
@@ -84,6 +84,22 @@ Baseline: `33e50597ce124bca4a2440ba3bb4800b586730be`
 - Fresh rootless and roothide package builds both compiled and packaged after the
   final partial-result fix. The Linux toolchain emits `incompatible arm64e ABI compiler`
   for its arm64e slices, so neither local package is the final arm64e delivery source.
+- Pinned cloud run `31957880916` built source commit
+  `8d5d3e20b9499ee7ce039a04d5dd23252a138d6a` successfully on `macos-14` with
+  Xcode 15.4 (`15F31d`), Apple clang 15.0.0, ld 1053.12, and the Xcode iPhoneOS
+  17.5 SDK selected. The rootless step explicitly used the Theos
+  `iPhoneOS16.5.sdk` bundle (whose Mach-O metadata records SDK 16.4); roothide
+  used the Xcode system SDK 17.5.
+- Cloud logs contain no `incompatible arm64e`, compiler error, or link failure.
+  Both roothide binaries are arm64+arm64e, arm64e is `ARM64 E USR00`, both slices
+  use `LC_DYLD_INFO_ONLY`, and both binaries load
+  `@loader_path/.jbroot/usr/lib/libroothide.dylib`.
+- Cloud artifacts: rootless ID `9266453088`, package SHA256
+  `d42ac01202d3a4c509728dcabf239738c30ebfcab9d40bb57429c55a094c7686`;
+  roothide ID `9266453177`, package SHA256
+  `86bce24e0048ae2cdb640acc52af4fb872576613dfffaf8825a93d1c08d331db`.
+- The target-device rerun remains necessary to validate patched symbol resolution,
+  normalized PID/UARFCN fields, and whether repeated copies observe fresh snapshots.
 - The six tracked `tests/__pycache__/*.pyc` files introduced by the probe commit
   were removed, and `.gitignore` now prevents future bytecode from being tracked.
 - `getPublicNrFrequencyRangeSync:` is guarded and called as `unsigned int(id *)`;
