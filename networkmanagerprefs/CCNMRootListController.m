@@ -36,6 +36,12 @@
 @end
 
 static const NSTimeInterval CCNMSameValueWriteWatchdogSeconds = 20.0;
+// Device traces show that setActiveBandInfo: returns before getBandInfo: exposes
+// the new dictionary. The observed propagation delay was about 100 seconds, so
+// allow a bounded two-minute window rather than mistaking a stale read for an
+// ignored write or a failed restore.
+static const useconds_t CCNMBandReadBackPollIntervalMicroseconds = 1000000;
+static const NSUInteger CCNMBandReadBackMaximumAttempts = 121;
 static const long long CCNMMaximumExpectedBandIdentifier = 1024;
 static BOOL CCNMBandOperationInProgress = NO;
 static BOOL CCNMRecoveryOperationInProgress = NO;
@@ -1336,6 +1342,82 @@ static id<CCNMSubscriptionContext> CCNMSafeSlotOneContext(id<CCNMCoreTelephonyCl
     }
 }
 
+static NSDictionary *CCNMWaitForExpectedBandReadBack(id<CCNMCoreTelephonyClient> client,
+                                                       id<CCNMSubscriptionContext> context,
+                                                       NSDictionary *expectedBands,
+                                                       NSMutableDictionary *telemetry,
+                                                       NSString **failure) {
+    if (!client || !context || !CCNMValidateBandDictionary(expectedBands, failure)) {
+        if (failure && !*failure) {
+            *failure = @"Read-back polling inputs are incomplete.";
+        }
+        return nil;
+    }
+
+    NSTimeInterval startedMonotonic = CCNMMonotonicNow();
+    NSDictionary *lastBands = nil;
+    NSString *lastReadError = nil;
+    NSString *lastReadException = nil;
+    BOOL matched = NO;
+    NSUInteger attempts = 0;
+
+    for (NSUInteger attempt = 1; attempt <= CCNMBandReadBackMaximumAttempts; attempt++) {
+        attempts = attempt;
+        NSError *readError = nil;
+        id<CCNMBandInfo> readInfo = nil;
+        @try {
+            readInfo = [client getBandInfo:context error:&readError];
+        } @catch (NSException *exception) {
+            lastReadException = [NSString stringWithFormat:@"%@: %@", exception.name, exception.reason ?: @"(no reason)"];
+        }
+
+        NSDictionary *readBands = [readInfo respondsToSelector:@selector(activeBands)] ? [readInfo activeBands] : nil;
+        if (readError) {
+            lastReadError = readError.localizedDescription ?: @"Band read-back failed.";
+        } else if (readBands && CCNMValidateBandDictionary(readBands, NULL)) {
+            NSString *copyFailure = nil;
+            NSDictionary *copiedBands = CCNMDeepCopyDictionary(readBands, &copyFailure);
+            if (copiedBands) {
+                lastBands = copiedBands;
+                lastReadError = nil;
+                lastReadException = nil;
+                if (CCNMDictionariesEqual(expectedBands, copiedBands)) {
+                    matched = YES;
+                    break;
+                }
+            } else {
+                lastReadError = copyFailure ?: @"Band read-back could not be copied.";
+            }
+        } else if (!readError) {
+            lastReadError = @"Band read-back returned an invalid active-band dictionary.";
+        }
+
+        if (attempt < CCNMBandReadBackMaximumAttempts) {
+            usleep(CCNMBandReadBackPollIntervalMicroseconds);
+        }
+    }
+
+    NSTimeInterval finishedMonotonic = CCNMMonotonicNow();
+    NSTimeInterval elapsed = startedMonotonic > 0 && finishedMonotonic >= startedMonotonic
+        ? finishedMonotonic - startedMonotonic
+        : 0;
+    if (telemetry) {
+        telemetry[@"readBackPollAttempts"] = @(attempts);
+        telemetry[@"readBackPollElapsedMilliseconds"] = @((long long)(elapsed * 1000.0));
+        telemetry[@"readBackExpectedObserved"] = @(matched);
+        telemetry[@"readBackTimedOut"] = @(!matched);
+        telemetry[@"readBackError"] = lastReadError ?: @"";
+        telemetry[@"readBackException"] = lastReadException ?: @"";
+        if (lastBands) {
+            telemetry[@"readBackActiveBands"] = lastBands;
+        }
+    }
+    if (!matched && !lastBands && failure) {
+        *failure = lastReadException ?: lastReadError ?: @"No valid Band read-back was returned.";
+    }
+    return lastBands;
+}
+
 static BOOL CCNMMarkRestoreSetterCallStarted(NSUInteger operationGeneration,
                                                NSUInteger *restoreAttemptToken) {
     NSTimeInterval startedMonotonic = CCNMMonotonicNow();
@@ -1587,27 +1669,17 @@ static BOOL CCNMRestoreActiveBands(id<CCNMCoreTelephonyClient> client,
         return NO;
     }
 
-    NSError *readBackError = nil;
-    id<CCNMBandInfo> restoredInfo = nil;
-    @try {
-        restoredInfo = [client getBandInfo:context error:&readBackError];
-    } @catch (NSException *exception) {
-        phase[@"readBackException"] = exception.reason ?: exception.name;
-        if (failure) {
-            *failure = [NSString stringWithFormat:@"Restore read-back raised %@: %@", exception.name, exception.reason ?: @"(no reason)"];
-        }
-        return NO;
-    }
-    NSDictionary *restoredBands = [restoredInfo respondsToSelector:@selector(activeBands)] ? [restoredInfo activeBands] : nil;
-    BOOL equal = !readBackError && CCNMDictionariesEqual(snapshotBands, restoredBands);
-    phase[@"readBackError"] = readBackError.localizedDescription ?: @"";
+    NSString *readBackFailure = nil;
+    NSDictionary *restoredBands = CCNMWaitForExpectedBandReadBack(client,
+                                                                   context,
+                                                                   snapshotBands,
+                                                                   phase,
+                                                                   &readBackFailure);
+    BOOL equal = CCNMDictionariesEqual(snapshotBands, restoredBands);
     phase[@"readBackEqual"] = @(equal);
-    if (restoredBands) {
-        phase[@"readBackActiveBands"] = restoredBands;
-    }
     if (!equal) {
         if (failure) {
-            *failure = readBackError.localizedDescription ?: @"Restore read-back did not exactly match the saved snapshot.";
+            *failure = readBackFailure ?: @"Restore read-back did not match the saved snapshot within two minutes.";
         }
         return NO;
     }
@@ -2334,25 +2406,21 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
         }
 
         if (setterWasInvoked && markerWasCreated && !setterStateUncertain) {
-            NSError *readBackError = nil;
-            id<CCNMBandInfo> readBackInfo = nil;
-            @try {
-                readBackInfo = [client getBandInfo:context error:&readBackError];
-            } @catch (NSException *exception) {
-                result[@"writeReadBackException"] = exception.reason ?: exception.name;
-                if (!failure) {
-                    failure = [NSString stringWithFormat:@"Same-value read-back raised %@: %@", exception.name, exception.reason ?: @"(no reason)"];
-                }
-            }
-            NSDictionary *readBackBands = [readBackInfo respondsToSelector:@selector(activeBands)] ? [readBackInfo activeBands] : nil;
-            BOOL equal = !readBackError && CCNMDictionariesEqual(originalBands, readBackBands);
-            result[@"writeReadBackError"] = readBackError.localizedDescription ?: @"";
+            NSMutableDictionary *readBackPhase = [NSMutableDictionary dictionary];
+            NSString *readBackFailure = nil;
+            NSDictionary *readBackBands = CCNMWaitForExpectedBandReadBack(client,
+                                                                           context,
+                                                                           originalBands,
+                                                                           readBackPhase,
+                                                                           &readBackFailure);
+            BOOL equal = CCNMDictionariesEqual(originalBands, readBackBands);
             result[@"writeReadBackEqual"] = @(equal);
+            result[@"writeReadBackPhase"] = readBackPhase;
             if (readBackBands) {
                 result[@"writeReadBackActiveBands"] = readBackBands;
             }
             if (!equal && !failure) {
-                failure = readBackError.localizedDescription ?: @"Same-value write read-back differed from the original snapshot.";
+                failure = readBackFailure ?: @"Same-value write read-back differed from the original snapshot for two minutes.";
             }
 
             if (CCNMBeginAutomaticRestoreOperation(operationGeneration)) {
@@ -2727,30 +2795,30 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
                     }
                 }
             if (setterWasInvoked && markerWasCreated && !setterStateUncertain) {
-                NSError *readBackError = nil;
-                id<CCNMBandInfo> readBackInfo = nil;
-                @try {
-                    readBackInfo = [client getBandInfo:context error:&readBackError];
-                } @catch (NSException *exception) {
-                    result[@"readBackException"] = exception.reason ?: exception.name;
-                    if (!failure) {
-                        failure = [NSString stringWithFormat:@"Removal read-back raised %@: %@", exception.name, exception.reason ?: @"(no reason)"];
-                    }
-                }
-                NSDictionary *readBackBands = [readBackInfo respondsToSelector:@selector(activeBands)] ? [readBackInfo activeBands] : nil;
-                result[@"readBackError"] = readBackError.localizedDescription ?: @"";
+                NSMutableDictionary *readBackPhase = [NSMutableDictionary dictionary];
+                NSString *readBackFailure = nil;
+                // The unchanged original dictionary is a known stale state immediately
+                // after this setter. Wait for the changed request before deciding that
+                // the write was ignored; the last valid value after the full window is
+                // still retained for that decision.
+                NSDictionary *readBackBands = CCNMWaitForExpectedBandReadBack(client,
+                                                                               context,
+                                                                               removalBands,
+                                                                               readBackPhase,
+                                                                               &readBackFailure);
+                result[@"readBackPhase"] = readBackPhase;
                 if (readBackBands) {
                     result[@"readBackActiveBands"] = readBackBands;
                     result[@"readBackDifferenceFromOriginal"] = CCNMBandDictionaryDifference(originalBands, readBackBands);
                     result[@"readBackDifferenceFromRequest"] = CCNMBandDictionaryDifference(removalBands, readBackBands);
                 }
-                BOOL matchedRequest = !readBackError && CCNMDictionariesEqual(removalBands, readBackBands);
-                BOOL matchedOriginal = !readBackError && CCNMDictionariesEqual(originalBands, readBackBands);
+                BOOL matchedRequest = CCNMDictionariesEqual(removalBands, readBackBands);
+                BOOL matchedOriginal = CCNMDictionariesEqual(originalBands, readBackBands);
                 result[@"readBackMatchedRequest"] = @(matchedRequest);
                 result[@"readBackMatchedOriginal"] = @(matchedOriginal);
                 result[@"effectApplied"] = @(matchedRequest);
                 if (!failure && !matchedRequest && !matchedOriginal) {
-                    failure = readBackError.localizedDescription ?: @"Read-back matched neither the requested removal nor the original snapshot.";
+                    failure = readBackFailure ?: @"Read-back matched neither the requested removal nor the original snapshot within two minutes.";
                 }
 
                 if (CCNMBeginAutomaticRestoreOperation(operationGeneration)) {

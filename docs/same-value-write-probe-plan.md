@@ -31,12 +31,12 @@ NR band 48 is a different key and is explicitly left byte-identical; only the LT
 - Device, slot, UUID, ABI, snapshot, and pre-write equality gates all pass as in stage 1.
 - The payload is validated to be exactly the original LTE list minus one allowed cold band, with every other technology array byte-identical. Candidate selection requires the band to be present in both the freshly read `activeBands` and `supportedBands` LTE arrays, and both dictionaries must still match on the final pre-write reread.
 - The setter returns no error.
-- The immediate read-back either equals the request (`effectApplied=true`, the write is real) or equals the original set (`effectApplied=false`, the write is advisory). Both are informative outcomes; neither is a crash.
-- The original snapshot is restored and read back equal.
+- Device run `bandremoval3` showed that setter return and visibility are not synchronous: the removal setter returned in about 10 ms, its immediate read-back was still the original set, the restore phase then observed the removed set, and a later probe about 100 seconds after completion observed the restored snapshot. Therefore both changed-write and restore verification poll `getBandInfo:` once per second for up to two minutes. The write is considered applied only when the request is actually observed; a stale original value is not prematurely classified as an ignored write.
+- The original snapshot is restored and polled until exact read-back equality, or the two-minute window expires with all recovery records preserved.
 
 ## Stage 2 independent failure signals
 
-- Read-back matches neither the request nor the original snapshot: partial or unexpected modem state, reported as a failure with a full per-technology difference dump.
+- The bounded changed-write read-back window expires with a value matching neither the request nor the original snapshot: partial or unexpected modem state, reported as a failure with a full per-technology difference dump.
 - No allowed cold band is currently active, so no write is attempted.
 - Any device/slot/UUID/ABI/snapshot/payload gate rejects before the setter.
 - The restore errors or does not read back exactly.
