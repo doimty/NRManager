@@ -129,6 +129,42 @@ class BandWriteProbeStaticTests(unittest.TestCase):
         ):
             self.assertNotIn(obsolete, SOURCE)
 
+    def test_uncertain_latch_blocks_every_path_that_can_reach_a_setter(self):
+        # The reviewer-raised P0 is "a timeout leads to a concurrent restore".
+        # Pin the opposite: the latch is set once, never cleared in-process, and
+        # is checked by every gate that can precede a setActiveBandInfo call.
+        self.assertEqual(SOURCE.count("CCNMSetterTimeoutUncertain = YES"), 1)
+        self.assertEqual(SOURCE.count("CCNMSetterTimeoutUncertain = NO"), 1)  # the initializer only
+        self.assertIn("static BOOL CCNMSetterTimeoutUncertain = NO;", SOURCE)
+
+        for gate in (
+            "static BOOL CCNMBeginBandOperation",
+            "static BOOL CCNMBeginTestSetterOperation",
+            "static BOOL CCNMMarkTestSetterCallStarted",
+            "static BOOL CCNMBeginAutomaticRestoreOperation",
+            "static BOOL CCNMBeginManualRestoreOperation",
+        ):
+            start = SOURCE.index(gate)
+            end = SOURCE.index("\n}", start)
+            self.assertIn("CCNMSetterTimeoutUncertain", SOURCE[start:end], gate)
+
+        # A timeout must never delete recovery evidence, and the timeout report
+        # must be a separate plist from the snapshot and the intent.
+        timeout_writer = SOURCE[
+            SOURCE.index("static void CCNMWriteSetterTimeoutResult"):
+            SOURCE.index("@implementation CCNMRootListController")
+        ]
+        self.assertIn("CCNMBandWatchdogResultPath", timeout_writer)
+        self.assertIn('@"requiresDeviceReboot": @YES', timeout_writer)
+        for forbidden in (
+            "CCNMUnlinkIfPresent",
+            "CCNMRemoveSetterInFlightRecord",
+            "CCNMBandSnapshotPath",
+            "CCNMBandWriteIntentPath",
+            "CCNMBandSetterInFlightPath",
+        ):
+            self.assertNotIn(forbidden, timeout_writer, forbidden)
+
     def test_normal_marker_cleanup_requires_verified_restore(self):
         for method_start, method_end in (
             ("- (void)runSameValueBandWrite", "- (void)runColdBandRemovalWrite"),
