@@ -2283,7 +2283,7 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
                     failure = @"The current boot identity could not be read; setter was not called.";
                 }
                 result[@"setterInFlightSaved"] = @NO;
-                CCNMFinishTestSetterOperation(operationGeneration);
+                CCNMFinishTestSetterOperation(operationGeneration, NO, CCNMMonotonicNow(), NULL);
             } else {
                 markerWasCreated = YES;
                 result[@"setterInFlightSaved"] = @YES;
@@ -2294,7 +2294,7 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
         if (!failure && recoveryLockDescriptor >= 0) {
             if (!CCNMMarkTestSetterCallStarted(operationGeneration)) {
                 failure = @"The setter operation was invalidated immediately before the call.";
-                CCNMFinishTestSetterOperation(operationGeneration);
+                CCNMFinishTestSetterOperation(operationGeneration, NO, CCNMMonotonicNow(), NULL);
             } else {
                 result[@"watchdogArmed"] = @YES;
                 result[@"watchdogDelaySeconds"] = @(CCNMSameValueWriteWatchdogSeconds);
@@ -2303,18 +2303,29 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
                 result[@"setterStartedAt"] = @([[NSDate date] timeIntervalSince1970]);
                 setterWasInvoked = YES;
                 NSError *setterError = nil;
+                BOOL setterReturnedNormally = NO;
+                NSException *setterException = nil;
                 @try {
                     [client setActiveBandInfo:context bands:sameValueInfo error:&setterError];
+                    setterReturnedNormally = YES;
                 } @catch (NSException *exception) {
+                    setterException = exception;
                     result[@"setterException"] = exception.reason ?: exception.name;
                     failure = [NSString stringWithFormat:@"Same-value setter raised %@: %@", exception.name, exception.reason ?: @"(no reason)"];
                 }
-                setterStateUncertain = CCNMFinishTestSetterOperation(operationGeneration);
+                BOOL setterDeadlineExceeded = NO;
+                setterStateUncertain = CCNMFinishTestSetterOperation(operationGeneration,
+                                                                       setterReturnedNormally,
+                                                                       CCNMMonotonicNow(),
+                                                                       &setterDeadlineExceeded);
+                result[@"setterDeadlineExceeded"] = @(setterDeadlineExceeded);
                 result[@"setterFinishedAt"] = @([[NSDate date] timeIntervalSince1970]);
                 result[@"setterError"] = setterError.localizedDescription ?: @"";
                 result[@"setterStateUncertain"] = @(setterStateUncertain);
                 if (setterStateUncertain) {
-                    failure = @"The setter exceeded 20 seconds. Its outcome is uncertain; no restore was issued. Do not restore in this boot session. Reboot the device, reopen Preferences, then run the saved-snapshot restore.";
+                    failure = setterException
+                        ? [NSString stringWithFormat:@"Same-value setter raised %@; the exception left its server-side outcome uncertain. Reboot the device, then run the saved-snapshot restore again.", setterException.name]
+                        : @"The setter exceeded 20 seconds. Its outcome is uncertain; no restore was issued. Do not restore in this boot session. Reboot the device, reopen Preferences, then run the saved-snapshot restore.";
                 } else if (setterError) {
                     failure = [NSString stringWithFormat:@"Same-value setter failed: %@", setterError.localizedDescription];
                 }
@@ -2668,7 +2679,7 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
                             failure = @"The current boot identity could not be read; setter was not called.";
                         }
                         result[@"setterInFlightSaved"] = @NO;
-                        CCNMFinishTestSetterOperation(operationGeneration);
+                        CCNMFinishTestSetterOperation(operationGeneration, NO, CCNMMonotonicNow(), NULL);
                     } else {
                         markerWasCreated = YES;
                         result[@"setterInFlightSaved"] = @YES;
@@ -2678,7 +2689,7 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
                 if (!failure && recoveryLockDescriptor >= 0) {
                     if (!CCNMMarkTestSetterCallStarted(operationGeneration)) {
                         failure = @"The setter operation was invalidated immediately before the call.";
-                        CCNMFinishTestSetterOperation(operationGeneration);
+                        CCNMFinishTestSetterOperation(operationGeneration, NO, CCNMMonotonicNow(), NULL);
                     } else {
                         result[@"watchdogArmed"] = @YES;
                         result[@"watchdogDelaySeconds"] = @(CCNMSameValueWriteWatchdogSeconds);
@@ -2687,18 +2698,29 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
                         result[@"setterStartedAt"] = @([[NSDate date] timeIntervalSince1970]);
                         setterWasInvoked = YES;
                         NSError *setterError = nil;
+                        BOOL setterReturnedNormally = NO;
+                        NSException *setterException = nil;
                         @try {
                             [client setActiveBandInfo:context bands:removalInfo error:&setterError];
+                            setterReturnedNormally = YES;
                         } @catch (NSException *exception) {
+                            setterException = exception;
                             result[@"setterException"] = exception.reason ?: exception.name;
                             failure = [NSString stringWithFormat:@"Removal setter raised %@: %@", exception.name, exception.reason ?: @"(no reason)"];
                         }
-                        setterStateUncertain = CCNMFinishTestSetterOperation(operationGeneration);
+                        BOOL setterDeadlineExceeded = NO;
+                        setterStateUncertain = CCNMFinishTestSetterOperation(operationGeneration,
+                                                                               setterReturnedNormally,
+                                                                               CCNMMonotonicNow(),
+                                                                               &setterDeadlineExceeded);
+                        result[@"setterDeadlineExceeded"] = @(setterDeadlineExceeded);
                         result[@"setterFinishedAt"] = @([[NSDate date] timeIntervalSince1970]);
                         result[@"setterError"] = setterError.localizedDescription ?: @"";
                         result[@"setterStateUncertain"] = @(setterStateUncertain);
                         if (setterStateUncertain) {
-                            failure = @"The setter exceeded 20 seconds. Its outcome is uncertain; no restore was issued. Do not restore in this boot session. Reboot the device, reopen Preferences, then run the saved-snapshot restore.";
+                            failure = setterException
+                                ? [NSString stringWithFormat:@"Removal setter raised %@; the exception left its server-side outcome uncertain. Reboot the device, then run the saved-snapshot restore again.", setterException.name]
+                                : @"The setter exceeded 20 seconds. Its outcome is uncertain; no restore was issued. Do not restore in this boot session. Reboot the device, reopen Preferences, then run the saved-snapshot restore.";
                         } else if (setterError) {
                             failure = [NSString stringWithFormat:@"Removal setter failed: %@", setterError.localizedDescription];
                         }
