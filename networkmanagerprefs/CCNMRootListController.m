@@ -71,6 +71,14 @@ static NSString *CCNMBandManualRestoreResultPath(void) {
     return jbroot(@"/var/mobile/Library/Preferences/me.nixuge.networkmanager.bandwrite.manual-restore.plist");
 }
 
+static NSString *CCNMBandRemovalResultPath(void) {
+    return jbroot(@"/var/mobile/Library/Preferences/me.nixuge.networkmanager.bandwrite.removal.plist");
+}
+
+static NSString *CCNMBandClearStateResultPath(void) {
+    return jbroot(@"/var/mobile/Library/Preferences/me.nixuge.networkmanager.bandwrite.clearstate.plist");
+}
+
 static NSString *CCNMSysctlString(const char *name) {
     size_t size = 0;
     if (sysctlbyname(name, NULL, &size, NULL, 0) != 0 || size == 0) {
@@ -284,6 +292,169 @@ static BOOL CCNMValidateBandDictionary(NSDictionary *bands, NSString **failure) 
     return YES;
 }
 
+// The removal experiment is restricted to LTE band 48 (US-only CBRS spectrum) and
+// LTE band 46 (unlicensed LAA, which can only ever act as a secondary aggregation
+// carrier). Neither band can carry a primary registration on the target network,
+// so removing one cannot drop cellular service even if the restore fails.
+static NSString *const CCNMRemovalRATKey = @"kCTRegistrationRadioAccessTechnologyLTE";
+
+static NSArray<NSNumber *> *CCNMColdRemovalCandidates(void) {
+    return @[@48, @46];
+}
+
+static NSArray *CCNMArrayRemovingSingleOccurrence(NSArray *values, NSNumber *target, BOOL *removedExactlyOne) {
+    NSMutableArray *reduced = [NSMutableArray arrayWithCapacity:values.count];
+    NSUInteger removals = 0;
+    for (id value in values) {
+        if (removals == 0 && [value isKindOfClass:[NSNumber class]] && [value isEqualToNumber:target]) {
+            removals++;
+            continue;
+        }
+        [reduced addObject:value];
+    }
+    if (removedExactlyOne) {
+        *removedExactlyOne = (removals == 1);
+    }
+    return reduced;
+}
+
+static BOOL CCNMValidateSingleBandRemoval(NSDictionary *originalBands,
+                                          NSDictionary *modifiedBands,
+                                          NSNumber *removedBand,
+                                          NSString **failure) {
+    if (![originalBands isKindOfClass:[NSDictionary class]] ||
+        ![modifiedBands isKindOfClass:[NSDictionary class]] ||
+        ![removedBand isKindOfClass:[NSNumber class]] ||
+        ![CCNMColdRemovalCandidates() containsObject:removedBand]) {
+        if (failure) {
+            *failure = @"The single-band removal inputs are incomplete.";
+        }
+        return NO;
+    }
+
+    if (![[NSSet setWithArray:originalBands.allKeys] isEqualToSet:[NSSet setWithArray:modifiedBands.allKeys]]) {
+        if (failure) {
+            *failure = @"The removal payload changed the set of radio-access-technology keys.";
+        }
+        return NO;
+    }
+
+    for (NSString *key in originalBands) {
+        NSArray *originalValues = originalBands[key];
+        NSArray *modifiedValues = modifiedBands[key];
+        if (![originalValues isKindOfClass:[NSArray class]] || ![modifiedValues isKindOfClass:[NSArray class]]) {
+            if (failure) {
+                *failure = @"The removal payload has an unexpected band value type.";
+            }
+            return NO;
+        }
+
+        if (![key isEqualToString:CCNMRemovalRATKey]) {
+            if (![modifiedValues isEqualToArray:originalValues]) {
+                if (failure) {
+                    *failure = [NSString stringWithFormat:@"The removal payload modified %@, which must stay byte-identical.", key];
+                }
+                return NO;
+            }
+            continue;
+        }
+
+        BOOL removedExactlyOne = NO;
+        NSArray *expected = CCNMArrayRemovingSingleOccurrence(originalValues, removedBand, &removedExactlyOne);
+        if (!removedExactlyOne || ![modifiedValues isEqualToArray:expected]) {
+            if (failure) {
+                *failure = @"The removal payload is not exactly the original LTE list minus one cold band.";
+            }
+            return NO;
+        }
+    }
+
+    return YES;
+}
+
+static NSDictionary *CCNMBuildSingleRemovalBands(NSDictionary *originalBands,
+                                                 NSDictionary *supportedBands,
+                                                 NSNumber **removedBand,
+                                                 NSString **failure) {
+    if (!CCNMValidateBandDictionary(originalBands, failure) ||
+        !CCNMValidateBandDictionary(supportedBands, failure)) {
+        return nil;
+    }
+
+    NSArray *originalValues = originalBands[CCNMRemovalRATKey];
+    NSArray *supportedValues = supportedBands[CCNMRemovalRATKey];
+    if (![originalValues isKindOfClass:[NSArray class]] || originalValues.count < 2 ||
+        ![supportedValues isKindOfClass:[NSArray class]]) {
+        if (failure) {
+            *failure = @"The live active/supported LTE band lists are invalid for a safe single-band removal.";
+        }
+        return nil;
+    }
+
+    NSNumber *target = nil;
+    for (NSNumber *candidate in CCNMColdRemovalCandidates()) {
+        if ([originalValues containsObject:candidate] && [supportedValues containsObject:candidate]) {
+            target = candidate;
+            break;
+        }
+    }
+    if (!target) {
+        if (failure) {
+            *failure = @"None of the allowed cold LTE bands is present in both the live active and supported sets, so no removal is attempted.";
+        }
+        return nil;
+    }
+
+    BOOL removedExactlyOne = NO;
+    NSArray *reduced = CCNMArrayRemovingSingleOccurrence(originalValues, target, &removedExactlyOne);
+    if (!removedExactlyOne) {
+        if (failure) {
+            *failure = @"The cold LTE band could not be removed exactly once.";
+        }
+        return nil;
+    }
+
+    NSMutableDictionary *draft = [originalBands mutableCopy];
+    draft[CCNMRemovalRATKey] = reduced;
+    NSDictionary *modified = CCNMDeepCopyDictionary(draft, failure);
+    if (!modified ||
+        !CCNMValidateBandDictionary(modified, failure) ||
+        !CCNMValidateSingleBandRemoval(originalBands, modified, target, failure)) {
+        return nil;
+    }
+
+    if (removedBand) {
+        *removedBand = target;
+    }
+    return modified;
+}
+
+static NSDictionary *CCNMBandDictionaryDifference(NSDictionary *left, NSDictionary *right) {
+    NSMutableDictionary *difference = [NSMutableDictionary dictionary];
+    if (![left isKindOfClass:[NSDictionary class]] || ![right isKindOfClass:[NSDictionary class]]) {
+        return difference;
+    }
+
+    NSMutableSet *keys = [NSMutableSet setWithArray:left.allKeys];
+    [keys addObjectsFromArray:right.allKeys];
+    for (NSString *key in keys) {
+        NSArray *leftValues = [left[key] isKindOfClass:[NSArray class]] ? left[key] : @[];
+        NSArray *rightValues = [right[key] isKindOfClass:[NSArray class]] ? right[key] : @[];
+        if ([leftValues isEqualToArray:rightValues]) {
+            continue;
+        }
+        NSMutableArray *onlyInLeft = [leftValues mutableCopy];
+        [onlyInLeft removeObjectsInArray:rightValues];
+        NSMutableArray *onlyInRight = [rightValues mutableCopy];
+        [onlyInRight removeObjectsInArray:leftValues];
+        difference[key] = @{
+            @"onlyInFirst": onlyInLeft ?: @[],
+            @"onlyInSecond": onlyInRight ?: @[]
+        };
+    }
+    return difference;
+}
+
 static BOOL CCNMValidateSnapshot(NSDictionary *snapshot, NSDictionary **bands, NSString **failure) {
     if (![snapshot isKindOfClass:[NSDictionary class]]) {
         if (failure) {
@@ -320,8 +491,10 @@ static BOOL CCNMValidateWriteIntent(NSDictionary *intent, NSDictionary *snapshot
 
     NSDictionary *snapshotBands = [snapshot[@"activeBands"] isKindOfClass:[NSDictionary class]] ? snapshot[@"activeBands"] : nil;
     NSDictionary *intentBands = [intent[@"snapshotActiveBands"] isKindOfClass:[NSDictionary class]] ? intent[@"snapshotActiveBands"] : nil;
+    NSArray *allowedOperations = @[@"same_value_write_intent", @"cold_band_removal_intent"];
     BOOL valid = [intent[@"schemaVersion"] isEqual:@1] &&
-                 [intent[@"operation"] isEqual:@"same_value_write_intent"] &&
+                 [intent[@"operation"] isKindOfClass:[NSString class]] &&
+                 [allowedOperations containsObject:intent[@"operation"]] &&
                  [intent[@"slotID"] isEqual:@1] &&
                  [intent[@"operationGeneration"] isKindOfClass:[NSNumber class]] &&
                  [intent[@"operationGeneration"] unsignedIntegerValue] > 0 &&
@@ -331,6 +504,24 @@ static BOOL CCNMValidateWriteIntent(NSDictionary *intent, NSDictionary *snapshot
                  [intent[@"snapshotCreatedAt"] isEqual:snapshot[@"createdAt"]] &&
                  CCNMValidateBandDictionary(intentBands, failure) &&
                  CCNMDictionariesEqual(snapshotBands, intentBands);
+    if (valid && [intent[@"operation"] isEqual:@"cold_band_removal_intent"]) {
+        NSDictionary *snapshotSupportedBands = [snapshot[@"supportedBands"] isKindOfClass:[NSDictionary class]] ? snapshot[@"supportedBands"] : nil;
+        NSDictionary *intentSupportedBands = [intent[@"snapshotSupportedBands"] isKindOfClass:[NSDictionary class]] ? intent[@"snapshotSupportedBands"] : nil;
+        NSDictionary *requestedBands = [intent[@"requestedActiveBands"] isKindOfClass:[NSDictionary class]] ? intent[@"requestedActiveBands"] : nil;
+        NSNumber *expectedRemovedBand = nil;
+        NSDictionary *expectedRequestedBands = CCNMBuildSingleRemovalBands(snapshotBands,
+                                                                            snapshotSupportedBands,
+                                                                            &expectedRemovedBand,
+                                                                            failure);
+        valid = [intent[@"removalRATKey"] isEqual:CCNMRemovalRATKey] &&
+                [intent[@"removedBand"] isKindOfClass:[NSNumber class]] &&
+                [CCNMColdRemovalCandidates() containsObject:intent[@"removedBand"]] &&
+                CCNMValidateBandDictionary(intentSupportedBands, failure) &&
+                CCNMDictionariesEqual(snapshotSupportedBands, intentSupportedBands) &&
+                [expectedRemovedBand isEqual:intent[@"removedBand"]] &&
+                CCNMDictionariesEqual(expectedRequestedBands, requestedBands) &&
+                CCNMValidateSingleBandRemoval(snapshotBands, requestedBands, intent[@"removedBand"], failure);
+    }
     if (!valid) {
         if (failure && !*failure) {
             *failure = @"The write-intent record does not match the unique recovery snapshot.";
@@ -338,6 +529,26 @@ static BOOL CCNMValidateWriteIntent(NSDictionary *intent, NSDictionary *snapshot
         return NO;
     }
     return YES;
+}
+
+static BOOL CCNMUnlinkIfPresent(NSString *path, BOOL *removed, NSString **failure) {
+    const char *filePath = path.fileSystemRepresentation;
+    if (unlink(filePath) == 0) {
+        if (removed) {
+            *removed = YES;
+        }
+        return YES;
+    }
+    if (errno == ENOENT) {
+        if (removed) {
+            *removed = YES;
+        }
+        return YES;
+    }
+    if (failure) {
+        *failure = [NSString stringWithFormat:@"Could not remove %@: %s", path.lastPathComponent, strerror(errno)];
+    }
+    return NO;
 }
 
 static BOOL CCNMCreateDurablePlistExclusively(NSDictionary *plist, NSString *path, NSString **failure) {
@@ -833,7 +1044,7 @@ static void CCNMRunWatchdogRestore(NSDictionary *snapshot) {
     BOOL intentExists = [[NSFileManager defaultManager] fileExistsAtPath:CCNMBandWriteIntentPath()];
     if (snapshotExists || intentExists) {
         UIAlertController *existingSnapshotAlert = [UIAlertController alertControllerWithTitle:@"Saved probe state already exists"
-            message:@"This build never overwrites its recovery snapshot or write-intent record. Use Restore Saved Band Snapshot first. Only after a verified restore, manually delete the snapshot and intent paths shown in the copied result; reinstalling alone does not remove them."
+            message:@"This build never overwrites its recovery snapshot or write-intent record. Restore the saved snapshot first, then use Clear Saved Probe State."
             preferredStyle:UIAlertControllerStyleAlert];
         [existingSnapshotAlert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
         [self presentViewController:existingSnapshotAlert animated:YES completion:nil];
@@ -866,6 +1077,152 @@ static void CCNMRunWatchdogRestore(NSDictionary *snapshot) {
         }]];
     }
     [self presentViewController:alertController animated:YES completion:nil];
+}
+
+- (void)confirmColdBandRemovalWrite:(PSSpecifier *)specifier {
+    BOOL snapshotExists = [[NSFileManager defaultManager] fileExistsAtPath:CCNMBandSnapshotPath()];
+    BOOL intentExists = [[NSFileManager defaultManager] fileExistsAtPath:CCNMBandWriteIntentPath()];
+    if (snapshotExists || intentExists) {
+        UIAlertController *existingSnapshotAlert = [UIAlertController alertControllerWithTitle:@"Saved probe state already exists"
+            message:@"This build never overwrites its recovery snapshot or write-intent record. Restore the saved snapshot first, then use Clear Saved Probe State."
+            preferredStyle:UIAlertControllerStyleAlert];
+        [existingSnapshotAlert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+        [self presentViewController:existingSnapshotAlert animated:YES completion:nil];
+        return;
+    }
+
+    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"Remove one cold LTE band?"
+        message:@"This is the first write that actually changes modem configuration. It removes exactly one cold LTE band (48 CBRS, else 46 LAA) from slot 1, reads the result back, then restores the full original set. Those bands cannot carry a primary registration here, so service should not drop. Every other radio technology stays byte-identical. Do not run this while the phone is your only emergency-communication device."
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alertController addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [alertController addAction:[UIAlertAction actionWithTitle:@"Run Experiment" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+        [self runColdBandRemovalWrite];
+    }]];
+    [self presentViewController:alertController animated:YES completion:nil];
+}
+
+- (void)confirmClearProbeState:(PSSpecifier *)specifier {
+    BOOL snapshotExists = [[NSFileManager defaultManager] fileExistsAtPath:CCNMBandSnapshotPath()];
+    BOOL intentExists = [[NSFileManager defaultManager] fileExistsAtPath:CCNMBandWriteIntentPath()];
+    if (!snapshotExists && !intentExists) {
+        UIAlertController *emptyAlert = [UIAlertController alertControllerWithTitle:@"No saved probe state" message:@"There is no recovery snapshot or write-intent record to clear." preferredStyle:UIAlertControllerStyleAlert];
+        [emptyAlert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+        [self presentViewController:emptyAlert animated:YES completion:nil];
+        return;
+    }
+
+    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"Clear saved probe state?"
+        message:@"This deletes the recovery snapshot and write-intent record so a new experiment can run. It is refused unless the live slot-1 active bands already match the saved snapshot exactly, so the records are only removed once they are no longer needed for recovery."
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alertController addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [alertController addAction:[UIAlertAction actionWithTitle:@"Clear" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+        [self clearSavedProbeState];
+    }]];
+    [self presentViewController:alertController animated:YES completion:nil];
+}
+
+- (void)clearSavedProbeState {
+    NSUInteger operationGeneration = 0;
+    NSUInteger manualRecoveryGeneration = 0;
+    if (!CCNMBeginBandOperation(&operationGeneration, &manualRecoveryGeneration)) {
+        UIAlertController *busyAlert = [UIAlertController alertControllerWithTitle:@"Band operation already running" message:@"Wait for the current query, write, or restore operation to finish." preferredStyle:UIAlertControllerStyleAlert];
+        [busyAlert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+        [self presentViewController:busyAlert animated:YES completion:nil];
+        return;
+    }
+
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSMutableDictionary *result = [@{
+            @"schemaVersion": @1,
+            @"operation": @"clear_probe_state",
+            @"startedAt": @([[NSDate date] timeIntervalSince1970]),
+            @"slotID": @1,
+            @"liveMatchedSnapshot": @NO,
+            @"snapshotRemoved": @NO,
+            @"writeIntentRemoved": @NO,
+            @"error": @""
+        } mutableCopy];
+        NSString *failure = nil;
+        @try {
+        NSDictionary *snapshot = [NSDictionary dictionaryWithContentsOfFile:CCNMBandSnapshotPath()];
+        NSDictionary *snapshotBands = nil;
+        CCNMValidateSnapshot(snapshot, &snapshotBands, &failure);
+
+        id<CCNMCoreTelephonyClient> client = nil;
+        id<CCNMSubscriptionContext> context = nil;
+        if (!failure) {
+            CCNMValidateTargetDevice(result, &failure);
+        }
+        if (!failure) {
+            client = CCNMCreateCoreTelephonyClient(&failure);
+        }
+        if (!failure) {
+            context = CCNMSafeSlotOneContext(client, result, snapshot[@"subscriptionUUID"], &failure);
+        }
+        if (!failure) {
+            NSError *readError = nil;
+            id<CCNMBandInfo> liveInfo = nil;
+            @try {
+                liveInfo = [client getBandInfo:context error:&readError];
+            } @catch (NSException *exception) {
+                result[@"readException"] = exception.reason ?: exception.name;
+                failure = [NSString stringWithFormat:@"Live Band read raised %@: %@", exception.name, exception.reason ?: @"(no reason)"];
+            }
+            NSDictionary *liveBands = [liveInfo respondsToSelector:@selector(activeBands)] ? [liveInfo activeBands] : nil;
+            result[@"readError"] = readError.localizedDescription ?: @"";
+            BOOL matched = !readError && CCNMDictionariesEqual(snapshotBands, liveBands);
+            result[@"liveMatchedSnapshot"] = @(matched);
+            if (liveBands) {
+                result[@"liveDifferenceFromSnapshot"] = CCNMBandDictionaryDifference(snapshotBands, liveBands);
+            }
+            if (!matched && !failure) {
+                failure = readError.localizedDescription ?: @"The live active bands do not match the saved snapshot, so the recovery records are still needed. Restore first.";
+            }
+        }
+        if (!failure) {
+            BOOL snapshotRemoved = NO;
+            BOOL intentRemoved = NO;
+            NSString *snapshotRemovalFailure = nil;
+            NSString *intentRemovalFailure = nil;
+
+            // Remove the restore payload first. If that succeeds but intent removal fails,
+            // the remaining intent cannot drive a restore by itself. The reverse order
+            // could strand a writable snapshot with no matching intent.
+            CCNMUnlinkIfPresent(CCNMBandSnapshotPath(), &snapshotRemoved, &snapshotRemovalFailure);
+            if (snapshotRemoved) {
+                CCNMUnlinkIfPresent(CCNMBandWriteIntentPath(), &intentRemoved, &intentRemovalFailure);
+            }
+            result[@"snapshotRemoved"] = @(snapshotRemoved);
+            result[@"writeIntentRemoved"] = @(intentRemoved);
+            if (snapshotRemovalFailure || intentRemovalFailure || !snapshotRemoved || !intentRemoved) {
+                failure = snapshotRemovalFailure ?: intentRemovalFailure ?: @"The probe state files could not be fully removed.";
+            }
+        }
+        } @catch (NSException *exception) {
+            result[@"operationException"] = exception.reason ?: exception.name;
+            failure = [NSString stringWithFormat:@"Clear probe state raised %@: %@", exception.name, exception.reason ?: @"(no reason)"];
+        } @finally {
+            CCNMEndBandOperation();
+        }
+
+        result[@"completedAt"] = @([[NSDate date] timeIntervalSince1970]);
+        result[@"error"] = failure ?: @"";
+        [result writeToFile:CCNMBandClearStateResultPath() atomically:YES];
+        NSString *message = failure ?: @"The recovery snapshot and write-intent record were removed. A new experiment can run.";
+        dispatch_async(dispatch_get_main_queue(), ^{
+            CCNMRootListController *strongSelf = weakSelf;
+            if (!strongSelf.view.window) {
+                return;
+            }
+            UIAlertController *alertController = [UIAlertController alertControllerWithTitle:failure ? @"Probe state not cleared" : @"Probe state cleared" message:message preferredStyle:UIAlertControllerStyleAlert];
+            [alertController addAction:[UIAlertAction actionWithTitle:@"Copy" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+                [UIPasteboard generalPasteboard].string = CCNMReadableObject(result);
+            }]];
+            [alertController addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+            [strongSelf presentViewController:alertController animated:YES completion:nil];
+        });
+    });
 }
 
 - (void)runSameValueBandWrite {
@@ -1165,6 +1522,351 @@ static void CCNMRunWatchdogRestore(NSDictionary *snapshot) {
                 return;
             }
             UIAlertController *alertController = [UIAlertController alertControllerWithTitle:passed ? @"Band write probe passed" : @"Band write probe failed" message:message preferredStyle:UIAlertControllerStyleAlert];
+            [alertController addAction:[UIAlertAction actionWithTitle:@"Copy" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+                [UIPasteboard generalPasteboard].string = CCNMReadableObject(result);
+            }]];
+            [alertController addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+            [strongSelf presentViewController:alertController animated:YES completion:nil];
+        });
+    });
+}
+
+- (void)runColdBandRemovalWrite {
+    NSUInteger operationGeneration = 0;
+    NSUInteger manualRecoveryGeneration = 0;
+    if (!CCNMBeginBandOperation(&operationGeneration, &manualRecoveryGeneration)) {
+        UIAlertController *busyAlert = [UIAlertController alertControllerWithTitle:@"Band operation already running" message:@"Wait for the current query, write, or restore operation to finish." preferredStyle:UIAlertControllerStyleAlert];
+        [busyAlert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+        [self presentViewController:busyAlert animated:YES completion:nil];
+        return;
+    }
+
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSMutableDictionary *result = [@{
+            @"schemaVersion": @1,
+            @"operation": @"cold_band_removal",
+            @"operationGeneration": @(operationGeneration),
+            @"startedAt": @([[NSDate date] timeIntervalSince1970]),
+            @"slotID": @1,
+            @"removalRATKey": CCNMRemovalRATKey,
+            @"snapshotSaved": @NO,
+            @"writeIntentSaved": @NO,
+            @"setterAttempted": @NO,
+            @"readBackMatchedRequest": @NO,
+            @"readBackMatchedOriginal": @NO,
+            @"effectApplied": @NO,
+            @"restoreAttempted": @NO,
+            @"restoreReadBackEqual": @NO,
+            @"watchdogArmed": @NO,
+            @"error": @""
+        } mutableCopy];
+        NSString *failure = nil;
+        @try {
+        id<CCNMCoreTelephonyClient> client = CCNMCreateCoreTelephonyClient(&failure);
+        if (client) {
+            CCNMValidateSetterABI(client, &failure);
+        }
+
+        id<CCNMSubscriptionContext> context = nil;
+        NSDictionary *originalBands = nil;
+        NSDictionary *supportedBands = nil;
+        NSDictionary *removalBands = nil;
+        NSNumber *removedBand = nil;
+        if (!failure) {
+            CCNMValidateTargetDevice(result, &failure);
+        }
+        if (!failure) {
+            context = CCNMSafeSlotOneContext(client, result, nil, &failure);
+        }
+
+        if (!failure) {
+            NSError *readError = nil;
+            id<CCNMBandInfo> originalInfo = nil;
+            @try {
+                originalInfo = [client getBandInfo:context error:&readError];
+            } @catch (NSException *exception) {
+                result[@"initialReadException"] = exception.reason ?: exception.name;
+                failure = [NSString stringWithFormat:@"Initial Band read raised %@: %@", exception.name, exception.reason ?: @"(no reason)"];
+            }
+            NSDictionary *readBands = [originalInfo respondsToSelector:@selector(activeBands)] ? [originalInfo activeBands] : nil;
+            NSDictionary *readSupportedBands = [originalInfo respondsToSelector:@selector(supportedBands)] ? [originalInfo supportedBands] : nil;
+            if (!failure) {
+                originalBands = CCNMDeepCopyDictionary(readBands, &failure);
+            }
+            if (!failure) {
+                supportedBands = CCNMDeepCopyDictionary(readSupportedBands, &failure);
+            }
+            result[@"initialReadError"] = readError.localizedDescription ?: @"";
+            if (!failure && (readError ||
+                             !originalBands || !CCNMValidateBandDictionary(originalBands, &failure) ||
+                             !supportedBands || !CCNMValidateBandDictionary(supportedBands, &failure))) {
+                failure = readError.localizedDescription ?: failure ?: @"The original active/supported band dictionaries are invalid.";
+            }
+        }
+
+        if (!failure) {
+            removalBands = CCNMBuildSingleRemovalBands(originalBands, supportedBands, &removedBand, &failure);
+            if (removalBands && removedBand) {
+                result[@"removedBand"] = removedBand;
+                result[@"requestedActiveBands"] = removalBands;
+                result[@"supportedBandsAtSelection"] = supportedBands;
+            }
+        }
+
+        if (!failure && ([[NSFileManager defaultManager] fileExistsAtPath:CCNMBandSnapshotPath()] ||
+                         [[NSFileManager defaultManager] fileExistsAtPath:CCNMBandWriteIntentPath()])) {
+            failure = @"Saved Band probe state already exists. Refusing to overwrite the recovery snapshot or write-intent record.";
+        }
+
+        __block NSDictionary *snapshot = nil;
+        if (!failure) {
+            snapshot = @{
+                @"schemaVersion": @1,
+                @"createdAt": @((long long)([[NSDate date] timeIntervalSince1970] * 1000.0)),
+                @"slotID": @1,
+                @"subscriptionUUID": result[@"targetSubscriptionUUID"],
+                @"activeBands": originalBands,
+                @"supportedBands": supportedBands
+            };
+            if (!CCNMCreateDurablePlistExclusively(snapshot, CCNMBandSnapshotPath(), &failure)) {
+                result[@"snapshotSaved"] = @NO;
+            } else {
+                result[@"snapshotSaved"] = @YES;
+                result[@"snapshotPath"] = CCNMBandSnapshotPath();
+                result[@"originalActiveBands"] = originalBands;
+            }
+        }
+
+        __block BOOL operationFinished = NO;
+        __block BOOL setterWasInvoked = NO;
+        __block BOOL restoreStarted = NO;
+        if (!failure) {
+            context = CCNMSafeSlotOneContext(client, result, snapshot[@"subscriptionUUID"], &failure);
+        }
+        if (!failure) {
+            NSError *preWriteReadError = nil;
+            id<CCNMBandInfo> preWriteInfo = nil;
+            @try {
+                preWriteInfo = [client getBandInfo:context error:&preWriteReadError];
+            } @catch (NSException *exception) {
+                result[@"preWriteReadException"] = exception.reason ?: exception.name;
+                failure = [NSString stringWithFormat:@"Pre-write read raised %@: %@", exception.name, exception.reason ?: @"(no reason)"];
+            }
+            NSDictionary *preWriteBands = [preWriteInfo respondsToSelector:@selector(activeBands)] ? [preWriteInfo activeBands] : nil;
+            NSDictionary *preWriteSupportedBands = [preWriteInfo respondsToSelector:@selector(supportedBands)] ? [preWriteInfo supportedBands] : nil;
+            BOOL preWriteActiveEqual = !preWriteReadError && CCNMDictionariesEqual(originalBands, preWriteBands);
+            BOOL preWriteSupportedEqual = !preWriteReadError && CCNMDictionariesEqual(supportedBands, preWriteSupportedBands);
+            result[@"preWriteReadError"] = preWriteReadError.localizedDescription ?: @"";
+            result[@"preWriteActiveBandsEqual"] = @(preWriteActiveEqual);
+            result[@"preWriteSupportedBandsEqual"] = @(preWriteSupportedEqual);
+            if ((!preWriteActiveEqual || !preWriteSupportedEqual) && !failure) {
+                failure = preWriteReadError.localizedDescription ?: @"The live active/supported band dictionaries changed after the snapshot; setter was not called.";
+            }
+        }
+        if (!failure) {
+            Class bandInfoClass = NSClassFromString(@"CTBandInfo");
+            if (!bandInfoClass || ![bandInfoClass instancesRespondToSelector:@selector(initWithActiveBands:)]) {
+                failure = @"CTBandInfo initWithActiveBands: is unavailable.";
+            } else {
+                id<CCNMBandInfo> removalInfo = nil;
+                @try {
+                    removalInfo = [[(id)bandInfoClass alloc] initWithActiveBands:[removalBands mutableCopy]];
+                } @catch (NSException *exception) {
+                    result[@"constructorException"] = exception.reason ?: exception.name;
+                    failure = [NSString stringWithFormat:@"CTBandInfo construction raised %@: %@", exception.name, exception.reason ?: @"(no reason)"];
+                }
+                NSDictionary *payloadBands = [removalInfo respondsToSelector:@selector(activeBands)] ? [removalInfo activeBands] : nil;
+                BOOL payloadEqual = CCNMDictionariesEqual(removalBands, payloadBands) &&
+                                    CCNMValidateSingleBandRemoval(originalBands, payloadBands, removedBand, &failure);
+                result[@"payloadEqualBeforeWrite"] = @(payloadEqual);
+                if (!payloadEqual && !failure) {
+                    failure = @"CTBandInfo changed the removal payload before the write; setter was not called.";
+                }
+
+                if (!failure) {
+                    NSDictionary *writeIntent = @{
+                        @"schemaVersion": @1,
+                        @"operation": @"cold_band_removal_intent",
+                        @"createdAt": @((long long)([[NSDate date] timeIntervalSince1970] * 1000.0)),
+                        @"operationGeneration": @(operationGeneration),
+                        @"slotID": @1,
+                        @"subscriptionUUID": snapshot[@"subscriptionUUID"],
+                        @"snapshotCreatedAt": snapshot[@"createdAt"],
+                        @"snapshotActiveBands": snapshot[@"activeBands"],
+                        @"snapshotSupportedBands": snapshot[@"supportedBands"],
+                        @"removalRATKey": CCNMRemovalRATKey,
+                        @"removedBand": removedBand,
+                        @"requestedActiveBands": removalBands
+                    };
+                    if (!CCNMValidateWriteIntent(writeIntent, snapshot, &failure) ||
+                        !CCNMCreateDurablePlistExclusively(writeIntent, CCNMBandWriteIntentPath(), &failure)) {
+                        result[@"writeIntentSaved"] = @NO;
+                    } else {
+                        result[@"writeIntentSaved"] = @YES;
+                        result[@"writeIntentPath"] = CCNMBandWriteIntentPath();
+                    }
+                }
+
+                if (!failure && CCNMBeginTestSetterOperation(operationGeneration, manualRecoveryGeneration, &failure)) {
+                    NSError *setterError = nil;
+                    @try {
+                        NSDictionary *watchdogSnapshot = snapshot;
+                        result[@"watchdogArmed"] = @YES;
+                        result[@"watchdogDelaySeconds"] = @(CCNMSameValueWriteWatchdogSeconds);
+                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(CCNMSameValueWriteWatchdogSeconds * NSEC_PER_SEC)),
+                                       dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                            BOOL shouldRestore = NO;
+                            @synchronized([CCNMRootListController class]) {
+                                if (setterWasInvoked &&
+                                    !operationFinished &&
+                                    !restoreStarted &&
+                                    !CCNMRecoveryOperationInProgress &&
+                                    !CCNMManualRestoreInProgress &&
+                                    CCNMCurrentBandOperationGeneration == operationGeneration) {
+                                    restoreStarted = YES;
+                                    CCNMRecoveryOperationInProgress = YES;
+                                    CCNMRecoveryOperationStartedAt = CCNMMonotonicTime();
+                                    shouldRestore = YES;
+                                }
+                            }
+                            if (shouldRestore) {
+                                @try {
+                                    CCNMRunWatchdogRestore(watchdogSnapshot);
+                                } @finally {
+                                    CCNMEndRecoveryOperation();
+                                }
+                            }
+                        });
+                        result[@"setterAttempted"] = @YES;
+                        result[@"setterStartedAt"] = @([[NSDate date] timeIntervalSince1970]);
+                        @synchronized([CCNMRootListController class]) {
+                            setterWasInvoked = YES;
+                        }
+                        @try {
+                            [client setActiveBandInfo:context bands:removalInfo error:&setterError];
+                        } @catch (NSException *exception) {
+                            result[@"setterException"] = exception.reason ?: exception.name;
+                            failure = [NSString stringWithFormat:@"Removal setter raised %@: %@", exception.name, exception.reason ?: @"(no reason)"];
+                        }
+                    } @finally {
+                        CCNMEndTestSetterOperation();
+                    }
+                    if (setterWasInvoked) {
+                        result[@"setterFinishedAt"] = @([[NSDate date] timeIntervalSince1970]);
+                        result[@"setterError"] = setterError.localizedDescription ?: @"";
+                        if (setterError) {
+                            failure = [NSString stringWithFormat:@"Removal setter failed: %@", setterError.localizedDescription];
+                        } else if (!failure) {
+                            NSError *readBackError = nil;
+                            id<CCNMBandInfo> readBackInfo = nil;
+                            @try {
+                                readBackInfo = [client getBandInfo:context error:&readBackError];
+                            } @catch (NSException *exception) {
+                                result[@"readBackException"] = exception.reason ?: exception.name;
+                                failure = [NSString stringWithFormat:@"Removal read-back raised %@: %@", exception.name, exception.reason ?: @"(no reason)"];
+                            }
+                            NSDictionary *readBackBands = [readBackInfo respondsToSelector:@selector(activeBands)] ? [readBackInfo activeBands] : nil;
+                            result[@"readBackError"] = readBackError.localizedDescription ?: @"";
+                            if (readBackBands) {
+                                result[@"readBackActiveBands"] = readBackBands;
+                                result[@"readBackDifferenceFromOriginal"] = CCNMBandDictionaryDifference(originalBands, readBackBands);
+                                result[@"readBackDifferenceFromRequest"] = CCNMBandDictionaryDifference(removalBands, readBackBands);
+                            }
+                            BOOL matchedRequest = !readBackError && CCNMDictionariesEqual(removalBands, readBackBands);
+                            BOOL matchedOriginal = !readBackError && CCNMDictionariesEqual(originalBands, readBackBands);
+                            result[@"readBackMatchedRequest"] = @(matchedRequest);
+                            result[@"readBackMatchedOriginal"] = @(matchedOriginal);
+                            result[@"effectApplied"] = @(matchedRequest);
+                            if (!failure && !matchedRequest && !matchedOriginal) {
+                                failure = readBackError.localizedDescription ?: @"Read-back matched neither the requested removal nor the original snapshot.";
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (setterWasInvoked) {
+                BOOL shouldRestore = NO;
+                @synchronized([CCNMRootListController class]) {
+                    if (!restoreStarted && !CCNMRecoveryOperationInProgress && !CCNMManualRestoreInProgress) {
+                        restoreStarted = YES;
+                        CCNMRecoveryOperationInProgress = YES;
+                        CCNMRecoveryOperationStartedAt = CCNMMonotonicTime();
+                        shouldRestore = YES;
+                    }
+                }
+                if (shouldRestore) {
+                    NSMutableDictionary *restorePhase = [NSMutableDictionary dictionary];
+                    NSString *restoreFailure = nil;
+                    BOOL restored = NO;
+                    @try {
+                        id<CCNMSubscriptionContext> restoreContext = CCNMSafeSlotOneContext(client, result, snapshot[@"subscriptionUUID"], &restoreFailure);
+                        if (!restoreFailure) {
+                            result[@"restoreAttempted"] = @YES;
+                            restored = CCNMRestoreActiveBands(client, restoreContext, originalBands, restorePhase, &restoreFailure);
+                        }
+                    } @finally {
+                        CCNMEndRecoveryOperation();
+                    }
+                    result[@"restoreReadBackEqual"] = @(restored);
+                    result[@"restorePhase"] = restorePhase;
+                    if (restoreFailure) {
+                        result[@"restoreError"] = restoreFailure;
+                        if (!failure) {
+                            failure = restoreFailure;
+                        }
+                    } else {
+                        result[@"restoreError"] = @"";
+                    }
+                } else {
+                    result[@"restoreDeferred"] = @YES;
+                    if (!failure) {
+                        failure = @"A separate recovery attempt already owns the snapshot restore; inspect the watchdog or restore result.";
+                    }
+                }
+            }
+            @synchronized([CCNMRootListController class]) {
+                operationFinished = YES;
+            }
+        }
+        } @catch (NSException *exception) {
+            result[@"operationException"] = exception.reason ?: exception.name;
+            failure = [NSString stringWithFormat:@"Band removal operation raised %@: %@", exception.name, exception.reason ?: @"(no reason)"];
+        } @finally {
+            CCNMEndBandOperation();
+        }
+
+        BOOL determinate = [result[@"setterAttempted"] boolValue] &&
+                           ([result[@"readBackMatchedRequest"] boolValue] || [result[@"readBackMatchedOriginal"] boolValue]);
+        BOOL recovered = [result[@"restoreAttempted"] boolValue] && [result[@"restoreReadBackEqual"] boolValue];
+        if (!failure && !(determinate && recovered)) {
+            failure = @"The removal experiment did not complete every required write, read-back, and restore phase.";
+        }
+        result[@"passed"] = @(!failure && determinate && recovered);
+        result[@"completedAt"] = @([[NSDate date] timeIntervalSince1970]);
+        result[@"error"] = failure ?: @"";
+        BOOL resultSaved = [result writeToFile:CCNMBandRemovalResultPath() atomically:YES];
+        BOOL passed = resultSaved && !failure && determinate && recovered;
+        BOOL effectApplied = [result[@"effectApplied"] boolValue];
+        NSString *message = nil;
+        if (!resultSaved) {
+            message = @"The experiment finished, but its result plist could not be saved.";
+        } else if (!passed) {
+            message = [NSString stringWithFormat:@"FAILED\n%@\n\nSnapshot: %@\nResult: %@", failure ?: @"Required phases did not all complete.", CCNMBandSnapshotPath(), CCNMBandRemovalResultPath()];
+        } else if (effectApplied) {
+            message = [NSString stringWithFormat:@"WRITE TOOK EFFECT\nLTE band %@ was removed, read back as removed, and the original set was restored and verified.\n\nResult: %@", result[@"removedBand"], CCNMBandRemovalResultPath()];
+        } else {
+            message = [NSString stringWithFormat:@"WRITE IGNORED\nThe setter returned no error, but the read-back still equals the original set, so LTE band %@ was not actually removed.\n\nResult: %@", result[@"removedBand"], CCNMBandRemovalResultPath()];
+        }
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            CCNMRootListController *strongSelf = weakSelf;
+            if (!strongSelf.view.window) {
+                return;
+            }
+            NSString *title = passed ? (effectApplied ? @"Band removal took effect" : @"Band removal was ignored") : @"Band removal experiment failed";
+            UIAlertController *alertController = [UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleAlert];
             [alertController addAction:[UIAlertAction actionWithTitle:@"Copy" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
                 [UIPasteboard generalPasteboard].string = CCNMReadableObject(result);
             }]];
