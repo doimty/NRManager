@@ -223,11 +223,23 @@ kCTRegistrationRATSelection11 → NR
 
 ---
 
-## 6. 排序后的下一步建议
+## 6. `cellmonprobe2` 目标机结果（2026-08-17）
+
+附件 SHA256：`23a8488b021a3e9121e76a5d3c4ba02d68f902397bc90fbab257b23630d64c9d`。
+
+- 采样状态为 `complete`：requested/completed/successful 均为 10，窗口 9.567 秒，首次延迟 0.505 秒，之后九个间隔为 1.003 至 1.008 秒。
+- 20 个 Cell Monitor symbol 全部解析，`cellMonitorMissingSymbols` 为空。目标机新解析器和规范化输出已经实机验证。
+- 十次均返回一个 LTE serving entry：Band 3、UARFCN 1600、PID 191、Cell ID 67275832、TAC 11399、数值型 `DeploymentType=2`。
+- 规范化结果正确：`physicalCellId=191` / source=`kCTCellMonitorPID`；`frequency=1600` / source=`kCTCellMonitorUARFCN`。PID 从旧样本的 95 变成 191 是 serving cell 变化，不是解析回归。
+- `currentRat=CTRadioAccessTechnologyNRNSA`，但 `radioAccessTechnology` 与十份 serving entry 都是 LTE；`nrServingCellObserved=false`。active/supported band 列表虽然包含 78，仍不构成 n78 serving 证据。
+- 十次 `copyCellInfo:` 返回十个不同的 `CTCellInfo` 对象地址，但去掉对象地址后的原始字典和全部规范化字段完全一致。旧样本与本次样本相隔 6233 秒且 Cell ID/PID 已变化，说明数据并非跨运行永久冻结；本轮 10 秒内仍无法区分“无线状态稳定”和“同一缓存被重复复制”。
+- `publicNrFrequencyRangeRaw=0`，按当前已验证映射只能记为 unknown；`nrStatus` 表明 SA/NSA 未被禁用，但这也不是当前 NR 承载证据。
+
+## 7. 排序后的下一步建议
 
 ### 立即做（不写 modem）
 
-1. **探针 A：Serving Cell 遥测** —— 已确认目标设备旧包的 LTE 原始 shape，并实现 10 秒连续采样；下一轮验证新解析器输出并在持续蜂窝数据流量期间捕获 NR secondary cell
+1. **探针 A：Serving Cell 遥测** —— 解析器已实机通过；下一轮对比“单次 refresh + 十次 copy”和“每次采样先 refresh 再 copy”，并在明确持续蜂窝流量下检查 payload freshness 与 NR secondary cell
 2. **探针 C：生命周期插桩** —— 写入首轮观察期日志，定位为什么没走到 60 秒
 3. **探针 B：RAT 状态快照** —— 辅助确认当前 RAT 模式
 
@@ -244,20 +256,20 @@ kCTRegistrationRATSelection11 → NR
 
 ---
 
-## 7. 证据缺口
+## 8. 证据缺口
 
 | 缺口 | 严重程度 | 如何填补 |
 |---|---|---|
-| 目标机旧包返回的 LTE 原始 schema | 已填补 | 原始字典确认 `PID`/`UARFCN`/数值型 `DeploymentType`；新解析器输出仍待复跑 |
-| NSA 活跃流量下是否返回 NR secondary cell | 高 | 使用 `cellmonprobe2` 在持续蜂窝数据传输期间采样；逐次原始字典已保留 |
-| 一次 refresh 后连续 copy 是否返回更新快照 | 高 | 对比 10 份样本的原始字典和 serving-cell 变化；完全相同只能证明本次未观察到更新，不能排除缓存 |
+| 目标机 `PID`/`UARFCN`/数值型 `DeploymentType` 解析 | 已填补 | `cellmonprobe2` 实机确认 20 个 symbol 全解析，规范化 source 与数值类型正确 |
+| NSA 活跃流量下是否返回 NR secondary cell | 高 | 本轮只观测到 LTE；在明确持续蜂窝传输下复跑，并保留逐次原始字典 |
+| 一次 refresh 后连续 copy 是否返回更新快照 | 高 | 本轮十个对象地址不同但 payload 相同；用“每次采样先 refresh”做只读 A/B，区分稳定状态与缓存 |
 | `kCTCellMonitorIsSA` 在 NSA NR 条目中的实际值 | 中 | 捕获到 NR 条目后核对原始字典 |
 | `refreshCellMonitor` 是否需要 `start` 先调用 | 中 | 在已有 `_CTServerConnection` 的上下文测试 |
 | NSA 活跃时 LTE 与 NR 是否同时标为 `Serving` | 中 | 不预设 schema，以实机连续样本为准 |
 
 ---
 
-## 8. 引用
+## 9. 引用
 
 - iOS 15.5 头文件：https://github.com/lechium/iPhone_OS_15.5
 - 本地 CTBandInfo.h：`/root/.openclaw/workspace/repos/NetworkManagerReborn-Roothide/docs/research-evidence/ios15-lcsource-9091/CTBandInfo.h`

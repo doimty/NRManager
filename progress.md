@@ -63,22 +63,28 @@ Baseline: `33e50597ce124bca4a2440ba3bb4800b586730be`
 - [x] Make async timeout and persistence outcomes fail explicitly.
 - [x] Run full host tests and clean arm64/arm64e package builds.
 - [x] Complete the initial parser diff review; no actionable P0/P1 was found.
-- [x] Add parser compatibility for the target device's observed raw `PID`/`UARFCN`/`DeploymentType` schema without weakening evidence; patched target output remains pending.
+- [x] Add parser compatibility for the target device's observed raw `PID`/`UARFCN`/`DeploymentType` schema without weakening evidence; patched target output is device-verified.
 - [x] Replace the single Cell Monitor copy with a bounded 10-sample read-only window and per-sample evidence.
 - [x] Re-run the independent sampling review after fixing partial-result classification; no actionable P0/P1/P2 remained.
 - [x] Build the fixed commit in the pinned Xcode 15.4 cloud workflow and verify both artifacts.
+- [x] Validate `cellmonprobe2` on the target: 20/20 symbols resolved, 10/10 samples completed, and normalized PID/UARFCN/numeric DeploymentType output matched the raw evidence.
 
 ## Verification Evidence
 
 - `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -v -s tests -p 'test_*.py'`:
   88 tests passed after the final partial-result fix.
 - The host-compiled support test executes complete/partial/failed sampling states and nil/LTE/NR RAT classification rather than relying only on source-text assertions.
-- Target-device evidence from the previous package: `currentRat` reported NR NSA
-  while Cell Monitor returned only an LTE serving cell. The raw entry used `PID`,
-  `UARFCN`, and numeric `DeploymentType`; no NR serving entry was present, so n78
-  was not inferred from RAT state or allowed/supported bands. This proves the raw
-  input shape only; `cellmonprobe2` symbol resolution and normalized output still
-  require a new target-device run.
+- Target `cellmonprobe2` evidence SHA256
+  `23a8488b021a3e9121e76a5d3c4ba02d68f902397bc90fbab257b23630d64c9d`:
+  sampling was complete (10 requested/completed/successful); all 20 symbols resolved
+  with no missing symbols; numeric `DeploymentType=2`, `physicalCellId=191` from
+  `kCTCellMonitorPID`, and `frequency=1600` from `kCTCellMonitorUARFCN` matched raw
+  evidence. `currentRat` reported NR NSA while all ten serving entries reported LTE,
+  so `nrServingCellObserved=false`; n78 was not inferred from active/supported bands.
+- The ten copies returned ten distinct `CTCellInfo` object addresses but one canonical
+  payload over 9.567 seconds. An older run 6233 seconds earlier had a different Cell
+  ID/PID, proving the data is not frozen across runs, but within-window freshness
+  remains unresolved between stable radio state and a repeatedly copied cache.
 - `git diff --check`: passed; no added serving-probe line calls a band, RAT, or
   modem setter.
 - Fresh rootless and roothide package builds both compiled and packaged after the
@@ -98,8 +104,9 @@ Baseline: `33e50597ce124bca4a2440ba3bb4800b586730be`
   `d42ac01202d3a4c509728dcabf239738c30ebfcab9d40bb57429c55a094c7686`;
   roothide ID `9266453177`, package SHA256
   `86bce24e0048ae2cdb640acc52af4fb872576613dfffaf8825a93d1c08d331db`.
-- The target-device rerun remains necessary to validate patched symbol resolution,
-  normalized PID/UARFCN fields, and whether repeated copies observe fresh snapshots.
+- A follow-up read-only A/B remains necessary to distinguish within-window payload
+  freshness: one initial refresh plus repeated copies versus refresh-before-each-copy.
+  Capturing an explicit NR serving entry under confirmed sustained traffic also remains open.
 - The six tracked `tests/__pycache__/*.pyc` files introduced by the probe commit
   were removed, and `.gitignore` now prevents future bytecode from being tracked.
 - `getPublicNrFrequencyRangeSync:` is guarded and called as `unsigned int(id *)`;
