@@ -133,9 +133,27 @@
 		</dict>
 
 		<dict>
+			<key>cell</key> 					<string>PSGroupCell</string>
+			<key>label</key> 					<string>Cold Band Removal Experiment</string>
+			<key>footerText</key> 				<string>Experimental. Slot 1 only. Removes exactly one cold LTE band (48 CBRS, else 46 LAA), reads the result back to see whether the modem really applied it, then restores the full original set. All other radio technologies stay byte-identical.</string>
+		</dict>
+
+		<dict>
+			<key>cell</key> 					<string>PSButtonCell</string>
+			<key>label</key> 					<string>Test Cold LTE Band Removal</string>
+			<key>action</key> 					<string>confirmColdBandRemovalWrite:</string>
+		</dict>
+
+		<dict>
 			<key>cell</key> 					<string>PSButtonCell</string>
 			<key>label</key> 					<string>Restore Saved Band Snapshot</string>
 			<key>action</key> 					<string>confirmRestoreBandSnapshot:</string>
+		</dict>
+
+		<dict>
+			<key>cell</key> 					<string>PSButtonCell</string>
+			<key>label</key> 					<string>Clear Saved Probe State</string>
+			<key>action</key> 					<string>confirmClearProbeState:</string>
 		</dict>
 
 		<dict>
