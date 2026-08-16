@@ -94,10 +94,13 @@ cell。该 LTE 条目使用 `kCTCellMonitorPID` 表示 PCI，使用
 
 这不证明 NR n78 当时正在承载流量，也不证明 Cell Monitor 永远不会返回 NR 条目。
 NSA 的 NR secondary cell 可能在空闲时被释放；只有实际返回的 NR serving 条目及其
-`NRARFCN`/band 才是当前 NR 载波证据。`cellmonprobe2` 因此会在首次刷新后以 1 秒间隔
-采集 10 份快照。实机应先启动持续蜂窝数据流量，再触发采样，检验目标网络是否会暴露
-LTE PCC 与 NR secondary cell。该版本尚待目标机复跑；复跑必须同时确认三个新符号已
-解析，以及规范化字段和来源标签实际出现在输出中。
+`NRARFCN`/band 才是当前 NR 载波证据。`cellmonprobe2` 已在目标机完成首次 refresh 后
+连续 10 次 copy，十份 payload 相同。`cellmonprobe3` 将同一次运行拆成两个固定顺序的
+5 样本阶段：Phase A 只在阶段开始 refresh 一次；Phase B 在每次 copy 前都 refresh。
+实机应先启动持续蜂窝数据流量，再触发 A/B，检验重复 refresh 是否伴随 serving payload
+变化或暴露 LTE PCC 与 NR secondary cell。固定 A→B 顺序存在时间顺序混杂，因此
+“Phase B 仍相同”只能说明本次窗口内未观测到 refresh 引起的变化，不能单独证明底层必然
+复用了缓存。
 
 当设备处于 NR SA 且快照返回 NR serving cell 时，预期 `isSA=true`；只有 LTE 时则只
 返回 LTE 小区。因此，一次 `copyCellInfo:` 只能回答该快照实际包含的条目，不能从 RAT
@@ -161,19 +164,21 @@ kCTRegistrationRATSelection11 → NR
 
 ```
 1. 获取 CTXPCServiceSubscriptionContext（slot 1）
-2. 调用 refreshCellMonitor:completion: 触发刷新
-3. 首次等待 0.5 秒，然后以 1 秒间隔调用 10 次 copyCellInfo:completion:
-4. 每次独立保留 CTCellInfo、legacyInfo、解析结果、时间戳和失败状态
-5. 遍历每份 legacyInfo 数组，按 cellType 过滤
-6. 对 cellType=Serving 的条目输出：
+2. Phase A：refresh 一次，settle 0.5 秒；随后 copy 5 次，copy 间目标间隔 1 秒
+3. Phase B：每个样本先等待 0.5 秒，再 refresh，settle 0.5 秒，然后 copy；共 5 次
+4. 每次 refresh/copy 独立保留请求、回调和 wait 结束时间、耗时、NSError/exception、timeout 与索引
+5. 任一 timeout 或调用异常立即停止后续私有异步调用；普通 NSError/nil result 保留失败证据，不得汇总成 complete
+6. 每次 copy 独立保留 CTCellInfo、legacyInfo、解析结果、时间戳和失败状态
+7. 遍历每份 legacyInfo 数组，按 cellType 过滤
+8. 对 cellType=Serving 的条目输出：
    - cellRadioAccessTechnology → NR/LTE/UMTS
    - isSA (NR only) → true/false
    - bandInfo → 频段号
    - `nrarfcn` / `channelNumber` / `uarfcn`，并记录规范化 `frequency` 的来源
    - `pci` / `pid`，并记录规范化 `physicalCellId` 的来源
    - cellId / TAC / MCC / MNC
-7. 汇总所有 serving 条目；只有样本中明确的 NR serving 条目才能将 nrServingCellObserved 置为 true
-8. 输出所有频段条目（serving + neighbor）的原始字典
+9. 汇总所有 serving 条目；只有样本中明确的 NR serving 条目才能将 nrServingCellObserved 置为 true
+10. 只有 6/6 refresh 与 10/10 copy/parse 全成功才将顶层状态标记为 complete
 ```
 
 **成功标准**：
@@ -235,11 +240,22 @@ kCTRegistrationRATSelection11 → NR
 - 十次 `copyCellInfo:` 返回十个不同的 `CTCellInfo` 对象地址，但去掉对象地址后的原始字典和全部规范化字段完全一致。旧样本与本次样本相隔 6233 秒且 Cell ID/PID 已变化，说明数据并非跨运行永久冻结；本轮 10 秒内仍无法区分“无线状态稳定”和“同一缓存被重复复制”。
 - `publicNrFrequencyRangeRaw=0`，按当前已验证映射只能记为 unknown；`nrStatus` 表明 SA/NSA 未被禁用，但这也不是当前 NR 承载证据。
 
-## 7. 排序后的下一步建议
+## 7. `cellmonprobe3` A/B 实现边界
+
+- 单次运行固定 A→B：Phase A 只 refresh 一次后 copy 5 次；Phase B 每次 copy 前 refresh，共 5 组。总计划为 6 次 refresh、10 次 copy，所有请求严格只读。
+- 每次异步调用使用独立的一次性 strong holder 和 semaphore。callback 只写 holder；worker 只有在 wait 成功后才复制结果。RAT-selection 与 Cell Monitor 共用同一套 timeout/late-callback 门闩；任何 timeout 或 selector invocation exception 都会中止后续 CoreTelephony 调用。
+- 普通 callback NSError、nil result 或 parse failure 保留当前样本证据，并在后续操作独立时继续。缺少 `CellType`、`CellTypeServing` 或 Cell Monitor RAT key 时仍保留 typed raw payload，但强制 parse failure、comparison ineligible 和 `nrObservationStatus=indeterminatePartial`。报告分别统计 planned、attempted、callback completed、API succeeded、parsed 和 not attempted；未发起操作保留 sample index 与原因。
+- 完整状态严格要求 6/6 refresh callback 成功，以及 10/10 copy callback 成功、结果非 nil 且解析成功。存在已解析子集为 `partial`，零个已解析样本为 `failed`。
+- `nrServingCellObserved` 只接受 serving entry 自身的精确 Cell Monitor NR/NRNSA RAT。负结果使用 `notObservedComplete`；不完整运行使用 `indeterminatePartial`，不得表述为“未观测到 NR”。
+- 输出会比较十份规范化 serving payload，状态只允许 `allServingPayloadsEqual`、`servingPayloadChangeObserved` 或 `indeterminatePartial`。固定 A→B 顺序和不同 refresh latency 构成时间混杂，因此即使 Phase B 出现变化，也不能单次归因为 refresh 或宣称 Phase B “更新鲜”。
+- serving probe 与同一 Preferences 进程中的 Band write/recovery/manual restore 互斥；方法范围内唯一文件写入是诊断 plist。
+- 当前只完成实现与本地验证，目标机 A/B 结果仍为空，不能提前回答 cache freshness。
+
+## 8. 排序后的下一步建议
 
 ### 立即做（不写 modem）
 
-1. **探针 A：Serving Cell 遥测** —— 解析器已实机通过；下一轮对比“单次 refresh + 十次 copy”和“每次采样先 refresh 再 copy”，并在明确持续蜂窝流量下检查 payload freshness 与 NR secondary cell
+1. **探针 A：Serving Cell 遥测** —— 解析器已实机通过；使用 `cellmonprobe3` 的 5+5 A/B（Phase A 1 次 refresh，Phase B 5 次 refresh），在明确持续蜂窝流量下检查 payload freshness 与 NR secondary cell
 2. **探针 C：生命周期插桩** —— 写入首轮观察期日志，定位为什么没走到 60 秒
 3. **探针 B：RAT 状态快照** —— 辅助确认当前 RAT 模式
 
@@ -256,20 +272,20 @@ kCTRegistrationRATSelection11 → NR
 
 ---
 
-## 8. 证据缺口
+## 9. 证据缺口
 
 | 缺口 | 严重程度 | 如何填补 |
 |---|---|---|
 | 目标机 `PID`/`UARFCN`/数值型 `DeploymentType` 解析 | 已填补 | `cellmonprobe2` 实机确认 20 个 symbol 全解析，规范化 source 与数值类型正确 |
 | NSA 活跃流量下是否返回 NR secondary cell | 高 | 本轮只观测到 LTE；在明确持续蜂窝传输下复跑，并保留逐次原始字典 |
-| 一次 refresh 后连续 copy 是否返回更新快照 | 高 | 本轮十个对象地址不同但 payload 相同；用“每次采样先 refresh”做只读 A/B，区分稳定状态与缓存 |
+| 一次 refresh 后连续 copy 是否返回更新快照 | 高 | `cellmonprobe3` 已实现同次运行的 5+5 / 1+5 只读 A/B；待目标机证据判断重复 refresh 是否伴随 payload 变化，若仍相同也不能排除无线状态稳定 |
 | `kCTCellMonitorIsSA` 在 NSA NR 条目中的实际值 | 中 | 捕获到 NR 条目后核对原始字典 |
 | `refreshCellMonitor` 是否需要 `start` 先调用 | 中 | 在已有 `_CTServerConnection` 的上下文测试 |
 | NSA 活跃时 LTE 与 NR 是否同时标为 `Serving` | 中 | 不预设 schema，以实机连续样本为准 |
 
 ---
 
-## 9. 引用
+## 10. 引用
 
 - iOS 15.5 头文件：https://github.com/lechium/iPhone_OS_15.5
 - 本地 CTBandInfo.h：`/root/.openclaw/workspace/repos/NetworkManagerReborn-Roothide/docs/research-evidence/ios15-lcsource-9091/CTBandInfo.h`

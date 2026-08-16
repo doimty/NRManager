@@ -1,6 +1,6 @@
 # Serving Cell Probe Repair
 
-Baseline: `33e50597ce124bca4a2440ba3bb4800b586730be`
+A/B implementation baseline: `8ccdd37654ea8746aa2e98167cae1159d8e16b9a`
 
 ## Hypothesis
 
@@ -9,6 +9,7 @@ Baseline: `33e50597ce124bca4a2440ba3bb4800b586730be`
 - Target-device discovery must preserve raw runtime classes, keys, values, and parse status instead of assuming the schema.
 - The target iPhone14,3 / iOS 15.1.1 sample used `PID` and `UARFCN`; this is target-specific evidence, not an iOS-wide schema claim.
 - A single NSA snapshot can miss a demand-activated NR secondary cell, so the read-only probe needs a short bounded sampling window.
+- The target run returned ten distinct `CTCellInfo` objects with one canonical payload, so a same-run A/B must compare one refresh followed by repeated copies against refresh-before-each-copy.
 - Async results are usable only after a completed wait; timeout, API error, missing slot, and persistence failure are independent failures.
 
 ## Success
@@ -18,9 +19,11 @@ Baseline: `33e50597ce124bca4a2440ba3bb4800b586730be`
 - Missing Cell Monitor symbols cannot cause nil-key dictionary access.
 - The probe plist contains typed raw `legacyInfo` evidence plus optional parsed fields.
 - Parsed output normalizes physical-cell ID and frequency while retaining each value's source key.
-- Ten one-second Cell Monitor samples preserve independent raw evidence and aggregate only explicit serving-cell observations.
-- Only 10/10 successfully parsed samples count as complete; any nonzero subset is an explicit partial result and does not produce a success UI.
-- `nrServingCellObserved` remains false unless a sampled serving entry itself reports an NR RAT.
+- Two five-sample phases preserve independent raw evidence: Phase A performs one refresh, while Phase B refreshes before every copy.
+- Every attempted refresh and copy records bounded wait/timing/error evidence with phase and sample identity; every omitted planned operation has an explicit count, sample index, and reason.
+- Attempted, callback-completed, API-succeeded, and parsed copy counts remain distinct. Only 6/6 successful refresh callbacks and 10/10 successful, non-nil, parsed copies count as complete. A nonzero parsed subset is partial; zero parsed copies is failed.
+- `nrServingCellObserved` remains false unless a sampled serving entry itself reports an exact Cell Monitor NR/NRNSA RAT. The companion status is tri-state: `observed`, `notObservedComplete`, or `indeterminatePartial`.
+- A/B payload output is descriptive only. It may report normalized serving payload equality or change, but never claims that Phase B is fresher or that refresh caused a change.
 - Refresh/copy/RAT-selection timeouts are explicit and never reported as fresh success.
 - Missing slot 1 or a failed plist write produces a failed UI result.
 - All host tests pass, both architectures compile, and no new modem/RAT/band write path exists.
@@ -32,7 +35,10 @@ Baseline: `33e50597ce124bca4a2440ba3bb4800b586730be`
 - Any callback state is consumed after a timed-out wait.
 - Any missing RAT field, `currentRat`, `activeBands`, or `supportedBands` causes an NR serving-cell inference.
 - Raw runtime data is discarded because it does not match the expected dictionary schema.
-- The UI reports success when slot 1, all ten Cell Monitor samples, or the output plist is unavailable.
+- The UI reports success when slot 1, any of the six required refreshes, all ten Cell Monitor samples, or the output plist is unavailable.
+- A timed-out refresh/copy is followed by another private API request while its late callback may still be outstanding.
+- A callback mutates report state directly, outlives stack-owned state, or is consumed more than once.
+- Concurrent serving-cell and Band operations can run in the same Preferences process.
 
 ## Ablations
 
@@ -44,6 +50,8 @@ Baseline: `33e50597ce124bca4a2440ba3bb4800b586730be`
 - An NRNSA device snapshot containing only an LTE serving entry keeps `nrServingCellObserved=false`.
 - A nil serving RAT cannot become an NR match through a struct-return message to `nil`.
 - One successful copy followed by a timeout classifies as partial, preserves both samples, and does not report overall success.
+- Refresh policy planning yields one refresh for five Phase A copies and five refreshes for five Phase B copies.
+- A Phase A API error may leave Phase B independently observable, while any timeout aborts the whole A/B to prevent overlapping late callbacks.
 
 ## Evidence Plan
 
@@ -68,12 +76,41 @@ Baseline: `33e50597ce124bca4a2440ba3bb4800b586730be`
 - [x] Re-run the independent sampling review after fixing partial-result classification; no actionable P0/P1/P2 remained.
 - [x] Build the fixed commit in the pinned Xcode 15.4 cloud workflow and verify both artifacts.
 - [x] Validate `cellmonprobe2` on the target: 20/20 symbols resolved, 10/10 samples completed, and normalized PID/UARFCN/numeric DeploymentType output matched the raw evidence.
+- [x] Add red tests for two-phase refresh planning, per-attempt evidence, strict completion, and timeout/exception abort behavior.
+- [x] Implement the read-only 5+5 A/B and bump the diagnostic package to `cellmonprobe3`.
+- [x] Add one-shot strong callback holders, strict four-stage counts, exact not-attempted evidence, tri-state NR output, descriptive payload comparison, and mutual exclusion with Band operations.
+- [x] Run focused/full tests, both local package schemes, and a write-path diff audit.
+- [x] Complete the A/B design review and incorporate its P0/P1/P2 requirements.
+- [x] Resolve the independent final-review findings: duplicate slot-1 iteration, RAT-selection timeout overlap, and missing critical-symbol false completeness.
+- [ ] Build and verify cloud artifacts with the pinned Xcode 15.4 workflow.
 
 ## Verification Evidence
 
-- `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -v -s tests -p 'test_*.py'`:
-  88 tests passed after the final partial-result fix.
-- The host-compiled support test executes complete/partial/failed sampling states and nil/LTE/NR RAT classification rather than relying only on source-text assertions.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v`:
+  92 tests passed for `cellmonprobe3`; the focused serving-cell suite passed 15/15.
+- The host-compiled support test executes the 1+5 refresh policy, strict 6/6 refresh plus
+  10/10 copy completion rule, complete/partial/failed states, wait outcomes, and nil/LTE/NR
+  RAT classification rather than relying only on source-text assertions.
+- The A/B source records two 5-sample phases and separately tracks planned, attempted,
+  callback-completed, API-succeeded, parsed, and not-attempted operations. Each attempt has
+  one-shot strong callback state, wall-clock correlation, monotonic timing/latency, wait result,
+  status, typed payload/error/exception evidence, and phase/sample identity. RAT selection uses
+  the same one-shot holder and unsafe-outstanding latch as Cell Monitor. Any private async timeout
+  or invocation exception aborts all later CoreTelephony calls; ordinary callback/parse failures
+  preserve evidence and continue where later samples are independent. Phase B uses a 0.5-second pre-refresh delay
+  and a 0.5-second settle delay; actual monotonic timings are retained because fixed A-then-B
+  ordering and refresh latency prevent a causal freshness claim.
+- Static method-scope audit found zero band/RAT/modem setter calls in
+  `showServingCellProbe:`; its only file write persists the diagnostic plist. The first matching
+  slot-1 context stops subscription enumeration, so duplicate runtime contexts cannot exceed the
+  global 6-refresh/10-copy bound. A process-local gate excludes re-entry and overlap with Band
+  write/recovery/manual-restore operations, including late callbacks after timeout.
+- Missing `kCTCellMonitorCellType`, `kCTCellMonitorCellTypeServing`, or
+  `kCTCellMonitorCellRadioAccessTechnology` preserves typed raw evidence but makes every sample a
+  parse failure, leaving comparison ineligible and NR status `indeterminatePartial`.
+- Fresh local rootless and roothide `cellmonprobe3` packages both compiled and packaged.
+  The Linux toolchain again emitted `incompatible arm64e ABI compiler`, so these packages
+  remain compile-only smoke artifacts and must not be delivered.
 - Target `cellmonprobe2` evidence SHA256
   `23a8488b021a3e9121e76a5d3c4ba02d68f902397bc90fbab257b23630d64c9d`:
   sampling was complete (10 requested/completed/successful); all 20 symbols resolved
