@@ -1,8 +1,8 @@
 # NR n78 下一步研究：从 activeBands 到 serving cell 遥测
 
-**日期**: 2026-08-16  
-**目标**: iPhone14,3 / iOS 15.1.1 (19B81)  
-**前提**: `activeBands` 是 allowed-band 配置，不是 serving band；设备可回落 LTE B3  
+**日期**: 2026-08-16
+**目标**: iPhone14,3 / iOS 15.1.1 (19B81)
+**前提**: `activeBands` 是 allowed-band 配置，不是 serving band；设备可回落 LTE B3
 
 ---
 
