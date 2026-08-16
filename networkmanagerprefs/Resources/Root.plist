@@ -145,6 +145,18 @@
 		</dict>
 
 		<dict>
+			<key>cell</key> 					<string>PSGroupCell</string>
+			<key>label</key> 					<string>NR n78-Only Experiment</string>
+			<key>footerText</key> 				<string>Experimental. Slot 1 only. Sets only the NR allowed-band array to [78] for 60 seconds, leaving LTE and every other RAT array byte-identical, then restores and verifies the complete original snapshot.</string>
+		</dict>
+
+		<dict>
+			<key>cell</key> 					<string>PSButtonCell</string>
+			<key>label</key> 					<string>Test NR n78 Only for 60 Seconds</string>
+			<key>action</key> 					<string>confirmNR78BandWrite:</string>
+		</dict>
+
+		<dict>
 			<key>cell</key> 					<string>PSButtonCell</string>
 			<key>label</key> 					<string>Restore Saved Band Snapshot</string>
 			<key>action</key> 					<string>confirmRestoreBandSnapshot:</string>

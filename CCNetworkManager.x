@@ -1,5 +1,11 @@
 #import "CCNetworkManager.h"
 
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/file.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
 NSMutableDictionary *prefs, *defaultPrefs;
 // For some reason if I declare the 3 values below as simple NSDictionaries/NSArray, they just crash w BAD_ACCESS
 // When I call anything on them. Making them mutable fixes this.
@@ -7,6 +13,52 @@ NSMutableDictionary *ratSelectionValues, *labelSelectionValues;
 NSMutableArray* selectionKeys;
 
 NSString *selectedNetwork;
+
+static NSString *CCNMBandRecoveryLockPath(void) {
+  return jbroot(@"/var/mobile/Library/Preferences/me.nixuge.networkmanager.bandwrite.recovery.lock");
+}
+
+static int CCNMAcquireBandRecoveryLock(void) {
+  int fileDescriptor = open(CCNMBandRecoveryLockPath().fileSystemRepresentation,
+                            O_RDWR | O_CREAT,
+                            S_IRUSR | S_IWUSR);
+  if (fileDescriptor < 0) {
+    return -1;
+  }
+
+  while (flock(fileDescriptor, LOCK_EX | LOCK_NB) != 0) {
+    if (errno == EINTR) {
+      continue;
+    }
+    close(fileDescriptor);
+    return -1;
+  }
+  return fileDescriptor;
+}
+
+static BOOL CCNMBandRecoveryStateExists(void) {
+  NSArray<NSString *> *paths = @[
+    jbroot(@"/var/mobile/Library/Preferences/me.nixuge.networkmanager.bandwrite.snapshot.plist"),
+    jbroot(@"/var/mobile/Library/Preferences/me.nixuge.networkmanager.bandwrite.intent.plist"),
+    jbroot(@"/var/mobile/Library/Preferences/me.nixuge.networkmanager.bandwrite.setter-inflight.plist"),
+    jbroot(@"/var/mobile/Library/Preferences/me.nixuge.networkmanager.bandwrite.restore-inflight.plist")
+  ];
+  NSFileManager *fileManager = [NSFileManager defaultManager];
+  for (NSString *path in paths) {
+    if ([fileManager fileExistsAtPath:path]) {
+      return YES;
+    }
+  }
+  return NO;
+}
+
+static void CCNMReleaseBandRecoveryLock(int fileDescriptor) {
+  if (fileDescriptor < 0) {
+    return;
+  }
+  flock(fileDescriptor, LOCK_UN);
+  close(fileDescriptor);
+}
 
 @implementation CCNetworkManager
 
@@ -65,12 +117,41 @@ NSString *selectedNetwork;
 }
 
 - (void)setSelected:(BOOL)selected {
-  selectedNetwork = getNextEnabledNetwork();
+  int recoveryLockDescriptor = CCNMAcquireBandRecoveryLock();
+  if (recoveryLockDescriptor < 0) {
+    sendSimpleAlert(@"Network change blocked", @"A Band write or recovery operation currently owns the modem-operation lock. Wait for it to finish before changing the radio mode.");
+    return;
+  }
 
-  CFStringRef kValue = (__bridge CFStringRef)[ratSelectionValues objectForKey:selectedNetwork];
-  CTServerConnectionRef cn = _CTServerConnectionCreate(kCFAllocatorDefault, callback, NULL);
-  _CTServerConnectionSetRATSelection(cn, kValue, 0);
+  if (CCNMBandRecoveryStateExists()) {
+    CCNMReleaseBandRecoveryLock(recoveryLockDescriptor);
+    sendSimpleAlert(@"Network change blocked", @"Saved Band recovery state exists. Verify restoration and clear the saved probe state in NetworkManager settings before changing the radio mode.");
+    return;
+  }
 
+  NSString *nextNetwork = getNextEnabledNetwork();
+  NSString *failureMessage = nil;
+  BOOL modemWriteIssued = NO;
+  @try {
+    CFStringRef kValue = (__bridge CFStringRef)[ratSelectionValues objectForKey:nextNetwork];
+    CTServerConnectionRef cn = _CTServerConnectionCreate(kCFAllocatorDefault, callback, NULL);
+    if (!kValue || !cn) {
+      failureMessage = @"CoreTelephony did not provide a valid radio-mode request.";
+    } else {
+      _CTServerConnectionSetRATSelection(cn, kValue, 0);
+      selectedNetwork = nextNetwork;
+      modemWriteIssued = YES;
+    }
+  } @catch (NSException *exception) {
+    failureMessage = [NSString stringWithFormat:@"The radio-mode request raised %@: %@", exception.name, exception.reason ?: @"(no reason)"];
+  } @finally {
+    CCNMReleaseBandRecoveryLock(recoveryLockDescriptor);
+  }
+
+  if (!modemWriteIssued) {
+    sendSimpleAlert(@"Network change failed", failureMessage ?: @"The radio-mode request was not issued.");
+    return;
+  }
   writeSelectedNetwork();
   [super reconfigureView];
 }

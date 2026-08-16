@@ -12,10 +12,12 @@
 - (void)showBandProbe:(PSSpecifier *)specifier;
 - (void)confirmSameValueBandWrite:(PSSpecifier *)specifier;
 - (void)confirmColdBandRemovalWrite:(PSSpecifier *)specifier;
+- (void)confirmNR78BandWrite:(PSSpecifier *)specifier;
 - (void)confirmRestoreBandSnapshot:(PSSpecifier *)specifier;
 - (void)confirmClearProbeState:(PSSpecifier *)specifier;
 - (void)runSameValueBandWrite;
 - (void)runColdBandRemovalWrite;
+- (void)runNR78BandWrite;
 - (void)restoreSavedBandSnapshot;
 - (void)clearSavedProbeState;
 @end
