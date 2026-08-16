@@ -10,6 +10,7 @@
 @interface CCNMRootListController : PSListController
 - (void)showHelpAlert:(PSSpecifier *)specifier;
 - (void)showBandProbe:(PSSpecifier *)specifier;
+- (void)showServingCellProbe:(PSSpecifier *)specifier;
 - (void)confirmSameValueBandWrite:(PSSpecifier *)specifier;
 - (void)confirmColdBandRemovalWrite:(PSSpecifier *)specifier;
 - (void)confirmNR78BandWrite:(PSSpecifier *)specifier;

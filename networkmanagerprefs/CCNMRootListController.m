@@ -16,6 +16,23 @@
 - (id)getSubscriptionInfoWithError:(NSError **)error;
 - (id)getBandInfo:(id)context error:(NSError **)error;
 - (void)setActiveBandInfo:(id)context bands:(id)bands error:(NSError **)error;
+
+// Read-only probe selectors
+- (id)getCurrentRat:(id)context error:(NSError **)error;
+- (id)copyRadioAccessTechnology:(id)context error:(NSError **)error;
+- (id)copyRegistrationStatus:(id)context error:(NSError **)error;
+- (id)copyRegistrationDisplayStatus:(id)context error:(NSError **)error;
+- (id)getSupports5GStandalone:(id)context error:(NSError **)error;
+- (id)getSignalStrengthInfo:(id)context error:(NSError **)error;
+- (id)getSignalStrengthMeasurements:(id)context error:(NSError **)error;
+- (id)getRatSelectionMask:(id)context error:(NSError **)error;
+- (unsigned int)getPublicNrFrequencyRangeSync:(id *)sync;
+
+// Async selectors (bridged with dispatch_semaphore)
+- (void)copyCellInfo:(id)context completion:(void(^)(id cellInfo, NSError *error))completion;
+- (void)refreshCellMonitor:(id)context completion:(void(^)(NSError *error))completion;
+- (void)getNRDisableStatus:(id)descriptor completion:(void(^)(id nrStatus, NSError *error))completion;
+- (void)getRatSelection:(id)context completion:(void(^)(NSString *selection, NSString *preferred, NSError *error))completion;
 @end
 
 @protocol CCNMSubscriptionInfo <NSObject>
@@ -27,6 +44,7 @@
 - (BOOL)isSimGood;
 - (BOOL)isSimPresent;
 - (NSUUID *)uuid;
+- (id)descriptor;
 @end
 
 @protocol CCNMBandInfo <NSObject>
@@ -131,6 +149,44 @@ static NSString *CCNMBandNR78ResultPath(void) {
 static NSString *CCNMBandClearStateResultPath(void) {
     return jbroot(@"/var/mobile/Library/Preferences/me.nixuge.networkmanager.bandwrite.clearstate.plist");
 }
+
+static NSString *CCNMCellMonitorProbePath(void) {
+    return jbroot(@"/var/mobile/Library/Preferences/me.nixuge.networkmanager.cellmonitor.probe.plist");
+}
+
+// Cell Monitor key constants loaded via dlsym (not exported for arm64e linkage)
+static CFStringRef CCMKLookup(CFStringRef *keyPtr, const char *symbolName, void *ctHandle) {
+    if (*keyPtr) return *keyPtr;
+    if (ctHandle) {
+        CFStringRef *ptr = dlsym(ctHandle, symbolName);
+        if (ptr) *keyPtr = *ptr;
+    }
+    return *keyPtr;
+}
+
+#define CCMK_DECL(name) \
+  static CFStringRef _ccm_##name = NULL; \
+  static inline CFStringRef CCMK_##name(void *ctHandle) { \
+    return CCMKLookup(&_ccm_##name, "_" #name, ctHandle); \
+  }
+
+CCMK_DECL(kCTCellMonitorCellType)
+CCMK_DECL(kCTCellMonitorCellTypeServing)
+CCMK_DECL(kCTCellMonitorCellRadioAccessTechnology)
+CCMK_DECL(kCTCellMonitorIsSA)
+CCMK_DECL(kCTCellMonitorNRARFCN)
+CCMK_DECL(kCTCellMonitorChannelNumber)
+CCMK_DECL(kCTCellMonitorBandInfo)
+CCMK_DECL(kCTCellMonitorBandwidth)
+CCMK_DECL(kCTCellMonitorPCI)
+CCMK_DECL(kCTCellMonitorCellId)
+CCMK_DECL(kCTCellMonitorTAC)
+CCMK_DECL(kCTCellMonitorMCC)
+CCMK_DECL(kCTCellMonitorMNC)
+CCMK_DECL(kCTCellMonitorRSRP)
+CCMK_DECL(kCTCellMonitorRSRQ)
+CCMK_DECL(kCTCellMonitorSNR)
+CCMK_DECL(kCTCellMonitorGSCN)
 
 static NSString *CCNMSysctlString(const char *name) {
     size_t size = 0;
@@ -2022,6 +2078,295 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
             }
             [alertController addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
             [strongSelf presentViewController:alertController animated:YES completion:nil];
+        });
+    });
+}
+
+- (void)showServingCellProbe:(PSSpecifier *)specifier {
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        static void *coreTelephonyHandle = NULL;
+        static dispatch_once_t onceToken;
+        dispatch_once(&onceToken, ^{
+            coreTelephonyHandle = dlopen("/System/Library/Frameworks/CoreTelephony.framework/CoreTelephony", RTLD_LAZY | RTLD_LOCAL);
+        });
+
+        void *ctHandle = coreTelephonyHandle;
+        NSMutableDictionary *result = [NSMutableDictionary dictionary];
+        NSString *failure = nil;
+        Class clientClass = NSClassFromString(@"CoreTelephonyClient");
+
+        @try {
+        if (!ctHandle || !clientClass) {
+            failure = @"CoreTelephonyClient is unavailable on this system.";
+        } else {
+            id<CCNMCoreTelephonyClient> client = [(id)clientClass alloc];
+            if (![client respondsToSelector:@selector(initWithQueue:)]) {
+                failure = @"CoreTelephonyClient does not expose initWithQueue:.";
+            } else {
+                @try {
+                    client = [client initWithQueue:dispatch_get_global_queue(QOS_CLASS_UTILITY, 0)];
+                } @catch (NSException *exception) {
+                    failure = [NSString stringWithFormat:@"CoreTelephonyClient init raised %@: %@", exception.name, exception.reason ?: @"(no reason)"];
+                }
+                if (!failure) {
+                    NSError *subscriptionError = nil;
+                    id<CCNMSubscriptionInfo> subscriptionInfo = nil;
+                    @try {
+                        subscriptionInfo = [client getSubscriptionInfoWithError:&subscriptionError];
+                    } @catch (NSException *exception) {
+                        failure = [NSString stringWithFormat:@"Subscription query raised %@: %@", exception.name, exception.reason ?: @"(no reason)"];
+                    }
+                    NSArray *subscriptions = [subscriptionInfo respondsToSelector:@selector(subscriptions)] ? [subscriptionInfo subscriptions] : nil;
+
+                    if (!failure && (subscriptionError || subscriptions.count == 0)) {
+                        failure = subscriptionError.localizedDescription ?: @"No cellular subscription context was returned.";
+                    }
+                    if (!failure) {
+                        [subscriptions enumerateObjectsUsingBlock:^(id<CCNMSubscriptionContext> context, NSUInteger index, BOOL *stop) {
+                            if (![context respondsToSelector:@selector(slotID)] || [context slotID] != 1) return;
+
+                            NSMutableDictionary *report = [NSMutableDictionary dictionary];
+                            report[@"slotID"] = @1;
+                            if ([context respondsToSelector:@selector(isSimPresent)]) report[@"isSimPresent"] = @([context isSimPresent]);
+                            if ([context respondsToSelector:@selector(isSimGood)]) report[@"isSimGood"] = @([context isSimGood]);
+
+                            // Current RAT (sync)
+                            if ([client respondsToSelector:@selector(getCurrentRat:error:)]) {
+                                NSError *ratError = nil;
+                                NSString *currentRat = [client getCurrentRat:context error:&ratError];
+                                report[@"currentRat"] = currentRat ?: (ratError.localizedDescription ?: @"(nil)");
+                            }
+
+                            // Radio Access Technology (sync)
+                            if ([client respondsToSelector:@selector(copyRadioAccessTechnology:error:)]) {
+                                NSError *ratTechError = nil;
+                                NSString *ratTech = [client copyRadioAccessTechnology:context error:&ratTechError];
+                                report[@"radioAccessTechnology"] = ratTech ?: (ratTechError.localizedDescription ?: @"(nil)");
+                            }
+
+                            // Registration Status (sync)
+                            if ([client respondsToSelector:@selector(copyRegistrationStatus:error:)]) {
+                                NSError *regError = nil;
+                                NSString *regStatus = [client copyRegistrationStatus:context error:&regError];
+                                report[@"registrationStatus"] = regStatus ?: (regError.localizedDescription ?: @"(nil)");
+                            }
+
+                            // Registration Display Status (sync)
+                            if ([client respondsToSelector:@selector(copyRegistrationDisplayStatus:error:)]) {
+                                NSError *dispError = nil;
+                                id dispStatus = [client copyRegistrationDisplayStatus:context error:&dispError];
+                                report[@"registrationDisplayStatus"] = dispStatus ? [dispStatus description] : (dispError.localizedDescription ?: @"(nil)");
+                            }
+
+                            // SA Support (sync)
+                            if ([client respondsToSelector:@selector(getSupports5GStandalone:error:)]) {
+                                NSError *saError = nil;
+                                id saSupported = [client getSupports5GStandalone:context error:&saError];
+                                report[@"supports5GStandalone"] = saSupported ? [saSupported description] : (saError.localizedDescription ?: @"(nil)");
+                            }
+
+                            // NR Disable Status (async)
+                            if ([client respondsToSelector:@selector(getNRDisableStatus:completion:)]) {
+                                id descriptor = nil;
+                                if ([context respondsToSelector:@selector(descriptor)]) {
+                                    descriptor = [context descriptor];
+                                }
+                                if (descriptor) {
+                                    dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+                                    __block id nrStatusResult = nil;
+                                    __block NSError *nrStatusError = nil;
+                                    [client getNRDisableStatus:descriptor completion:^(id nrStatus, NSError *error) {
+                                        nrStatusResult = nrStatus;
+                                        nrStatusError = error;
+                                        dispatch_semaphore_signal(sema);
+                                    }];
+                                    dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
+                                    report[@"nrStatus"] = nrStatusResult ? [nrStatusResult description] : (nrStatusError.localizedDescription ?: @"(timeout)");
+                                }
+                            }
+
+                            // RAT Selection (async)
+                            if ([client respondsToSelector:@selector(getRatSelection:completion:)]) {
+                                dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+                                __block NSString *ratSel = nil, *ratPref = nil;
+                                __block NSError *ratSelError = nil;
+                                [client getRatSelection:context completion:^(NSString *selection, NSString *preferred, NSError *error) {
+                                    ratSel = selection;
+                                    ratPref = preferred;
+                                    ratSelError = error;
+                                    dispatch_semaphore_signal(sema);
+                                }];
+                                dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
+                                if (ratSel || ratPref) {
+                                    report[@"ratSelection"] = ratSel ?: @"";
+                                    report[@"ratPreferred"] = ratPref ?: @"";
+                                } else {
+                                    report[@"ratSelectionError"] = ratSelError.localizedDescription ?: @"(timeout)";
+                                }
+                            }
+
+                            // RAT Selection Mask (sync)
+                            if ([client respondsToSelector:@selector(getRatSelectionMask:error:)]) {
+                                NSError *maskError = nil;
+                                id ratMask = [client getRatSelectionMask:context error:&maskError];
+                                report[@"ratSelectionMask"] = ratMask ? [ratMask description] : (maskError.localizedDescription ?: @"(nil)");
+                            }
+
+                            // NR Frequency Range (sync)
+                            if ([client respondsToSelector:@selector(getPublicNrFrequencyRangeSync:)]) {
+                                NSError *frError = nil;
+                                unsigned int frRange = [client getPublicNrFrequencyRangeSync:&frError];
+                                if (frError) {
+                                    report[@"nrFrequencyRangeError"] = frError.localizedDescription;
+                                } else {
+                                    NSString *frDesc = @"unknown";
+                                    if (frRange == 1) frDesc = @"Sub6 (FR1)";
+                                    else if (frRange == 2) frDesc = @"MmWave (FR2)";
+                                    else if (frRange == 3) frDesc = @"Sub6 + MmWave";
+                                    report[@"nrFrequencyRange"] = [NSString stringWithFormat:@"%u (%@)", frRange, frDesc];
+                                }
+                            }
+
+                            // Signal Strength Info (sync)
+                            if ([client respondsToSelector:@selector(getSignalStrengthInfo:error:)]) {
+                                NSError *sigError = nil;
+                                id sigInfo = [client getSignalStrengthInfo:context error:&sigError];
+                                report[@"signalStrengthInfo"] = sigInfo ? [sigInfo description] : (sigError.localizedDescription ?: @"(nil)");
+                            }
+
+                            // Band Info (active/supported) (sync)
+                            if ([client respondsToSelector:@selector(getBandInfo:error:)]) {
+                                NSError *bandError = nil;
+                                id<CCNMBandInfo> bandInfo = [client getBandInfo:context error:&bandError];
+                                if (bandInfo) {
+                                    NSDictionary *activeBands = [bandInfo respondsToSelector:@selector(activeBands)] ? [bandInfo activeBands] : nil;
+                                    NSDictionary *supportedBands = [bandInfo respondsToSelector:@selector(supportedBands)] ? [bandInfo supportedBands] : nil;
+                                    report[@"activeBands"] = activeBands ?: @{};
+                                    report[@"supportedBands"] = supportedBands ?: @{};
+                                } else {
+                                    report[@"bandInfoError"] = bandError.localizedDescription ?: @"(nil)";
+                                }
+                            }
+
+                            // Cell Monitor (async - refresh + copy)
+                            if (ctHandle && [client respondsToSelector:@selector(refreshCellMonitor:completion:)] &&
+                                [client respondsToSelector:@selector(copyCellInfo:completion:)]) {
+                                dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+                                __block NSError *refreshError = nil;
+                                [client refreshCellMonitor:context completion:^(NSError *error) {
+                                    refreshError = error;
+                                    dispatch_semaphore_signal(sema);
+                                }];
+                                dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
+
+                                if (refreshError) {
+                                    report[@"cellMonitorRefreshError"] = refreshError.localizedDescription;
+                                } else {
+                                    usleep(500000);
+                                    dispatch_semaphore_t copySema = dispatch_semaphore_create(0);
+                                    __block id cellInfoResult = nil;
+                                    __block NSError *cellInfoError = nil;
+                                    [client copyCellInfo:context completion:^(id cellInfo, NSError *error) {
+                                        cellInfoResult = cellInfo;
+                                        cellInfoError = error;
+                                        dispatch_semaphore_signal(copySema);
+                                    }];
+                                    dispatch_semaphore_wait(copySema, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
+
+                                    if (cellInfoError) {
+                                        report[@"cellMonitorError"] = cellInfoError.localizedDescription;
+                                    } else if (cellInfoResult) {
+                                        NSArray *legacyInfo = nil;
+                                        @try {
+                                            legacyInfo = [cellInfoResult valueForKey:@"legacyInfo"];
+                                        } @catch (NSException *e) {
+                                            report[@"cellMonitorParseError"] = [NSString stringWithFormat:@"legacyInfo access failed: %@", e.reason ?: @"(no reason)"];
+                                        }
+                                        if (legacyInfo) {
+                                            NSMutableArray *servingCells = [NSMutableArray array];
+                                            NSMutableArray *allCells = [NSMutableArray array];
+                                            for (NSDictionary *cellDict in legacyInfo) {
+                                                if (![cellDict isKindOfClass:[NSDictionary class]]) continue;
+                                                NSString *cellType = cellDict[(__bridge NSString *)CCMK_kCTCellMonitorCellType(ctHandle)];
+                                                NSString *rat = cellDict[(__bridge NSString *)CCMK_kCTCellMonitorCellRadioAccessTechnology(ctHandle)];
+                                                NSNumber *isSA = cellDict[(__bridge NSString *)CCMK_kCTCellMonitorIsSA(ctHandle)];
+                                                NSNumber *nrarfcn = cellDict[(__bridge NSString *)CCMK_kCTCellMonitorNRARFCN(ctHandle)];
+                                                NSNumber *channel = cellDict[(__bridge NSString *)CCMK_kCTCellMonitorChannelNumber(ctHandle)];
+                                                NSNumber *band = cellDict[(__bridge NSString *)CCMK_kCTCellMonitorBandInfo(ctHandle)];
+                                                NSNumber *bw = cellDict[(__bridge NSString *)CCMK_kCTCellMonitorBandwidth(ctHandle)];
+                                                NSNumber *pci = cellDict[(__bridge NSString *)CCMK_kCTCellMonitorPCI(ctHandle)];
+                                                NSNumber *cellId = cellDict[(__bridge NSString *)CCMK_kCTCellMonitorCellId(ctHandle)];
+                                                NSNumber *tac = cellDict[(__bridge NSString *)CCMK_kCTCellMonitorTAC(ctHandle)];
+                                                NSString *mcc = cellDict[(__bridge NSString *)CCMK_kCTCellMonitorMCC(ctHandle)];
+                                                NSString *mnc = cellDict[(__bridge NSString *)CCMK_kCTCellMonitorMNC(ctHandle)];
+                                                NSNumber *rsrp = cellDict[(__bridge NSString *)CCMK_kCTCellMonitorRSRP(ctHandle)];
+                                                NSNumber *rsrq = cellDict[(__bridge NSString *)CCMK_kCTCellMonitorRSRQ(ctHandle)];
+                                                NSNumber *snr = cellDict[(__bridge NSString *)CCMK_kCTCellMonitorSNR(ctHandle)];
+                                                NSNumber *gscn = cellDict[(__bridge NSString *)CCMK_kCTCellMonitorGSCN(ctHandle)];
+
+                                                NSMutableDictionary *parsed = [NSMutableDictionary dictionary];
+                                                if (cellType) parsed[@"cellType"] = cellType;
+                                                if (rat) parsed[@"rat"] = rat;
+                                                if (isSA) parsed[@"isSA"] = isSA;
+                                                if (nrarfcn) parsed[@"nrarfcn"] = nrarfcn;
+                                                if (channel) parsed[@"channelNumber"] = channel;
+                                                if (band) parsed[@"band"] = band;
+                                                if (bw) parsed[@"bandwidth"] = bw;
+                                                if (pci) parsed[@"pci"] = pci;
+                                                if (cellId) parsed[@"cellId"] = cellId;
+                                                if (tac) parsed[@"tac"] = tac;
+                                                if (mcc) parsed[@"mcc"] = mcc;
+                                                if (mnc) parsed[@"mnc"] = mnc;
+                                                if (rsrp) parsed[@"rsrp"] = rsrp;
+                                                if (rsrq) parsed[@"rsrq"] = rsrq;
+                                                if (snr) parsed[@"snr"] = snr;
+                                                if (gscn) parsed[@"gscn"] = gscn;
+                                                [allCells addObject:parsed];
+                                                if ([cellType isEqual:(__bridge NSString *)CCMK_kCTCellMonitorCellTypeServing(ctHandle)]) {
+                                                    [servingCells addObject:parsed];
+                                                }
+                                            }
+                                            report[@"servingCells"] = servingCells;
+                                            report[@"allCells"] = allCells;
+                                        } else {
+                                            report[@"cellMonitorRaw"] = [cellInfoResult description];
+                                        }
+                                    } else {
+                                        report[@"cellMonitorResult"] = @"(nil)";
+                                    }
+                                }
+                            }
+
+                            result[@"slot1"] = report;
+                        }];
+                    }
+                }
+            }
+        }
+        } @catch (NSException *exception) {
+            failure = [NSString stringWithFormat:@"Cell monitor probe raised %@: %@", exception.name, exception.reason ?: @"(no reason)"];
+        }
+
+        result[@"timestamp"] = @([[NSDate date] timeIntervalSince1970]);
+        result[@"error"] = failure ?: @"";
+        [result writeToFile:CCNMCellMonitorProbePath() atomically:YES];
+
+        NSString *message = failure ?: CCNMReadableObject(result[@"slot1"]);
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            CCNMRootListController *strongSelf = weakSelf;
+            if (!strongSelf.view.window) return;
+
+            NSString *title = failure ? @"Cell monitor probe failed" : @"Serving cell probe result";
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleAlert];
+            if (!failure) {
+                [alert addAction:[UIAlertAction actionWithTitle:@"Copy" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+                    [UIPasteboard generalPasteboard].string = message;
+                }]];
+            }
+            [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+            [strongSelf presentViewController:alert animated:YES completion:nil];
         });
     });
 }

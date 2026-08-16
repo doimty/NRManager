@@ -122,6 +122,18 @@
 
 		<dict>
 			<key>cell</key> 					<string>PSGroupCell</string>
+			<key>label</key> 					<string>Serving Cell Telemetry</string>
+			<key>footerText</key> 				<string>Read-only. Queries current serving cell (RAT, band, PCI, frequency, SA/NSA), NR status, and RAT selection without changing any modem settings.</string>
+		</dict>
+
+		<dict>
+			<key>cell</key> 					<string>PSButtonCell</string>
+			<key>label</key> 					<string>Query Serving Cell + NR Status</string>
+			<key>action</key> 					<string>showServingCellProbe:</string>
+		</dict>
+
+		<dict>
+			<key>cell</key> 					<string>PSGroupCell</string>
 			<key>label</key> 					<string>Write Authorization Experiment</string>
 			<key>footerText</key> 				<string>Experimental. Slot 1 only. Saves a full snapshot, writes the identical active-band set, verifies it, then restores and verifies the snapshot. It does not select or remove any band.</string>
 		</dict>
