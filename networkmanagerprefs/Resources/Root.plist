@@ -123,12 +123,12 @@
 		<dict>
 			<key>cell</key> 					<string>PSGroupCell</string>
 			<key>label</key> 					<string>Serving Cell Telemetry</string>
-			<key>footerText</key> 				<string>Read-only. Queries current serving cell (RAT, band, PCI, frequency, SA/NSA), NR status, and RAT selection without changing any modem settings.</string>
+			<key>footerText</key> 				<string>Read-only. Start active cellular traffic, then sample for 10 seconds. A negative NR result means not observed in that window, not unsupported.</string>
 		</dict>
 
 		<dict>
 			<key>cell</key> 					<string>PSButtonCell</string>
-			<key>label</key> 					<string>Query Serving Cell + NR Status</string>
+			<key>label</key> 					<string>Sample Serving Cells (10s)</string>
 			<key>action</key> 					<string>showServingCellProbe:</string>
 		</dict>
 

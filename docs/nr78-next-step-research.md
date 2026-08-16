@@ -8,7 +8,7 @@
 
 ## 核心结论
 
-iOS 15 的 **Cell Monitor** 私有 API 提供了一个**纯只读、无需写入 modem** 的途径，可以同时回答：
+iOS 15 的 **Cell Monitor** 私有 API 提供了一个**纯只读、无需写入 modem** 的途径，可以回答当前返回的小区条目，但不能保证一次快照包含所有已配置载波：
 - 当前 serving cell 的 RAT（LTE / NR NSA / NR SA）
 - LTE PCC（主载波）的频点、PCI、band
 - NR 辅载波（NSA）或 serving band（SA）的频点、PCI、band
@@ -61,10 +61,11 @@ _CTServerConnectionCellMonitorStop(connection, context)
 | `kCTCellMonitorCellRadioAccessTechnology` | NSString | `LTE` / `NR` / `UMTS` / `GSM` |
 | `kCTCellMonitorIsSA` | NSNumber(bool) | `true` = NR SA, `false` = NR NSA |
 | `kCTCellMonitorNRARFCN` | NSNumber | NR 绝对频点号 |
-| `kCTCellMonitorChannelNumber` | NSNumber | LTE/UMTS/GSM 频点号 |
+| `kCTCellMonitorChannelNumber` | NSNumber | 部分系统版本中的通用频点号 |
 | `kCTCellMonitorBandInfo` | NSNumber | 频段号（如 3, 78） |
 | `kCTCellMonitorBandwidth` | NSNumber | 带宽 (MHz) |
-| `kCTCellMonitorPCI` | NSNumber | 物理小区 ID |
+| `kCTCellMonitorPCI` | NSNumber | 部分系统版本中的物理小区 ID |
+| `kCTCellMonitorPID` | NSNumber | 目标 iPhone14,3 / iOS 15.1.1 样本中的值与 LTE PCI 一致 |
 | `kCTCellMonitorGSCN` | NSNumber | 全局同步信道号 |
 | `kCTCellMonitorSCS` | NSNumber | 子载波间隔 |
 | `kCTCellMonitorCellId` | NSNumber | 小区标识 |
@@ -78,23 +79,29 @@ _CTServerConnectionCellMonitorStop(connection, context)
 | `kCTCellMonitorBaseStationId` | NSNumber | 基站 ID |
 | `kCTCellMonitorSectorId` | NSString | 扇区 ID |
 | `kCTCellMonitorTimingAdvance` | NSNumber | 时间提前量 |
-| `kCTCellMonitorDeploymentType` | NSString | 部署类型 |
+| `kCTCellMonitorDeploymentType` | NSNumber/NSString | 部署类型；目标设备样本返回 NSNumber |
 | `kCTCellMonitorLAC` | NSNumber | 位置区码 |
 | `kCTCellMonitorPSC` | NSNumber | 主扰码 (UMTS) |
-| `kCTCellMonitorUARFCN` | NSNumber | UMTS 频点 |
+| `kCTCellMonitorUARFCN` | NSNumber | UMTS 频点；目标设备 LTE B3 样本中的值落在 B3 EARFCN 范围 |
 | `kCTCellMonitorARFCN` | NSNumber | GSM 频点 |
 
 ### 1.3 NSA 场景下的行为
 
-当设备处于 NR NSA 时，Cell Monitor 会同时返回：
-- **一条 LTE 小区**: `cellType=Serving`, `cellRadioAccessTechnology=LTE`, `channelNumber`=EARFCN, `bandInfo`=LTE band
-- **一条 NR 小区**: `cellType=Serving`, `cellRadioAccessTechnology=NR`, `isSA=false`, `nrarfcn`=NRARFCN, `bandInfo`=NR band
+目标设备 iOS 15.1.1 的首轮实机结果修正了原先的假设：`currentRat` 可以是
+`CTRadioAccessTechnologyNRNSA`，而同一时刻的 Cell Monitor 快照只返回 LTE serving
+cell。该 LTE 条目使用 `kCTCellMonitorPID` 表示 PCI，使用
+`kCTCellMonitorUARFCN` 表示 EARFCN。
 
-当设备处于 NR SA 时，只返回一条 NR 小区，`isSA=true`。
+这不证明 NR n78 当时正在承载流量，也不证明 Cell Monitor 永远不会返回 NR 条目。
+NSA 的 NR secondary cell 可能在空闲时被释放；只有实际返回的 NR serving 条目及其
+`NRARFCN`/band 才是当前 NR 载波证据。`cellmonprobe2` 因此会在首次刷新后以 1 秒间隔
+采集 10 份快照。实机应先启动持续蜂窝数据流量，再触发采样，检验目标网络是否会暴露
+LTE PCC 与 NR secondary cell。该版本尚待目标机复跑；复跑必须同时确认三个新符号已
+解析，以及规范化字段和来源标签实际出现在输出中。
 
-当设备只有 LTE 时，只返回 LTE 小区。
-
-这意味着 **一次 `copyCellInfo:` 调用就能同时回答 LoRA 问的所有问题**。
+当设备处于 NR SA 且快照返回 NR serving cell 时，预期 `isSA=true`；只有 LTE 时则只
+返回 LTE 小区。因此，一次 `copyCellInfo:` 只能回答该快照实际包含的条目，不能从 RAT
+状态或 allowed-band 列表补推一个缺失的 NR serving cell。
 
 ---
 
@@ -102,7 +109,7 @@ _CTServerConnectionCellMonitorStop(connection, context)
 
 | API | 读/写 | 能回答什么 | 限制 |
 |---|---|---|---|
-| **Cell Monitor** | 只读 | serving cell 的 RAT、频点、band、PCI、信号强度 | 需先 `start`，`CTCellInfo.legacyInfo` 是字典数组 |
+| **Cell Monitor** | 只读 | 快照中小区的 RAT、频点、band、PCI、信号强度 | NSA 空闲快照可能只含 LTE PCC；`CTCellInfo.legacyInfo` 是字典数组 |
 | `getBandInfo:error:` | 只读 | active/supported bands 字典（同 `activeBands`） | 已证明是 allowed-set，不是 serving |
 | `getCurrentRat:error:` | 只读 | 当前 RAT 字符串（NR/LTE/etc） | 不区分 NSA/SA，不含频点 |
 | `copyRadioAccessTechnology:error:` | 只读 | RAT 字符串 | 同上 |
@@ -155,21 +162,24 @@ kCTRegistrationRATSelection11 → NR
 ```
 1. 获取 CTXPCServiceSubscriptionContext（slot 1）
 2. 调用 refreshCellMonitor:completion: 触发刷新
-3. 调用 copyCellInfo:completion: 获取 CTCellInfo
-4. 遍历 legacyInfo 数组，按 cellType 过滤
-5. 对 cellType=Serving 的条目输出：
+3. 首次等待 0.5 秒，然后以 1 秒间隔调用 10 次 copyCellInfo:completion:
+4. 每次独立保留 CTCellInfo、legacyInfo、解析结果、时间戳和失败状态
+5. 遍历每份 legacyInfo 数组，按 cellType 过滤
+6. 对 cellType=Serving 的条目输出：
    - cellRadioAccessTechnology → NR/LTE/UMTS
    - isSA (NR only) → true/false
    - bandInfo → 频段号
-   - nrarfcn (NR) / channelNumber (LTE)
-   - PCI
+   - `nrarfcn` / `channelNumber` / `uarfcn`，并记录规范化 `frequency` 的来源
+   - `pci` / `pid`，并记录规范化 `physicalCellId` 的来源
    - cellId / TAC / MCC / MNC
-6. 输出所有频段条目（serving + neighbor）的原始字典
+7. 汇总所有 serving 条目；只有样本中明确的 NR serving 条目才能将 nrServingCellObserved 置为 true
+8. 输出所有频段条目（serving + neighbor）的原始字典
 ```
 
 **成功标准**：
-- 区分 LTE PCC、NR NSA 辅载波、NR SA serving band
+- 对实际返回的条目区分 LTE PCC、NR NSA 辅载波、NR SA serving band
 - 输出各频段各自的实际频点号
+- NR 条目缺失时保持“未观测到”，不从 `currentRat`、`activeBands` 或 `supportedBands` 推断 n78
 - 不写 modem，不改变设备状态
 
 ### 探针 B：RAT 状态快照（辅助）
@@ -217,7 +227,7 @@ kCTRegistrationRATSelection11 → NR
 
 ### 立即做（不写 modem）
 
-1. **探针 A：Serving Cell 遥测** —— 用 Cell Monitor 回答当前设备实际驻留什么频段
+1. **探针 A：Serving Cell 遥测** —— 已确认目标设备旧包的 LTE 原始 shape，并实现 10 秒连续采样；下一轮验证新解析器输出并在持续蜂窝数据流量期间捕获 NR secondary cell
 2. **探针 C：生命周期插桩** —— 写入首轮观察期日志，定位为什么没走到 60 秒
 3. **探针 B：RAT 状态快照** —— 辅助确认当前 RAT 模式
 
@@ -238,10 +248,12 @@ kCTRegistrationRATSelection11 → NR
 
 | 缺口 | 严重程度 | 如何填补 |
 |---|---|---|
-| Cell Monitor 在 iOS 15.1.1 的实际行为未验证 | 高 | 探针 A 首次调用即可验证 |
-| `kCTCellMonitorIsSA` 在 NSA 下是否返回包含 NR 小区 | 中 | 探针 A 输出原始字典 |
+| 目标机旧包返回的 LTE 原始 schema | 已填补 | 原始字典确认 `PID`/`UARFCN`/数值型 `DeploymentType`；新解析器输出仍待复跑 |
+| NSA 活跃流量下是否返回 NR secondary cell | 高 | 使用 `cellmonprobe2` 在持续蜂窝数据传输期间采样；逐次原始字典已保留 |
+| 一次 refresh 后连续 copy 是否返回更新快照 | 高 | 对比 10 份样本的原始字典和 serving-cell 变化；完全相同只能证明本次未观察到更新，不能排除缓存 |
+| `kCTCellMonitorIsSA` 在 NSA NR 条目中的实际值 | 中 | 捕获到 NR 条目后核对原始字典 |
 | `refreshCellMonitor` 是否需要 `start` 先调用 | 中 | 在已有 `_CTServerConnection` 的上下文测试 |
-| NSA 下 LTE 和 NR 小区是否同时为 `cellType=Serving` | 低 | 参考其他 iOS 15 设备报告 |
+| NSA 活跃时 LTE 与 NR 是否同时标为 `Serving` | 中 | 不预设 schema，以实机连续样本为准 |
 
 ---
 

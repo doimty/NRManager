@@ -70,6 +70,9 @@ static const useconds_t CCNMBandReadBackPollIntervalMicroseconds = 1000000;
 static const NSUInteger CCNMBandReadBackMaximumAttempts = 121;
 static const long long CCNMMaximumExpectedBandIdentifier = 1024;
 static const NSTimeInterval CCNMNR78ObservationSeconds = 60.0;
+static const NSUInteger CCNMCellMonitorSampleCount = 10;
+static const useconds_t CCNMCellMonitorInitialDelayMicroseconds = 500000;
+static const useconds_t CCNMCellMonitorSampleIntervalMicroseconds = 1000000;
 static BOOL CCNMBandOperationInProgress = NO;
 static BOOL CCNMRecoveryOperationInProgress = NO;
 static BOOL CCNMManualRestoreInProgress = NO;
@@ -187,9 +190,12 @@ static NSArray<NSString *> *CCNMCellMonitorSymbolNames(void) {
             @"kCTCellMonitorIsSA",
             @"kCTCellMonitorNRARFCN",
             @"kCTCellMonitorChannelNumber",
+            @"kCTCellMonitorUARFCN",
             @"kCTCellMonitorBandInfo",
             @"kCTCellMonitorBandwidth",
+            @"kCTCellMonitorDeploymentType",
             @"kCTCellMonitorPCI",
+            @"kCTCellMonitorPID",
             @"kCTCellMonitorCellId",
             @"kCTCellMonitorTAC",
             @"kCTCellMonitorMCC",
@@ -332,6 +338,122 @@ static void CCNMSetProbeField(NSMutableDictionary *fields, NSString *name, id va
     if (safeValue) {
         fields[name] = safeValue;
     }
+}
+
+static NSMutableDictionary *CCNMParseCellMonitorSnapshot(id cellInfoResult,
+                                                          NSDictionary<NSString *, NSString *> *cellMonitorSymbols) {
+    NSMutableDictionary *snapshot = [@{ @"cellMonitorSucceeded": @NO } mutableCopy];
+    snapshot[@"cellInfoRuntimeClass"] = NSStringFromClass([cellInfoResult class]) ?: @"(unknown)";
+    snapshot[@"cellInfoRaw"] = CCNMTypedPropertyListEvidence(cellInfoResult);
+
+    id legacyInfo = nil;
+    @try {
+        if ([cellInfoResult respondsToSelector:@selector(legacyInfo)]) {
+            legacyInfo = [(id<CCNMCellInfo>)cellInfoResult legacyInfo];
+        } else {
+            snapshot[@"cellMonitorParseError"] = @"CTCellInfo does not expose legacyInfo on this runtime.";
+        }
+    } @catch (NSException *exception) {
+        snapshot[@"cellMonitorParseError"] = [NSString stringWithFormat:@"legacyInfo access raised %@: %@", exception.name, exception.reason ?: @"(no reason)"];
+    }
+
+    snapshot[@"legacyInfoRuntimeClass"] = legacyInfo ? (NSStringFromClass([legacyInfo class]) ?: @"(unknown)") : @"(nil)";
+    snapshot[@"legacyInfoRaw"] = CCNMTypedPropertyListEvidence(legacyInfo);
+    if (![legacyInfo isKindOfClass:[NSArray class]]) {
+        if (legacyInfo) {
+            snapshot[@"cellMonitorParseError"] = @"legacyInfo is not an array on this runtime.";
+        } else if (!snapshot[@"cellMonitorParseError"]) {
+            snapshot[@"cellMonitorParseError"] = @"legacyInfo is nil.";
+        }
+        return snapshot;
+    }
+
+    NSMutableArray *servingCells = [NSMutableArray array];
+    NSMutableArray *allCells = [NSMutableArray array];
+    NSMutableArray *entryResults = [NSMutableArray array];
+    NSUInteger entryIndex = 0;
+    for (id legacyEntry in legacyInfo) {
+        NSMutableDictionary *entryResult = [@{
+            @"index": @(entryIndex++),
+            @"runtimeClass": NSStringFromClass([legacyEntry class]) ?: @"(unknown)",
+            @"raw": CCNMTypedPropertyListEvidence(legacyEntry)
+        } mutableCopy];
+        if (![legacyEntry isKindOfClass:[NSDictionary class]]) {
+            entryResult[@"parsed"] = @NO;
+            entryResult[@"reason"] = @"legacyInfo entry is not a dictionary";
+            [entryResults addObject:entryResult];
+            continue;
+        }
+
+        NSDictionary *cellDict = legacyEntry;
+        id cellType = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorCellType");
+        id rat = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorCellRadioAccessTechnology");
+        id isSA = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorIsSA");
+        id nrarfcn = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorNRARFCN");
+        id channel = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorChannelNumber");
+        id uarfcn = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorUARFCN");
+        id band = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorBandInfo");
+        id bandwidth = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorBandwidth");
+        id deploymentType = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorDeploymentType");
+        id pci = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorPCI");
+        id pid = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorPID");
+        id cellId = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorCellId");
+        id tac = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorTAC");
+        id mcc = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorMCC");
+        id mnc = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorMNC");
+        id rsrp = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorRSRP");
+        id rsrq = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorRSRQ");
+        id snr = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorSNR");
+        id gscn = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorGSCN");
+
+        // The target iPhone14,3 / iOS 15.1.1 sample used PID/UARFCN; prefer explicit PCI/newer frequency fields when present.
+        id physicalCellId = pci ?: pid;
+        NSString *physicalCellIdSource = pci ? @"kCTCellMonitorPCI" : (pid ? @"kCTCellMonitorPID" : nil);
+        id frequency = nrarfcn ?: channel ?: uarfcn;
+        NSString *frequencySource = nrarfcn ? @"kCTCellMonitorNRARFCN" :
+            (channel ? @"kCTCellMonitorChannelNumber" : (uarfcn ? @"kCTCellMonitorUARFCN" : nil));
+
+        NSMutableDictionary *parsed = [NSMutableDictionary dictionary];
+        CCNMSetProbeField(parsed, @"cellType", cellType);
+        CCNMSetProbeField(parsed, @"rat", rat);
+        CCNMSetProbeField(parsed, @"isSA", isSA);
+        CCNMSetProbeField(parsed, @"nrarfcn", nrarfcn);
+        CCNMSetProbeField(parsed, @"channelNumber", channel);
+        CCNMSetProbeField(parsed, @"uarfcn", uarfcn);
+        CCNMSetProbeField(parsed, @"frequency", frequency);
+        CCNMSetProbeField(parsed, @"frequencySource", frequencySource);
+        CCNMSetProbeField(parsed, @"band", band);
+        CCNMSetProbeField(parsed, @"bandwidth", bandwidth);
+        CCNMSetProbeField(parsed, @"deploymentType", deploymentType);
+        CCNMSetProbeField(parsed, @"pci", pci);
+        CCNMSetProbeField(parsed, @"pid", pid);
+        CCNMSetProbeField(parsed, @"physicalCellId", physicalCellId);
+        CCNMSetProbeField(parsed, @"physicalCellIdSource", physicalCellIdSource);
+        CCNMSetProbeField(parsed, @"cellId", cellId);
+        CCNMSetProbeField(parsed, @"tac", tac);
+        CCNMSetProbeField(parsed, @"mcc", mcc);
+        CCNMSetProbeField(parsed, @"mnc", mnc);
+        CCNMSetProbeField(parsed, @"rsrp", rsrp);
+        CCNMSetProbeField(parsed, @"rsrq", rsrq);
+        CCNMSetProbeField(parsed, @"snr", snr);
+        CCNMSetProbeField(parsed, @"gscn", gscn);
+
+        entryResult[@"parsed"] = @YES;
+        entryResult[@"fields"] = parsed;
+        [entryResults addObject:entryResult];
+        [allCells addObject:parsed];
+
+        id servingCellType = cellMonitorSymbols[@"kCTCellMonitorCellTypeServing"];
+        if (servingCellType && [cellType isEqual:servingCellType]) {
+            [servingCells addObject:parsed];
+        }
+    }
+
+    snapshot[@"servingCells"] = servingCells;
+    snapshot[@"allCells"] = allCells;
+    snapshot[@"cellMonitorEntryResults"] = entryResults;
+    snapshot[@"cellMonitorSucceeded"] = @YES;
+    return snapshot;
 }
 
 static NSString *CCNMSysctlString(const char *name) {
@@ -2398,6 +2520,9 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
                             NSMutableDictionary *report = [NSMutableDictionary dictionary];
                             report[@"slotID"] = @1;
                             report[@"cellMonitorSucceeded"] = @NO;
+                            report[@"cellMonitorRequestedSampleCount"] = @(CCNMCellMonitorSampleCount);
+                            report[@"cellMonitorSamplingStatus"] = @"failed";
+                            report[@"cellMonitorSamplingPartial"] = @NO;
                             if ([context respondsToSelector:@selector(isSimPresent)]) report[@"isSimPresent"] = @([context isSimPresent]);
                             if ([context respondsToSelector:@selector(isSimGood)]) report[@"isSimGood"] = @([context isSimGood]);
 
@@ -2571,115 +2696,106 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
                                 } else if (refreshError) {
                                     report[@"cellMonitorRefreshError"] = refreshError.localizedDescription ?: @"(no description)";
                                 } else {
-                                    usleep(500000);
-                                    dispatch_semaphore_t copySema = dispatch_semaphore_create(0);
-                                    __block id cellInfoResult = nil;
-                                    __block NSError *cellInfoError = nil;
-                                    [client copyCellInfo:context completion:^(id cellInfo, NSError *error) {
-                                        cellInfoResult = cellInfo;
-                                        cellInfoError = error;
-                                        dispatch_semaphore_signal(copySema);
-                                    }];
-                                    long copyWaitResult = dispatch_semaphore_wait(copySema, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
+                                    NSMutableArray *samples = [NSMutableArray array];
+                                    NSMutableArray *observedServingCells = [NSMutableArray array];
+                                    NSUInteger completedSampleCount = 0;
+                                    NSUInteger successfulSampleCount = 0;
+                                    NSString *samplingFailure = nil;
+                                    BOOL nrServingCellObserved = NO;
+                                    report[@"cellMonitorSampleIntervalSeconds"] = @(CCNMCellMonitorSampleIntervalMicroseconds / 1000000.0);
+                                    report[@"cellMonitorSamplingStartedAt"] = @([[NSDate date] timeIntervalSince1970]);
 
-                                    if (!CCNMProbeWaitCompleted(copyWaitResult)) {
-                                        report[@"cellMonitorCopyTimedOut"] = @YES;
-                                    } else if (cellInfoError) {
-                                        report[@"cellMonitorError"] = cellInfoError.localizedDescription ?: @"(no description)";
-                                    } else if (cellInfoResult) {
-                                        report[@"cellInfoRuntimeClass"] = NSStringFromClass([cellInfoResult class]) ?: @"(unknown)";
-                                        report[@"cellInfoRaw"] = CCNMTypedPropertyListEvidence(cellInfoResult);
-
-                                        id legacyInfo = nil;
-                                        @try {
-                                            if ([cellInfoResult respondsToSelector:@selector(legacyInfo)]) {
-                                                legacyInfo = [(id<CCNMCellInfo>)cellInfoResult legacyInfo];
-                                            } else {
-                                                report[@"cellMonitorParseError"] = @"CTCellInfo does not expose legacyInfo on this runtime.";
-                                            }
-                                        } @catch (NSException *exception) {
-                                            report[@"cellMonitorParseError"] = [NSString stringWithFormat:@"legacyInfo access raised %@: %@", exception.name, exception.reason ?: @"(no reason)"];
+                                    usleep(CCNMCellMonitorInitialDelayMicroseconds);
+                                    for (NSUInteger sampleIndex = 0; sampleIndex < CCNMCellMonitorSampleCount; sampleIndex++) {
+                                        if (sampleIndex > 0) {
+                                            usleep(CCNMCellMonitorSampleIntervalMicroseconds);
                                         }
 
-                                        report[@"legacyInfoRuntimeClass"] = legacyInfo ? (NSStringFromClass([legacyInfo class]) ?: @"(unknown)") : @"(nil)";
-                                        report[@"legacyInfoRaw"] = CCNMTypedPropertyListEvidence(legacyInfo);
+                                        NSTimeInterval sampledAt = [[NSDate date] timeIntervalSince1970];
+                                        NSMutableDictionary *sample = [@{
+                                            @"index": @(sampleIndex),
+                                            @"sampledAt": @(sampledAt),
+                                            @"cellMonitorSucceeded": @NO
+                                        } mutableCopy];
+                                        dispatch_semaphore_t copySema = dispatch_semaphore_create(0);
+                                        __block id cellInfoResult = nil;
+                                        __block NSError *cellInfoError = nil;
+                                        [client copyCellInfo:context completion:^(id cellInfo, NSError *error) {
+                                            cellInfoResult = cellInfo;
+                                            cellInfoError = error;
+                                            dispatch_semaphore_signal(copySema);
+                                        }];
+                                        long copyWaitResult = dispatch_semaphore_wait(copySema, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
+                                        completedSampleCount++;
 
-                                        if ([legacyInfo isKindOfClass:[NSArray class]]) {
-                                            NSMutableArray *servingCells = [NSMutableArray array];
-                                            NSMutableArray *allCells = [NSMutableArray array];
-                                            NSMutableArray *entryResults = [NSMutableArray array];
-                                            NSUInteger entryIndex = 0;
-                                            for (id legacyEntry in legacyInfo) {
-                                                NSMutableDictionary *entryResult = [@{
-                                                    @"index": @(entryIndex++),
-                                                    @"runtimeClass": NSStringFromClass([legacyEntry class]) ?: @"(unknown)",
-                                                    @"raw": CCNMTypedPropertyListEvidence(legacyEntry)
-                                                } mutableCopy];
-                                                if (![legacyEntry isKindOfClass:[NSDictionary class]]) {
-                                                    entryResult[@"parsed"] = @NO;
-                                                    entryResult[@"reason"] = @"legacyInfo entry is not a dictionary";
-                                                    [entryResults addObject:entryResult];
-                                                    continue;
-                                                }
-
-                                                NSDictionary *cellDict = legacyEntry;
-                                                id cellType = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorCellType");
-                                                id rat = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorCellRadioAccessTechnology");
-                                                id isSA = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorIsSA");
-                                                id nrarfcn = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorNRARFCN");
-                                                id channel = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorChannelNumber");
-                                                id band = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorBandInfo");
-                                                id bandwidth = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorBandwidth");
-                                                id pci = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorPCI");
-                                                id cellId = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorCellId");
-                                                id tac = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorTAC");
-                                                id mcc = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorMCC");
-                                                id mnc = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorMNC");
-                                                id rsrp = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorRSRP");
-                                                id rsrq = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorRSRQ");
-                                                id snr = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorSNR");
-                                                id gscn = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorGSCN");
-
-                                                NSMutableDictionary *parsed = [NSMutableDictionary dictionary];
-                                                CCNMSetProbeField(parsed, @"cellType", cellType);
-                                                CCNMSetProbeField(parsed, @"rat", rat);
-                                                CCNMSetProbeField(parsed, @"isSA", isSA);
-                                                CCNMSetProbeField(parsed, @"nrarfcn", nrarfcn);
-                                                CCNMSetProbeField(parsed, @"channelNumber", channel);
-                                                CCNMSetProbeField(parsed, @"band", band);
-                                                CCNMSetProbeField(parsed, @"bandwidth", bandwidth);
-                                                CCNMSetProbeField(parsed, @"pci", pci);
-                                                CCNMSetProbeField(parsed, @"cellId", cellId);
-                                                CCNMSetProbeField(parsed, @"tac", tac);
-                                                CCNMSetProbeField(parsed, @"mcc", mcc);
-                                                CCNMSetProbeField(parsed, @"mnc", mnc);
-                                                CCNMSetProbeField(parsed, @"rsrp", rsrp);
-                                                CCNMSetProbeField(parsed, @"rsrq", rsrq);
-                                                CCNMSetProbeField(parsed, @"snr", snr);
-                                                CCNMSetProbeField(parsed, @"gscn", gscn);
-
-                                                entryResult[@"parsed"] = @YES;
-                                                entryResult[@"fields"] = parsed;
-                                                [entryResults addObject:entryResult];
-                                                [allCells addObject:parsed];
-
-                                                id servingCellType = cellMonitorSymbols[@"kCTCellMonitorCellTypeServing"];
-                                                if (servingCellType && [cellType isEqual:servingCellType]) {
-                                                    [servingCells addObject:parsed];
-                                                }
-                                            }
-                                            report[@"servingCells"] = servingCells;
-                                            report[@"allCells"] = allCells;
-                                            report[@"cellMonitorEntryResults"] = entryResults;
-                                            report[@"cellMonitorSucceeded"] = @YES;
-                                        } else if (legacyInfo) {
-                                            report[@"cellMonitorParseError"] = @"legacyInfo is not an array on this runtime.";
-                                        } else if (!report[@"cellMonitorParseError"]) {
-                                            report[@"cellMonitorParseError"] = @"legacyInfo is nil.";
+                                        if (!CCNMProbeWaitCompleted(copyWaitResult)) {
+                                            samplingFailure = @"copy timed out";
+                                            sample[@"cellMonitorCopyTimedOut"] = @YES;
+                                            report[@"cellMonitorCopyTimedOut"] = @YES;
+                                            [samples addObject:sample];
+                                            break;
                                         }
-                                    } else {
-                                        report[@"cellMonitorResult"] = @"(nil)";
+                                        if (cellInfoError) {
+                                            NSString *errorDescription = cellInfoError.localizedDescription ?: @"(no description)";
+                                            samplingFailure = errorDescription;
+                                            sample[@"cellMonitorError"] = errorDescription;
+                                            report[@"cellMonitorError"] = errorDescription;
+                                            [samples addObject:sample];
+                                            break;
+                                        }
+                                        if (!cellInfoResult) {
+                                            samplingFailure = @"copy completed without Cell Monitor data";
+                                            sample[@"cellMonitorResult"] = @"(nil)";
+                                            report[@"cellMonitorResult"] = @"(nil)";
+                                            [samples addObject:sample];
+                                            break;
+                                        }
+
+                                        NSMutableDictionary *snapshot = CCNMParseCellMonitorSnapshot(cellInfoResult, cellMonitorSymbols);
+                                        [sample addEntriesFromDictionary:snapshot];
+                                        [samples addObject:sample];
+                                        if (![snapshot[@"cellMonitorSucceeded"] boolValue]) {
+                                            if (!samplingFailure) {
+                                                samplingFailure = snapshot[@"cellMonitorParseError"] ?: @"Cell Monitor snapshot parsing failed";
+                                            }
+                                            if (successfulSampleCount == 0) {
+                                                [report addEntriesFromDictionary:snapshot];
+                                            }
+                                            continue;
+                                        }
+
+                                        successfulSampleCount++;
+                                        [report addEntriesFromDictionary:snapshot];
+                                        for (NSDictionary *servingCell in snapshot[@"servingCells"]) {
+                                            NSMutableDictionary *observation = [servingCell mutableCopy];
+                                            observation[@"sampleIndex"] = @(sampleIndex);
+                                            observation[@"sampledAt"] = @(sampledAt);
+                                            [observedServingCells addObject:observation];
+
+                                            NSString *servingRat = [servingCell[@"rat"] isKindOfClass:[NSString class]] ? servingCell[@"rat"] : nil;
+                                            if (CCNMCellMonitorRATIsNR(servingRat ? servingRat.UTF8String : NULL)) {
+                                                nrServingCellObserved = YES;
+                                            }
+                                        }
                                     }
+
+                                    CCNMCellMonitorSamplingStatus samplingStatus = CCNMClassifyCellMonitorSamplingStatus(
+                                        CCNMCellMonitorSampleCount, completedSampleCount, successfulSampleCount);
+                                    NSString *samplingStatusName = samplingStatus == CCNMCellMonitorSamplingComplete ? @"complete" :
+                                        (samplingStatus == CCNMCellMonitorSamplingPartial ? @"partial" : @"failed");
+                                    report[@"cellMonitorSamples"] = samples;
+                                    report[@"cellMonitorCompletedSampleCount"] = @(completedSampleCount);
+                                    report[@"cellMonitorSuccessfulSampleCount"] = @(successfulSampleCount);
+                                    report[@"cellMonitorSamplingStatus"] = samplingStatusName;
+                                    report[@"cellMonitorSamplingPartial"] = @(samplingStatus == CCNMCellMonitorSamplingPartial);
+                                    report[@"cellMonitorSamplingStoppedEarly"] = @(completedSampleCount < CCNMCellMonitorSampleCount);
+                                    report[@"cellMonitorSamplingCompletedAt"] = @([[NSDate date] timeIntervalSince1970]);
+                                    if (samplingFailure) {
+                                        report[@"cellMonitorSamplingFailure"] = samplingFailure;
+                                    }
+                                    report[@"observedServingCells"] = observedServingCells;
+                                    report[@"nrServingCellObserved"] = @(nrServingCellObserved);
+                                    report[@"cellMonitorSucceeded"] = @(samplingStatus == CCNMCellMonitorSamplingComplete);
                                 }
                             } else {
                                 if (!ctHandle) {
@@ -2710,12 +2826,17 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
             }
         }
         if (!failure && ![slotReport[@"cellMonitorSucceeded"] boolValue]) {
-            NSString *cellMonitorFailure = slotReport[@"cellMonitorRefreshError"] ?:
+            NSString *cellMonitorFailure = slotReport[@"cellMonitorSamplingFailure"] ?:
+                (slotReport[@"cellMonitorRefreshError"] ?:
                 (slotReport[@"cellMonitorRefreshTimedOut"] ? @"refresh timed out" :
                 (slotReport[@"cellMonitorCopyTimedOut"] ? @"copy timed out" :
                 (slotReport[@"cellMonitorError"] ?:
-                (slotReport[@"cellMonitorParseError"] ?: @"Cell Monitor data is unavailable."))));
-            failure = [NSString stringWithFormat:@"Cell Monitor did not produce fresh data: %@", cellMonitorFailure];
+                (slotReport[@"cellMonitorParseError"] ?: @"Cell Monitor data is unavailable.")))));
+            failure = [NSString stringWithFormat:@"Cell Monitor sampling %@ (%@/%@ successful): %@",
+                slotReport[@"cellMonitorSamplingStatus"] ?: @"failed",
+                slotReport[@"cellMonitorSuccessfulSampleCount"] ?: @0,
+                slotReport[@"cellMonitorRequestedSampleCount"] ?: @(CCNMCellMonitorSampleCount),
+                cellMonitorFailure];
         }
 
         result[@"timestamp"] = @([[NSDate date] timeIntervalSince1970]);
@@ -2727,13 +2848,22 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
             result[@"error"] = failure;
         }
 
-        NSString *message = failure ?: CCNMReadableObject(slotReport);
+        NSString *message = failure;
+        if (!message) {
+            message = [NSString stringWithFormat:
+                @"Captured %@/%@ Cell Monitor samples. Serving-cell observations: %@. NR serving cell observed: %@. A NO result means only that NR was not observed during this sampling window. Full evidence was saved to %@.",
+                slotReport[@"cellMonitorSuccessfulSampleCount"] ?: @0,
+                slotReport[@"cellMonitorRequestedSampleCount"] ?: @0,
+                @([slotReport[@"observedServingCells"] count]),
+                [slotReport[@"nrServingCellObserved"] boolValue] ? @"YES" : @"NO",
+                CCNMCellMonitorProbePath()];
+        }
 
         dispatch_async(dispatch_get_main_queue(), ^{
             CCNMRootListController *strongSelf = weakSelf;
             if (!strongSelf.view.window) return;
 
-            NSString *title = failure ? @"Cell monitor probe failed" : @"Serving cell probe result";
+            NSString *title = failure ? @"Cell monitor probe failed" : @"Serving cell sampling complete";
             UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleAlert];
             if (!failure) {
                 [alert addAction:[UIAlertAction actionWithTitle:@"Copy" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {

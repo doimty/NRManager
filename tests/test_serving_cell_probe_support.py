@@ -37,6 +37,15 @@ int main(void) {
     if (!CCNMProbeWaitCompleted(0)) return 7;
     if (CCNMProbeWaitCompleted(1)) return 8;
     if (CCNMProbeWaitCompleted(-1)) return 9;
+    if (CCNMClassifyCellMonitorSamplingStatus(10, 10, 10) != CCNMCellMonitorSamplingComplete) return 10;
+    if (CCNMClassifyCellMonitorSamplingStatus(10, 2, 1) != CCNMCellMonitorSamplingPartial) return 11;
+    if (CCNMClassifyCellMonitorSamplingStatus(10, 10, 9) != CCNMCellMonitorSamplingPartial) return 12;
+    if (CCNMClassifyCellMonitorSamplingStatus(10, 1, 0) != CCNMCellMonitorSamplingFailed) return 13;
+    if (CCNMClassifyCellMonitorSamplingStatus(0, 0, 0) != CCNMCellMonitorSamplingFailed) return 14;
+    if (CCNMCellMonitorRATIsNR(NULL)) return 15;
+    if (CCNMCellMonitorRATIsNR("kCTCellMonitorRadioAccessTechnologyLTE")) return 16;
+    if (!CCNMCellMonitorRATIsNR("kCTCellMonitorRadioAccessTechnologyNR")) return 17;
+    if (!CCNMCellMonitorRATIsNR("kCTCellMonitorRadioAccessTechnologyNRNSA")) return 18;
     return 0;
 }
 '''
@@ -105,16 +114,90 @@ int main(void) {
             "static NSArray<NSString *> *CCNMCellMonitorSymbolNames",
             "static NSString *CCNMSysctlString",
         )
+        parser = source_method(
+            "static NSMutableDictionary *CCNMParseCellMonitorSnapshot",
+            "static NSString *CCNMSysctlString",
+        )
         self.assertIn("dlsym(ctHandle, symbolName.UTF8String)", symbols)
         self.assertNotIn('"_" #name', symbols)
         self.assertIn("dispatch_once(&onceToken", symbols)
         self.assertIn("missingSymbols", symbols)
         self.assertIn('report[@"cellMonitorMissingSymbols"]', body)
-        self.assertIn("CCNMCellMonitorValue(cellDict, cellMonitorSymbols", body)
+        self.assertIn("CCNMCellMonitorValue(cellDict, cellMonitorSymbols", parser)
         self.assertNotIn("cellDict[(__bridge NSString *)CCMK_", body)
 
-    def test_raw_cell_monitor_evidence_preserves_runtime_types_and_unknown_entries(self):
+    def test_ios15_legacy_lte_keys_are_resolved_and_normalized(self):
+        parser = source_method(
+            "static NSMutableDictionary *CCNMParseCellMonitorSnapshot",
+            "static NSString *CCNMSysctlString",
+        )
+        symbols = source_method(
+            "static NSArray<NSString *> *CCNMCellMonitorSymbolNames",
+            "static NSDictionary<NSString *, NSString *> *CCNMCellMonitorSymbols",
+        )
+        for symbol in (
+            "kCTCellMonitorPID",
+            "kCTCellMonitorUARFCN",
+            "kCTCellMonitorDeploymentType",
+        ):
+            self.assertIn(f'@"{symbol}"', symbols)
+            self.assertIn(
+                f'CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"{symbol}")',
+                parser,
+            )
+
+        self.assertIn("id physicalCellId = pci ?: pid", parser)
+        self.assertIn("id frequency = nrarfcn ?: channel ?: uarfcn", parser)
+        for field in (
+            "pid",
+            "uarfcn",
+            "deploymentType",
+            "physicalCellId",
+            "physicalCellIdSource",
+            "frequency",
+            "frequencySource",
+        ):
+            self.assertIn(f'CCNMSetProbeField(parsed, @"{field}"', parser)
+
+    def test_bounded_sampling_preserves_each_snapshot_and_nr_observation(self):
         body = source_method("- (void)showServingCellProbe:", "- (void)confirmSameValueBandWrite:")
+        self.assertIn("CCNMCellMonitorSampleCount = 10", SOURCE)
+        self.assertIn("CCNMCellMonitorSampleIntervalMicroseconds = 1000000", SOURCE)
+        self.assertIn(
+            "for (NSUInteger sampleIndex = 0; sampleIndex < CCNMCellMonitorSampleCount; sampleIndex++)",
+            body,
+        )
+        for key in (
+            "cellMonitorSamples",
+            "cellMonitorRequestedSampleCount",
+            "cellMonitorCompletedSampleCount",
+            "cellMonitorSuccessfulSampleCount",
+            "cellMonitorSamplingStatus",
+            "cellMonitorSamplingPartial",
+            "cellMonitorSamplingFailure",
+            "observedServingCells",
+            "nrServingCellObserved",
+        ):
+            self.assertIn(f'report[@"{key}"]', body)
+        self.assertIn('sample[@"cellMonitorCopyTimedOut"] = @YES', body)
+        self.assertIn('sample[@"cellMonitorError"]', body)
+        self.assertIn('sample[@"cellMonitorResult"] = @"(nil)"', body)
+        self.assertIn("CCNMClassifyCellMonitorSamplingStatus", body)
+        self.assertIn("samplingStatus == CCNMCellMonitorSamplingComplete", body)
+        self.assertIn("samplingStatus == CCNMCellMonitorSamplingPartial", body)
+        self.assertNotIn("successfulSampleCount > 0", body)
+        self.assertIn("CCNMCellMonitorRATIsNR", body)
+        self.assertEqual(body.count("nrServingCellObserved = YES;"), 1)
+        self.assertNotIn('slotReport[@"currentRat"]', body[body.index("BOOL nrServingCellObserved"):])
+        self.assertIn('NR serving cell observed: %@', body)
+        self.assertNotIn("failure ?: CCNMReadableObject(slotReport)", body)
+        self.assertIn("break;", body)
+
+    def test_raw_cell_monitor_evidence_preserves_runtime_types_and_unknown_entries(self):
+        parser = source_method(
+            "static NSMutableDictionary *CCNMParseCellMonitorSnapshot",
+            "static NSString *CCNMSysctlString",
+        )
         evidence = source_method(
             "static id CCNMTypedPropertyListEvidence",
             "static NSString *CCNMSysctlString",
@@ -129,12 +212,12 @@ int main(void) {
             '@"description"',
         ):
             self.assertIn(token, evidence)
-        self.assertIn('report[@"cellInfoRaw"] = CCNMTypedPropertyListEvidence(cellInfoResult)', body)
-        self.assertIn('report[@"legacyInfoRaw"] = CCNMTypedPropertyListEvidence(legacyInfo)', body)
-        self.assertIn("for (id legacyEntry in legacyInfo)", body)
-        self.assertIn('entryResult[@"parsed"] = @NO', body)
-        self.assertIn('report[@"cellMonitorEntryResults"]', body)
-        self.assertNotIn("if (![cellDict isKindOfClass:[NSDictionary class]]) continue", body)
+        self.assertIn('snapshot[@"cellInfoRaw"] = CCNMTypedPropertyListEvidence(cellInfoResult)', parser)
+        self.assertIn('snapshot[@"legacyInfoRaw"] = CCNMTypedPropertyListEvidence(legacyInfo)', parser)
+        self.assertIn("for (id legacyEntry in legacyInfo)", parser)
+        self.assertIn('entryResult[@"parsed"] = @NO', parser)
+        self.assertIn('snapshot[@"cellMonitorEntryResults"]', parser)
+        self.assertNotIn("if (![cellDict isKindOfClass:[NSDictionary class]]) continue", parser)
 
     def test_async_callbacks_are_consumed_only_after_completed_waits(self):
         body = source_method("- (void)showServingCellProbe:", "- (void)confirmSameValueBandWrite:")
@@ -146,7 +229,8 @@ int main(void) {
             self.assertIn(f"long {wait_name} = dispatch_semaphore_wait", body)
             self.assertIn(f"if (!CCNMProbeWaitCompleted({wait_name}))", body)
             self.assertIn(f'report[@"{timeout_key}"] = @YES', body)
-        self.assertIn('report[@"cellMonitorSucceeded"] = @YES', body)
+        self.assertIn('report[@"cellMonitorSucceeded"] = @(samplingStatus == CCNMCellMonitorSamplingComplete)', body)
+        self.assertIn('report[@"cellMonitorSamplingPartial"] = @(samplingStatus == CCNMCellMonitorSamplingPartial)', body)
         self.assertNotIn("\n                                dispatch_semaphore_wait(", body)
 
     def test_private_async_selectors_are_outer_abi_checked_before_invocation(self):
