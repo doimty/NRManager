@@ -201,6 +201,18 @@ Load command 1
         )
         self.assertIn("telegram@2x.png", verify_release_package.FORBIDDEN_LEGACY_PAYLOAD_BASENAMES)
 
+    def test_arm64e_header_parser_accepts_mach_header_spacing(self) -> None:
+        self.assertTrue(
+            verify_release_package.has_arm64e_usr00_header(
+                "MH_MAGIC_64    ARM64          E USR00       DYLIB"
+            )
+        )
+        self.assertFalse(
+            verify_release_package.has_arm64e_usr00_header(
+                "MH_MAGIC_64    ARM64          ALL       DYLIB"
+            )
+        )
+
     def test_fat_otool_dependencies_exclude_headers_and_bundle_install_id(self) -> None:
         output = """/tmp/NetworkManager (architecture arm64):
 \t/Library/ControlCenter/Bundles/NetworkManager.bundle/NetworkManager (compatibility version 0.0.0, current version 0.0.0)
@@ -264,6 +276,10 @@ Load command 1
         self.assertIn("LC_DYLD_INFO_ONLY", verify_release_package.ROOTHIDE_RELEASE_LOAD_COMMANDS)
         self.assertNotIn("LC_DYLD_CHAINED_FIXUPS", verify_release_package.ROOTHIDE_RELEASE_LOAD_COMMANDS)
         self.assertNotIn("LC_VERSION_MIN_IPHONEOS", verify_release_package.ROOTHIDE_RELEASE_LOAD_COMMANDS)
+        self.assertIn(
+            "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics",
+            verify_release_package.ROOTHIDE_RELEASE_DEPENDENCIES["NetworkManagerPrefs"],
+        )
 
 
 if __name__ == "__main__":

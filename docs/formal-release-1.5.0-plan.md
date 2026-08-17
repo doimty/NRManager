@@ -243,15 +243,18 @@ CI must fail on:
 
 For each accepted artifact record source SHA, run ID, artifact ID, size, SHA256, control fields, file manifest, plist parse, and signature parse.
 
-Roothide requires both binaries to have:
+Roothide requires both bundles and both compiled maintainer guards to have:
 
 - arm64 + arm64e;
-- arm64e `ARM64 E USR00`;
+- arm64e subtype `ARM64 E USR00`;
 - minimum iOS 14.0 and SDK 17.5;
 - `LC_DYLD_INFO_ONLY` and `LC_CODE_SIGNATURE`;
 - no `LC_DYLD_CHAINED_FIXUPS`;
-- `@loader_path/.jbroot/usr/lib/libroothide.dylib`;
-- normalized load-command, dependency, and warning sets matching device-working run `30166854314`.
+- `@loader_path/.jbroot/usr/lib/libroothide.dylib` where the binary uses roothide APIs;
+- normalized load-command and dependency sets matching device-working run `30166854314`, with the formal Settings bundle's explicit public CoreGraphics dependency recorded;
+- ldid-readable signatures. Apple `codesign --verify` is report-only because ldid signatures are not Apple CodeSign objects.
+
+Rootless requires both bundles and both compiled maintainer guards to have arm64 + arm64e, arm64e `ARM64 E USR00`, exact minOS 14.0, the pinned SDK, `LC_CODE_SIGNATURE`, and either supported dyld fixup format. The roothide-only chained-fixup prohibition does not apply to the rootless lane.
 
 ## Device acceptance
 
