@@ -35,6 +35,16 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertEqual(result["failures"], [], result)
         self.assertEqual(result["forbidden"], [], result)
 
+    def test_external_theos_tree_is_not_treated_as_project_source(self) -> None:
+        self.assertIn("theos", verify_release_source.SKIP_PARTS)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dependency = root / "theos/vendor/templates/invalid.plist"
+            dependency.parent.mkdir(parents=True)
+            dependency.write_text("<not-a-project-plist>", encoding="utf-8")
+            self.assertEqual(verify_release_source.scan_forbidden_strings(root), [])
+            self.assertNotIn(dependency, list(verify_release_source.iter_source_text_files(root)))
+
     def test_forbidden_diagnostic_scanner_detects_discarded_action(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

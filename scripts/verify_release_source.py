@@ -70,7 +70,7 @@ TEXT_SUFFIXES = {
     ".yaml",
     ".yml",
 }
-SKIP_PARTS = {".git", ".theos", "build", "packages", "scripts", "tests", "docs"}
+SKIP_PARTS = {".git", ".theos", "build", "packages", "scripts", "tests", "docs", "theos"}
 
 
 def parse_debian_fields(text: str) -> Dict[str, str]:
