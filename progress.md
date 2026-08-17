@@ -119,6 +119,7 @@ A/B implementation baseline: `8ccdd37654ea8746aa2e98167cae1159d8e16b9a`
 - [x] Audit the diff for write-path changes, generated artifacts, warnings, and documentation drift.
 - [x] Resolve independent final-review findings, if any.
 - [x] Build the committed sampler in the pinned cloud environment and verify the release artifacts.
+- [x] Validate the schema-v4 adaptive result from the target device.
 
 ## Verification Evidence
 
@@ -128,6 +129,9 @@ A/B implementation baseline: `8ccdd37654ea8746aa2e98167cae1159d8e16b9a`
 - Committed source `1ab1162782050fc5cfef38b1a4bed57478b23dfa` built successfully in GitHub Actions run `31992579209` from branch `diagnostic/serving-cell-ios15`. The nonempty log confirms macOS 14, Xcode 15.4 (`15F31d`), Apple clang 15.0.0, ld `1053.12`, and the Xcode iPhoneOS 17.5 SDK. It contains no compiler/linker error and no `incompatible arm64e` warning.
 - Cloud package SHA256 values: rootless `b7e59bff6e8447d98255817de46a9f0c4d15e3e2e0c42163c4fbbb6ef6a1f1b6`; roothide `ee6d44bba637df7f353319cec3fca8a2c0742f50203131a2701f66d7dce25f0b`. Both contain `arm64 + arm64e`, valid package plists, `Sample Serving Cell`, adaptive-operation markers, malformed-entry evidence fields, and no legacy A/B operation marker.
 - The roothide artifact is the target delivery candidate. Both of its arm64e slices are `ARM64 E USR00`, target iOS 14.0 with SDK 17.5, use `LC_DYLD_INFO_ONLY`, and link `@loader_path/.jbroot/usr/lib/libroothide.dylib`. Per-architecture load-command sequences and linked-library lists match the device-verified `cellmonprobe3` artifact from run `31979975939`; the normalized 31-line warning set also matches that baseline exactly.
+- Target-device schema-v4 evidence SHA256 `ee7b1353eca0b142424eba549307781fb1a845c250d8b4d533b7fbb2d10e57e3` parsed as a valid 74,128-byte plist with no malformed dictionary or duplicate key. The corrected verifier passed 65/65 checks: 2/2 refresh/copy/callback/API/parse successes, `explicitNRConfirmed`, complete status, exact 16-operation omission ledger for samples 2...9, no timeout/exception/failure/missing symbol, and no structurally invalid entry.
+- Both explicit serving entries are identical n78 evidence: exact Cell Monitor NR RAT, Band 78, bandwidth 100, NRARFCN 633984, GSCN 7853, PID/physicalCellId 622, Cell ID 19866992645, TAC 4849750, MCC/MNC 460/1. NRARFCN and GSCN independently resolve to 3509.760 MHz. The result is not inferred from active/supported bands or coarse RAT state.
+- Residual evidence limitation: schema v4 records slot/subscription/SIM state but not hardware model, system version, or build. The plist is valid target-run evidence in the controlled device context, but it cannot independently prove `iPhone14,3 / 15.1.1 / 19B81` without that external context.
 - The local linker emitted the known `incompatible arm64e ABI compiler` warning (plus roothide's existing deprecated `-undefined dynamic_lookup` warning). Those local packages remain compile evidence only and are superseded for delivery by the verified cloud roothide artifact above.
 
 - `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v`:

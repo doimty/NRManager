@@ -265,11 +265,23 @@ kCTRegistrationRATSelection11 → NR
 - NR 原始字典没有 `kCTCellMonitorIsSA`，因此不能靠该 key 分类 SA/NSA。`currentRat=CTRadioAccessTechnologyNRNSA`、同步 RAT 为 LTE，以及 LTE B3/NR n78 的时序共同与 NSA 状态一致。
 - 每个样本只返回一个 serving entry；本轮先返回 LTE，后返回 NR，没有在同一份 `CTCellInfo` 中同时列出 LTE anchor 与 NR secondary。消费方应聚合一个有界采样窗，不能只看单次或最后一次 copy。
 
-## 9. 排序后的下一步建议
+## 9. `cellmonprobe4` 自适应采样目标机结果（2026-08-17）
+
+附件 SHA256：`ee7b1353eca0b142424eba549307781fb1a845c250d8b4d533b7fbb2d10e57e3`。
+
+- 报告为有效 schema v4：`operation=serving_cell_adaptive`。完整 74,128-byte XML 可由 plistlib 解析，字典结构合法且无重复 key；65 项结构、计数、时序和语义检查全部通过。
+- 计划最多 10 轮 refresh + 0.5 秒 settle + copy，连续两次显式 NR serving sample 即可确认。实机前两轮 refresh/copy/callback/API/parse 全部成功，第二轮后以 `explicitNRConfirmed` 正常提前结束；sampling status 为 `complete`，不是 partial。总耗时 1,516 ms，第二轮相对起点 1,008 ms。
+- 两份样本都只有一个结构有效的 serving entry，且 payload 完全一致：`kCTCellMonitorRadioAccessTechnologyNR`、Band 78、带宽 100、NRARFCN 633984、GSCN 7853、PID/physicalCellId 622、Cell ID 19866992645、TAC 4849750、MCC/MNC 460/1。`cellMonitorMissingServingRATCount=0`，结构无效 entry 数为 0。
+- NRARFCN 633984 与 GSCN 7853 的全局栅格都对应 3509.760 MHz，位于 n78 范围内。该结论完全来自两份 sampled serving entry，不使用 `currentRat`、`activeBands`、`supportedBands` 或 FR1 状态补推。
+- 样本 2 至 9 各保留一条 refresh 和一条 copy omission，共 16 条，index 精确为 2...9，原因全部是 `explicitNRConfirmed`。没有 timeout、invocation exception、callback/API/parse failure、missing symbol 或 critical classification gap。
+- typed raw evidence 保留了未规范化的 `kCTCellMonitorSCS` 和 sector 经纬度 key；两份原始字典都没有 `kCTCellMonitorIsSA`，所以本次仍只能确认 NR/n78 serving，不能仅凭 Cell Monitor entry 区分 SA 与 NSA。
+- 报告记录了 slot 1、固定 subscription UUID 以及 present+good SIM，但没有内嵌硬件型号、系统版本和 build。附件本身不能独立证明 `iPhone14,3 / 15.1.1 / 19B81`，该身份仍依赖受控目标机上下文。
+
+## 10. 排序后的下一步建议
 
 ### 立即做（不写 modem）
 
-1. **Serving Cell 遥测只读集成** —— `cellmonprobe3` 已捕获显式 n78 serving entry。产品路径应采用有界的 refresh+settle+copy 多次采样并聚合明确分类结果；不能只读一次、只看最后一次或从 allowed bands 推断 serving band。若需要证明 refresh 的严格因果效果，再做反向/随机化顺序探针
+1. **Serving Cell 遥测只读集成** —— `cellmonprobe4` 已在目标机验证有界自适应路径：连续两次明确 n78 serving entry 后安全提前结束，完整负结果仍要求 10 轮 clean window。产品路径可以复用该 sampler；若需要证明 refresh 的严格因果效果，再做反向/随机化顺序探针
 2. **探针 C：生命周期插桩** —— 写入首轮观察期日志，定位为什么没走到 60 秒
 3. **探针 B：RAT 状态快照** —— 辅助确认当前 RAT 模式
 
@@ -286,7 +298,7 @@ kCTRegistrationRATSelection11 → NR
 
 ---
 
-## 10. 证据缺口
+## 11. 证据缺口
 
 | 缺口 | 严重程度 | 如何填补 |
 |---|---|---|
@@ -296,10 +308,12 @@ kCTRegistrationRATSelection11 → NR
 | `kCTCellMonitorIsSA` 在 NSA NR 条目中的实际值 | 已观测但无值 | 四份 NR 原始字典均不包含该 key；不能依赖它分类，保留 `currentRat=NRNSA` 等辅助证据 |
 | `refreshCellMonitor` 是否需要 `start` 先调用 | 中 | 当前不调用 `start` 已能返回 n78；若研究首次刷新延迟，再在已有 `_CTServerConnection` 的上下文测试 |
 | NSA 活跃时 LTE 与 NR 是否同时标为 `Serving` | 本轮已填补 | 每份样本只有一个 serving entry，时间序列从 LTE 切到 NR；仍不能外推所有基带/系统版本 |
+| 自适应 sampler 能否在明确 NR 后安全提前结束 | 已填补 | `cellmonprobe4` 两次显式 n78 后以 `explicitNRConfirmed` 完成，8+8 个后续操作均有 omission 证据 |
+| 报告是否自包含目标机硬件/系统身份 | 未填补 | schema v4 未记录 model/version/build；后续若要求附件独立可审计，应补入只读设备身份字段 |
 
 ---
 
-## 11. 引用
+## 12. 引用
 
 - iOS 15.5 头文件：https://github.com/lechium/iPhone_OS_15.5
 - 本地 CTBandInfo.h：`/root/.openclaw/workspace/repos/NetworkManagerReborn-Roothide/docs/research-evidence/ios15-lcsource-9091/CTBandInfo.h`
