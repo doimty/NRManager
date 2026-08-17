@@ -123,12 +123,12 @@
 		<dict>
 			<key>cell</key> 					<string>PSGroupCell</string>
 			<key>label</key> 					<string>Serving Cell Telemetry</string>
-			<key>footerText</key> 				<string>Read-only. Keep active cellular traffic running during the two-phase comparison. A negative NR result means not observed in that window, not unsupported.</string>
+			<key>footerText</key> 				<string>Read-only adaptive sampling, up to 10 refresh/copy pairs. Explicit NR stops after two consecutive confirmations. A negative NR result requires the full clean window and means not observed, not unsupported.</string>
 		</dict>
 
 		<dict>
 			<key>cell</key> 					<string>PSButtonCell</string>
-			<key>label</key> 					<string>Compare Serving Cell Refresh (A/B)</string>
+			<key>label</key> 					<string>Sample Serving Cell</string>
 			<key>action</key> 					<string>showServingCellProbe:</string>
 		</dict>
 

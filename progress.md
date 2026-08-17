@@ -33,7 +33,7 @@ A/B implementation baseline: `8ccdd37654ea8746aa2e98167cae1159d8e16b9a`
 - Any private selector is invoked with an object type contradicted by the iOS 15 runtime headers.
 - Any unresolved symbol is used as a dictionary key.
 - Any callback state is consumed after a timed-out wait.
-- Any missing RAT field, `currentRat`, `activeBands`, or `supportedBands` causes an NR serving-cell inference.
+- Any missing RAT field, `currentRat`, `activeBands`, or `supportedBands` must not cause an NR serving-cell inference or allow an incomplete window to be reported as a complete negative.
 - Raw runtime data is discarded because it does not match the expected dictionary schema.
 - The UI reports success when slot 1, any of the six required refreshes, all ten Cell Monitor samples, or the output plist is unavailable.
 - A timed-out refresh/copy is followed by another private API request while its late callback may still be outstanding.
@@ -82,9 +82,49 @@ A/B implementation baseline: `8ccdd37654ea8746aa2e98167cae1159d8e16b9a`
 - [x] Run focused/full tests, both local package schemes, and a write-path diff audit.
 - [x] Complete the A/B design review and incorporate its P0/P1/P2 requirements.
 - [x] Resolve the independent final-review findings: duplicate slot-1 iteration, RAT-selection timeout overlap, and missing critical-symbol false completeness.
-- [ ] Build and verify cloud artifacts with the pinned Xcode 15.4 workflow.
+- [x] Build and verify cloud artifacts with the pinned Xcode 15.4 workflow.
+- [x] Validate `cellmonprobe3` on the target: complete 6-refresh/10-copy A/B, explicit NR n78 serving entries, and no timeout, exception, parse, symbol, or safety-latch failure.
+
+## Adaptive Sampler Refactor (2026-08-17)
+
+### Hypothesis
+
+- The successful target trace is enough to retire the diagnostic fixed-order A/B from the product path: each useful sample should use one bounded `refreshCellMonitor` + settle + `copyCellInfo` attempt.
+- A bounded adaptive window can stop after an explicit NR serving payload is confirmed twice consecutively, while a non-NR result requires the full window before it can be classified as a complete negative observation.
+- Moving Cell Monitor symbol resolution, typed raw parsing, asynchronous attempt ownership, and sampling aggregation behind one module interface will reduce controller/UI risk without changing the evidence contract.
+
+### Success And Failure Signals
+
+- Success: one sampler call returns a schema-versioned report with a maximum of 10 planned refresh/copy pairs, exact attempted/completed/API-success/parsed counts, typed raw evidence, explicit omitted-operation indexes and reasons, and exact serving-entry NR classification.
+- Success: two consecutive parsed samples containing explicit Cell Monitor NR/NRNSA serving entries stop the window early with `explicitNRConfirmed`; otherwise all 10 parsed pairs are required for `windowExhausted` and a complete negative observation.
+- Failure: timeout or invocation exception aborts the run and arms the existing unsafe-outstanding latch until its late callback resolves; ordinary callback/parse failures remain recorded and may continue within the fixed global bound.
+- Failure: any early stop caused by LTE payload stability, `currentRat`, `activeBands`, `supportedBands`, or missing RAT data would turn an incomplete window into a false negative.
+- Failure: extraction changes any Band/RAT/modem setter path, loses raw runtime types, drops ABI guards, or permits UI/controller code to issue refresh/copy directly.
+
+### Ablations And Evidence Plan
+
+- NR on samples 0 and 1 stops after two pairs; NR interrupted by LTE resets confirmation; LTE-only runs consume all 10 pairs.
+- A recoverable refresh failure omits that pair's copy with an explicit reason and continues; a timeout or invocation exception omits every later planned operation and stops.
+- Missing critical classification symbols or structurally unclassifiable entries preserve raw evidence but prevent parsed success and complete-negative classification. A serving entry with missing or non-string RAT still consumes the full window, but keeps the result indeterminate rather than producing `notObservedComplete`; missing RAT on non-serving entries does not invalidate the window.
+- Host C tests exercise the adaptive stop reducer and completion classifier; Python source tests enforce module ownership, schema/evidence keys, no write selector, and Makefile inclusion.
+- Verification requires focused/full host tests, host header compilation, rootless and roothide compile/package smoke checks, `git diff --check`, and a source audit for forbidden setters.
+
+### Progress
+
+- [x] Lock the existing branch, source, target evidence, and dirty-worktree baseline.
+- [x] Add red tests for adaptive stop/completion behavior and independent module ownership.
+- [x] Extract the Cell Monitor parser, async attempts, and adaptive aggregation into the sampler module.
+- [x] Replace controller-owned fixed A/B orchestration with one sampler call and update the UI/result schema.
+- [x] Run focused/full host tests and local rootless/roothide compile checks.
+- [x] Audit the diff for write-path changes, generated artifacts, warnings, and documentation drift.
+- [x] Resolve independent final-review findings, if any.
 
 ## Verification Evidence
+
+- Adaptive sampler final source checks on 2026-08-17: focused serving-cell suite `15/15`; full host suite `92/92`; `git diff --check` clean. Production-source scans found no old fixed A/B identifiers, no direct refresh/copy invocation in the controller, no Band/setter selector in the sampler, and no `currentRat`/`activeBands`/`supportedBands` sampler inference.
+- Final local compile/package smoke checks passed for rootless with explicit Theos iPhoneOS 16.5 SDK and for roothide. Package SHA256 values: rootless debug smoke package `3dd22311dec06b1d0a4c803c3dd0cb882886b16f75266928c7f372fa05fd8b52`; roothide debug smoke package `5f2408bd0787019dfb5a8c7a330256bf3a16e1f73bf970c4d47184328e19ff95`. Both package variants contain `arm64 + arm64e` slices and `LC_DYLD_INFO_ONLY` in both binaries; packaged plists parse and expose `Sample Serving Cell` with no A/B label or legacy operation string.
+- Independent current-worktree review found no P0/P1 and one P2: structurally unclassifiable entries, including serving entries without a classifiable RAT, could count toward a complete negative. The parser now rejects non-dictionary entries, entries without a string Cell Monitor cell type, and serving entries without a string RAT from the clean-window count while preserving typed raw evidence. The sampler still exhausts the window for these recoverable parse failures. Focused re-review marked the finding resolved and reported no new P0/P1/P2.
+- The local linker emitted the known `incompatible arm64e ABI compiler` warning (plus roothide's existing deprecated `-undefined dynamic_lookup` warning). These packages are compile evidence only and must not be delivered; any target package still requires the pinned Xcode 15.4 cloud workflow and a clean warning scan.
 
 - `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v`:
   92 tests passed for `cellmonprobe3`; the focused serving-cell suite passed 15/15.
@@ -141,9 +181,19 @@ A/B implementation baseline: `8ccdd37654ea8746aa2e98167cae1159d8e16b9a`
   `d42ac01202d3a4c509728dcabf239738c30ebfcab9d40bb57429c55a094c7686`;
   roothide ID `9266453177`, package SHA256
   `86bce24e0048ae2cdb640acc52af4fb872576613dfffaf8825a93d1c08d331db`.
-- A follow-up read-only A/B remains necessary to distinguish within-window payload
-  freshness: one initial refresh plus repeated copies versus refresh-before-each-copy.
-  Capturing an explicit NR serving entry under confirmed sustained traffic also remains open.
+- Target `cellmonprobe3` evidence SHA256
+  `323e9df9617a88196e4e0a93f33eb11b819f37a6025c8099f38d51bc70a57bc8`:
+  schema v3 completed all 6 refreshes and 10 copies/parses with no failure. Phase A's
+  five payloads and Phase B sample 0 were the same LTE B3/UARFCN 1600 serving cell;
+  Phase B samples 1-4 explicitly reported NR Band 78, NRARFCN 627264, GSCN 7783.
+  NR samples changed from PID/physicalCellId 179 and Cell ID 19865165826 to PID/physicalCellId 37 and
+  Cell ID 19879297025, while channel and TAC stayed fixed, capturing an n78 cell
+  transition rather than an object-address-only change.
+- The trace proves explicit n78 serving telemetry is available without a modem/Band
+  write and strongly associates repeated refresh with exposing the NR snapshot.
+  Fixed A-then-B ordering remains time-confounded, so strict refresh causality would
+  require a counterbalanced or randomized follow-up; that caveat does not weaken the
+  observed n78 serving evidence.
 - The six tracked `tests/__pycache__/*.pyc` files introduced by the probe commit
   were removed, and `.gitignore` now prevents future bytecode from being tracked.
 - `getPublicNrFrequencyRangeSync:` is guarded and called as `unsigned int(id *)`;

@@ -6,7 +6,7 @@ export VERSION = $(shell grep '^Version:' ../control | cut -d: -f2- | tr -d ' ')
 
 BUNDLE_NAME = NetworkManagerPrefs
 
-NetworkManagerPrefs_FILES = CCNMRootListController.m
+NetworkManagerPrefs_FILES = CCNMRootListController.m CCNMServingCellSampler.m
 NetworkManagerPrefs_INSTALL_PATH = /Library/PreferenceBundles
 NetworkManagerPrefs_FRAMEWORKS = UIKit
 NetworkManagerPrefs_CFLAGS = -fobjc-arc

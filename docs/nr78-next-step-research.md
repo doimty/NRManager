@@ -249,13 +249,27 @@ kCTRegistrationRATSelection11 → NR
 - `nrServingCellObserved` 只接受 serving entry 自身的精确 Cell Monitor NR/NRNSA RAT。负结果使用 `notObservedComplete`；不完整运行使用 `indeterminatePartial`，不得表述为“未观测到 NR”。
 - 输出会比较十份规范化 serving payload，状态只允许 `allServingPayloadsEqual`、`servingPayloadChangeObserved` 或 `indeterminatePartial`。固定 A→B 顺序和不同 refresh latency 构成时间混杂，因此即使 Phase B 出现变化，也不能单次归因为 refresh 或宣称 Phase B “更新鲜”。
 - serving probe 与同一 Preferences 进程中的 Band write/recovery/manual restore 互斥；方法范围内唯一文件写入是诊断 plist。
-- 当前只完成实现与本地验证，目标机 A/B 结果仍为空，不能提前回答 cache freshness。
+- 目标机 A/B 已完成，结果与边界见下一节。该结果足以证明 Cell Monitor 能返回显式 n78 serving entry，但固定 A→B 顺序仍不允许把变化严格归因于 refresh。
 
-## 8. 排序后的下一步建议
+## 8. `cellmonprobe3` 目标机 A/B 结果（2026-08-17）
+
+附件 SHA256：`323e9df9617a88196e4e0a93f33eb11b819f37a6025c8099f38d51bc70a57bc8`。
+
+- 报告为有效 schema v3：`operation=serving_cell_refresh_ab`。6/6 refresh、10/10 copy/result/parse 全部成功；无 timeout、invocation exception、sampling failure、缺失 symbol 或关键分类缺口，comparison eligible，`nrObservationStatus=observed`。
+- Phase A（一次 refresh 后 copy 5 次）在 0.506 至 4.527 秒连续返回同一个 LTE serving entry：Band 3、UARFCN 1600、PID/physicalCellId 191、Cell ID 67275832、TAC 11399。
+- Phase B 的第一个 refresh+copy（5.540 秒）仍返回完全相同的 LTE B3 payload，因此 phase boundary 相等。第二个 Phase B refresh+copy（6.552 秒）开始明确返回 `kCTCellMonitorRadioAccessTechnologyNR`、Band 78、NRARFCN 627264、GSCN 7783；之后四个样本持续为 n78。
+- NRARFCN 627264 与 GSCN 7783 的全局栅格都对应 3408.96 MHz，位于 n78 范围内。该结论来自 serving entry 自身的 RAT/Band/NRARFCN，不依赖 `activeBands`、`supportedBands` 或 `currentRat` 推断。
+- 首个 NR 样本为 PID/physicalCellId 179、Cell ID 19865165826；下一次 refresh 后切换为 PID/physicalCellId 37、Cell ID 19879297025，并在余下三个样本保持。Band、NRARFCN、GSCN、TAC 4849750 与 MCC/MNC 460/1 不变，说明采样窗内还捕获到一次 n78 serving-cell 切换，而不是只改变对象地址。
+- 本次首个 LTE payload 与 15 分钟前 `cellmonprobe2` 的十次 LTE payload 精确一致，且两轮 `currentRat` 都为 NRNSA。旧轮一次 refresh 后连续 copy 10 秒仍只有 LTE；本轮逐次 refresh 阶段出现 NR，强烈支持 repeated refresh 会推进或暴露 Cell Monitor 的 NR 快照。
+- 仍不能从单次固定 A→B 运行作严格因果声明：无线侧也可能恰好在 Phase B 期间建立 NR secondary。若后续决策需要证明 refresh 因果关系，应使用跨运行反向顺序或随机化顺序；这不影响“目标机已显式观测到 n78 serving cell”的结论。
+- NR 原始字典没有 `kCTCellMonitorIsSA`，因此不能靠该 key 分类 SA/NSA。`currentRat=CTRadioAccessTechnologyNRNSA`、同步 RAT 为 LTE，以及 LTE B3/NR n78 的时序共同与 NSA 状态一致。
+- 每个样本只返回一个 serving entry；本轮先返回 LTE，后返回 NR，没有在同一份 `CTCellInfo` 中同时列出 LTE anchor 与 NR secondary。消费方应聚合一个有界采样窗，不能只看单次或最后一次 copy。
+
+## 9. 排序后的下一步建议
 
 ### 立即做（不写 modem）
 
-1. **探针 A：Serving Cell 遥测** —— 解析器已实机通过；使用 `cellmonprobe3` 的 5+5 A/B（Phase A 1 次 refresh，Phase B 5 次 refresh），在明确持续蜂窝流量下检查 payload freshness 与 NR secondary cell
+1. **Serving Cell 遥测只读集成** —— `cellmonprobe3` 已捕获显式 n78 serving entry。产品路径应采用有界的 refresh+settle+copy 多次采样并聚合明确分类结果；不能只读一次、只看最后一次或从 allowed bands 推断 serving band。若需要证明 refresh 的严格因果效果，再做反向/随机化顺序探针
 2. **探针 C：生命周期插桩** —— 写入首轮观察期日志，定位为什么没走到 60 秒
 3. **探针 B：RAT 状态快照** —— 辅助确认当前 RAT 模式
 
@@ -272,20 +286,20 @@ kCTRegistrationRATSelection11 → NR
 
 ---
 
-## 9. 证据缺口
+## 10. 证据缺口
 
 | 缺口 | 严重程度 | 如何填补 |
 |---|---|---|
 | 目标机 `PID`/`UARFCN`/数值型 `DeploymentType` 解析 | 已填补 | `cellmonprobe2` 实机确认 20 个 symbol 全解析，规范化 source 与数值类型正确 |
-| NSA 活跃流量下是否返回 NR secondary cell | 高 | 本轮只观测到 LTE；在明确持续蜂窝传输下复跑，并保留逐次原始字典 |
-| 一次 refresh 后连续 copy 是否返回更新快照 | 高 | `cellmonprobe3` 已实现同次运行的 5+5 / 1+5 只读 A/B；待目标机证据判断重复 refresh 是否伴随 payload 变化，若仍相同也不能排除无线状态稳定 |
-| `kCTCellMonitorIsSA` 在 NSA NR 条目中的实际值 | 中 | 捕获到 NR 条目后核对原始字典 |
-| `refreshCellMonitor` 是否需要 `start` 先调用 | 中 | 在已有 `_CTServerConnection` 的上下文测试 |
-| NSA 活跃时 LTE 与 NR 是否同时标为 `Serving` | 中 | 不预设 schema，以实机连续样本为准 |
+| NSA 活跃流量下是否返回 NR secondary cell | 已填补 | `cellmonprobe3` 的样本 6 至 9 显式返回 NR Band 78、NRARFCN 627264、GSCN 7783 |
+| 一次 refresh 后连续 copy 是否返回更新快照 | 部分填补 | Phase A 五次 payload 稳定；Phase B 第二次逐样本 refresh 后由 LTE 切到 NR。固定 A→B 顺序仍有时间混杂；严格因果需要反向或随机化顺序 |
+| `kCTCellMonitorIsSA` 在 NSA NR 条目中的实际值 | 已观测但无值 | 四份 NR 原始字典均不包含该 key；不能依赖它分类，保留 `currentRat=NRNSA` 等辅助证据 |
+| `refreshCellMonitor` 是否需要 `start` 先调用 | 中 | 当前不调用 `start` 已能返回 n78；若研究首次刷新延迟，再在已有 `_CTServerConnection` 的上下文测试 |
+| NSA 活跃时 LTE 与 NR 是否同时标为 `Serving` | 本轮已填补 | 每份样本只有一个 serving entry，时间序列从 LTE 切到 NR；仍不能外推所有基带/系统版本 |
 
 ---
 
-## 10. 引用
+## 11. 引用
 
 - iOS 15.5 头文件：https://github.com/lechium/iPhone_OS_15.5
 - 本地 CTBandInfo.h：`/root/.openclaw/workspace/repos/NetworkManagerReborn-Roothide/docs/research-evidence/ios15-lcsource-9091/CTBandInfo.h`

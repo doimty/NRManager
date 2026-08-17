@@ -1,5 +1,6 @@
 #include "CCNMRootListController.h"
 #include "CCNMServingCellProbeSupport.h"
+#include "CCNMServingCellSampler.h"
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -21,8 +22,6 @@
 - (id)getSubscriptionInfoWithError:(NSError **)error;
 - (id)getBandInfo:(id)context error:(NSError **)error;
 - (void)setActiveBandInfo:(id)context bands:(id)bands error:(NSError **)error;
-
-// Read-only probe selectors
 - (id)getCurrentRat:(id)context error:(NSError **)error;
 - (id)copyRadioAccessTechnology:(id)context error:(NSError **)error;
 - (id)copyRegistrationStatus:(id)context error:(NSError **)error;
@@ -33,11 +32,6 @@
 - (id)getRatSelectionMask:(id)descriptor error:(NSError **)error;
 - (id)getNRDisableStatus:(id)descriptor error:(NSError **)error;
 - (unsigned int)getPublicNrFrequencyRangeSync:(id *)outValue;
-
-// Async selectors (bridged with dispatch_semaphore)
-- (void)copyCellInfo:(id)context completion:(void(^)(id cellInfo, NSError *error))completion;
-- (void)refreshCellMonitor:(id)context completion:(void(^)(NSError *error))completion;
-- (void)getRatSelection:(id)context completion:(void(^)(NSString *selection, NSString *preferred, NSError *error))completion;
 @end
 
 @protocol CCNMSubscriptionInfo <NSObject>
@@ -51,68 +45,10 @@
 - (NSUUID *)uuid;
 @end
 
-@protocol CCNMCellInfo <NSObject>
-- (id)legacyInfo;
-@end
-
 @protocol CCNMBandInfo <NSObject>
 - (instancetype)initWithActiveBands:(NSDictionary *)bands;
 - (NSDictionary *)activeBands;
 - (NSDictionary *)supportedBands;
-@end
-
-static void CCNMMarkCellMonitorUnsafeOutstanding(void);
-static void CCNMResolveCellMonitorUnsafeOutstanding(void);
-
-@interface CCNMCellMonitorAsyncState : NSObject
-@property (atomic, strong) id result;
-@property (atomic, strong) NSError *error;
-@property (atomic, assign) NSTimeInterval callbackAt;
-@property (atomic, assign) NSTimeInterval callbackMonotonic;
-@property (atomic, assign, getter=isCompleted) BOOL completed;
-@property (atomic, assign, getter=isUnsafeOutstanding) BOOL unsafeOutstanding;
-- (BOOL)completeWithResult:(id)result
-                     error:(NSError *)error
-                callbackAt:(NSTimeInterval)callbackAt
-         callbackMonotonic:(NSTimeInterval)callbackMonotonic
-          wasUnsafeOutstanding:(BOOL *)wasUnsafeOutstanding;
-- (BOOL)markUnsafeOutstanding;
-@end
-
-@implementation CCNMCellMonitorAsyncState
-- (BOOL)completeWithResult:(id)result
-                     error:(NSError *)error
-                callbackAt:(NSTimeInterval)callbackAt
-         callbackMonotonic:(NSTimeInterval)callbackMonotonic
-      wasUnsafeOutstanding:(BOOL *)wasUnsafeOutstanding {
-    @synchronized (self) {
-        if (self.isCompleted) {
-            return NO;
-        }
-        self.result = result;
-        self.error = error;
-        self.callbackAt = callbackAt;
-        self.callbackMonotonic = callbackMonotonic;
-        self.completed = YES;
-        if (wasUnsafeOutstanding) {
-            *wasUnsafeOutstanding = self.isUnsafeOutstanding;
-        }
-        return YES;
-    }
-}
-
-- (BOOL)markUnsafeOutstanding {
-    @synchronized (self) {
-        if (self.isCompleted) {
-            return NO;
-        }
-        if (!self.isUnsafeOutstanding) {
-            CCNMMarkCellMonitorUnsafeOutstanding();
-            self.unsafeOutstanding = YES;
-        }
-        return YES;
-    }
-}
 @end
 
 static const NSTimeInterval CCNMSameValueWriteWatchdogSeconds = 20.0;
@@ -124,69 +60,9 @@ static const useconds_t CCNMBandReadBackPollIntervalMicroseconds = 1000000;
 static const NSUInteger CCNMBandReadBackMaximumAttempts = 121;
 static const long long CCNMMaximumExpectedBandIdentifier = 1024;
 static const NSTimeInterval CCNMNR78ObservationSeconds = 60.0;
-static const NSUInteger CCNMCellMonitorPhaseSampleCount = 5;
-static const NSUInteger CCNMCellMonitorPhaseCount = 2;
-static const NSUInteger CCNMCellMonitorSampleCount = CCNMCellMonitorPhaseSampleCount * CCNMCellMonitorPhaseCount;
-static const int64_t CCNMCellMonitorAttemptTimeoutSeconds = 5;
-static const useconds_t CCNMCellMonitorRefreshSettleMicroseconds = 500000;
-static const useconds_t CCNMCellMonitorRefreshBeforeCopyDelayMicroseconds = 500000;
-static const useconds_t CCNMCellMonitorSampleIntervalMicroseconds = 1000000;
-static NSString * const CCNMCellMonitorComparisonReason =
-    @"Descriptive only: fixed A-then-B ordering cannot attribute a payload change to refresh.";
-
 static NSTimeInterval CCNMMonotonicNow(void);
 
-static NSNumber *CCNMMillisecondsBetween(NSTimeInterval startedMonotonic,
-                                          NSTimeInterval finishedMonotonic) {
-    if (startedMonotonic <= 0 || finishedMonotonic < startedMonotonic) {
-        return @0;
-    }
-    return @((long long)((finishedMonotonic - startedMonotonic) * 1000.0));
-}
-
-static NSNumber *CCNMElapsedMillisecondsSince(NSTimeInterval startedMonotonic) {
-    return CCNMMillisecondsBetween(startedMonotonic, CCNMMonotonicNow());
-}
-
-static NSArray<NSDictionary *> *CCNMCellMonitorPhaseDefinitions(void) {
-    return @[
-        @{
-            @"name": @"singleRefreshRepeatedCopy",
-            @"refreshPolicy": @(CCNMCellMonitorRefreshOncePerPhase)
-        },
-        @{
-            @"name": @"refreshBeforeEachCopy",
-            @"refreshPolicy": @(CCNMCellMonitorRefreshBeforeEachCopy)
-        }
-    ];
-}
-
-static NSString *CCNMCellMonitorSamplingStatusName(CCNMCellMonitorSamplingStatus status) {
-    switch (status) {
-        case CCNMCellMonitorSamplingComplete:
-            return @"complete";
-        case CCNMCellMonitorSamplingPartial:
-            return @"partial";
-        case CCNMCellMonitorSamplingFailed:
-        default:
-            return @"failed";
-    }
-}
-
-static NSString *CCNMNRObservationStatusName(CCNMNRObservationStatus status) {
-    switch (status) {
-        case CCNMNRObservationObserved:
-            return @"observed";
-        case CCNMNRObservationNotObservedComplete:
-            return @"notObservedComplete";
-        case CCNMNRObservationIndeterminatePartial:
-        default:
-            return @"indeterminatePartial";
-    }
-}
-
 static BOOL CCNMServingCellProbeInProgress = NO;
-static BOOL CCNMCellMonitorUnsafeOutstanding = NO;
 static BOOL CCNMBandOperationInProgress = NO;
 static BOOL CCNMRecoveryOperationInProgress = NO;
 static BOOL CCNMManualRestoreInProgress = NO;
@@ -206,18 +82,6 @@ static NSUInteger CCNMTestSetterReturnedGeneration = 0;
 static BOOL CCNMSetterTimeoutUncertain = NO;
 static NSUInteger CCNMCurrentBandOperationGeneration = 0;
 static NSUInteger CCNMManualRecoveryGeneration = 0;
-
-static void CCNMMarkCellMonitorUnsafeOutstanding(void) {
-    @synchronized([CCNMRootListController class]) {
-        CCNMCellMonitorUnsafeOutstanding = YES;
-    }
-}
-
-static void CCNMResolveCellMonitorUnsafeOutstanding(void) {
-    @synchronized([CCNMRootListController class]) {
-        CCNMCellMonitorUnsafeOutstanding = NO;
-    }
-}
 
 // The write probe is locked to one device and one iOS build, so the complete set
 // of radio-technology keys slot 1 reports is a known constant. Requiring the exact
@@ -303,603 +167,6 @@ static NSString *CCNMDescribePublicNRFrequencyRange(unsigned int rawValue) {
         default:
             return @"unknown";
     }
-}
-
-static NSArray<NSString *> *CCNMCellMonitorSymbolNames(void) {
-    static NSArray<NSString *> *names = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        names = @[
-            @"kCTCellMonitorCellType",
-            @"kCTCellMonitorCellTypeServing",
-            @"kCTCellMonitorCellRadioAccessTechnology",
-            @"kCTCellMonitorIsSA",
-            @"kCTCellMonitorNRARFCN",
-            @"kCTCellMonitorChannelNumber",
-            @"kCTCellMonitorUARFCN",
-            @"kCTCellMonitorBandInfo",
-            @"kCTCellMonitorBandwidth",
-            @"kCTCellMonitorDeploymentType",
-            @"kCTCellMonitorPCI",
-            @"kCTCellMonitorPID",
-            @"kCTCellMonitorCellId",
-            @"kCTCellMonitorTAC",
-            @"kCTCellMonitorMCC",
-            @"kCTCellMonitorMNC",
-            @"kCTCellMonitorRSRP",
-            @"kCTCellMonitorRSRQ",
-            @"kCTCellMonitorSNR",
-            @"kCTCellMonitorGSCN"
-        ];
-    });
-    return names;
-}
-
-static NSArray<NSString *> *CCNMCellMonitorCriticalClassificationSymbolNames(void) {
-    return @[
-        @"kCTCellMonitorCellType",
-        @"kCTCellMonitorCellTypeServing",
-        @"kCTCellMonitorCellRadioAccessTechnology"
-    ];
-}
-
-static NSDictionary<NSString *, NSString *> *CCNMCellMonitorSymbols(void *ctHandle,
-                                                                     NSArray<NSString *> **missingSymbols) {
-    static NSDictionary<NSString *, NSString *> *resolvedSymbols = nil;
-    static NSArray<NSString *> *unresolvedSymbols = nil;
-    static dispatch_once_t onceToken;
-
-    if (!ctHandle) {
-        if (missingSymbols) {
-            *missingSymbols = CCNMCellMonitorSymbolNames();
-        }
-        return @{};
-    }
-
-    dispatch_once(&onceToken, ^{
-        NSMutableDictionary<NSString *, NSString *> *resolved = [NSMutableDictionary dictionary];
-        NSMutableArray<NSString *> *missing = [NSMutableArray array];
-        for (NSString *symbolName in CCNMCellMonitorSymbolNames()) {
-            CFStringRef *symbolAddress = (CFStringRef *)dlsym(ctHandle, symbolName.UTF8String);
-            CFStringRef symbolValue = symbolAddress ? *symbolAddress : NULL;
-            if (symbolValue && CFGetTypeID(symbolValue) == CFStringGetTypeID()) {
-                resolved[symbolName] = (__bridge NSString *)symbolValue;
-            } else {
-                [missing addObject:symbolName];
-            }
-        }
-        resolvedSymbols = [resolved copy];
-        unresolvedSymbols = [missing copy];
-    });
-
-    if (missingSymbols) {
-        *missingSymbols = unresolvedSymbols ?: @[];
-    }
-    return resolvedSymbols ?: @{};
-}
-
-static id CCNMCellMonitorValue(NSDictionary *cell,
-                               NSDictionary<NSString *, NSString *> *symbols,
-                               NSString *symbolName) {
-    NSString *key = symbols[symbolName];
-    return key ? cell[key] : nil;
-}
-
-static id CCNMTypedPropertyListEvidenceInternal(id object,
-                                                 NSUInteger depth,
-                                                 NSMutableSet<NSValue *> *containerStack) {
-    if (!object) {
-        return @{@"class": @"(nil)", @"kind": @"nil"};
-    }
-
-    NSString *className = NSStringFromClass([object class]) ?: @"(unknown)";
-    if (depth >= 16) {
-        return @{
-            @"class": className,
-            @"kind": @"depthLimit",
-            @"description": [object description] ?: @""
-        };
-    }
-    if ([object isKindOfClass:[NSString class]] ||
-        [object isKindOfClass:[NSNumber class]] ||
-        [object isKindOfClass:[NSDate class]] ||
-        [object isKindOfClass:[NSData class]]) {
-        return @{@"class": className, @"kind": @"propertyListScalar", @"value": object};
-    }
-    if ([object isKindOfClass:[NSNull class]]) {
-        return @{@"class": className, @"kind": @"null"};
-    }
-
-    BOOL isDictionary = [object isKindOfClass:[NSDictionary class]];
-    BOOL isArray = [object isKindOfClass:[NSArray class]];
-    BOOL isSet = [object isKindOfClass:[NSSet class]];
-    if (isDictionary || isArray || isSet) {
-        NSValue *identity = [NSValue valueWithPointer:(__bridge const void *)object];
-        if ([containerStack containsObject:identity]) {
-            return @{@"class": className, @"kind": @"cycle"};
-        }
-        [containerStack addObject:identity];
-
-        NSMutableArray *elements = [NSMutableArray array];
-        if (isDictionary) {
-            for (id key in (NSDictionary *)object) {
-                id value = [(NSDictionary *)object objectForKey:key];
-                [elements addObject:@{
-                    @"key": CCNMTypedPropertyListEvidenceInternal(key, depth + 1, containerStack),
-                    @"value": CCNMTypedPropertyListEvidenceInternal(value, depth + 1, containerStack)
-                }];
-            }
-            [containerStack removeObject:identity];
-            return @{@"class": className, @"kind": @"dictionary", @"entries": elements};
-        }
-
-        for (id value in isArray ? (id)object : [(NSSet *)object allObjects]) {
-            [elements addObject:CCNMTypedPropertyListEvidenceInternal(value, depth + 1, containerStack)];
-        }
-        [containerStack removeObject:identity];
-        return @{
-            @"class": className,
-            @"kind": isArray ? @"array" : @"set",
-            @"elements": elements
-        };
-    }
-
-    NSString *description = nil;
-    @try {
-        description = [object description];
-    } @catch (NSException *exception) {
-        description = [NSString stringWithFormat:@"description raised %@", exception.name];
-    }
-    return @{@"class": className, @"kind": @"description", @"description": description ?: @""};
-}
-
-static id CCNMTypedPropertyListEvidence(id object) {
-    return CCNMTypedPropertyListEvidenceInternal(object, 0, [NSMutableSet set]);
-}
-
-static NSDictionary *CCNMNSErrorEvidence(NSError *error) {
-    if (!error) {
-        return @{
-            @"class": @"(nil)",
-            @"domain": @"",
-            @"code": @0,
-            @"localizedDescription": @"",
-            @"userInfoRaw": CCNMTypedPropertyListEvidence(nil)
-        };
-    }
-    return @{
-        @"class": NSStringFromClass([error class]) ?: @"(unknown)",
-        @"domain": error.domain ?: @"",
-        @"code": @(error.code),
-        @"localizedDescription": error.localizedDescription ?: @"",
-        @"userInfoRaw": CCNMTypedPropertyListEvidence(error.userInfo)
-    };
-}
-
-static NSDictionary *CCNMExceptionEvidence(NSException *exception) {
-    return @{
-        @"class": exception ? (NSStringFromClass([exception class]) ?: @"(unknown)") : @"(nil)",
-        @"name": exception.name ?: @"",
-        @"reason": exception.reason ?: @"",
-        @"userInfoRaw": CCNMTypedPropertyListEvidence(exception.userInfo)
-    };
-}
-
-static id CCNMProbeFieldValue(id value) {
-    if ([value isKindOfClass:[NSString class]] ||
-        [value isKindOfClass:[NSNumber class]] ||
-        [value isKindOfClass:[NSDate class]] ||
-        [value isKindOfClass:[NSData class]]) {
-        return value;
-    }
-    return value ? ([value description] ?: @"") : nil;
-}
-
-static void CCNMSetProbeField(NSMutableDictionary *fields, NSString *name, id value) {
-    id safeValue = CCNMProbeFieldValue(value);
-    if (safeValue) {
-        fields[name] = safeValue;
-    }
-}
-
-static NSMutableDictionary *CCNMParseCellMonitorSnapshot(id cellInfoResult,
-                                                          NSDictionary<NSString *, NSString *> *cellMonitorSymbols) {
-    NSMutableDictionary *snapshot = [@{ @"cellMonitorSucceeded": @NO } mutableCopy];
-    snapshot[@"cellInfoRuntimeClass"] = NSStringFromClass([cellInfoResult class]) ?: @"(unknown)";
-    snapshot[@"cellInfoRaw"] = CCNMTypedPropertyListEvidence(cellInfoResult);
-
-    NSMutableArray<NSString *> *criticalMissingSymbols = [NSMutableArray array];
-    for (NSString *symbolName in CCNMCellMonitorCriticalClassificationSymbolNames()) {
-        if (![cellMonitorSymbols[symbolName] isKindOfClass:[NSString class]]) {
-            [criticalMissingSymbols addObject:symbolName];
-        }
-    }
-    BOOL classificationAvailable = CCNMCellMonitorClassificationSymbolsAvailable(
-        [cellMonitorSymbols[@"kCTCellMonitorCellType"] isKindOfClass:[NSString class]],
-        [cellMonitorSymbols[@"kCTCellMonitorCellTypeServing"] isKindOfClass:[NSString class]],
-        [cellMonitorSymbols[@"kCTCellMonitorCellRadioAccessTechnology"] isKindOfClass:[NSString class]]);
-    snapshot[@"cellMonitorClassificationAvailable"] = @(classificationAvailable);
-    snapshot[@"cellMonitorCriticalMissingSymbols"] = criticalMissingSymbols;
-    if (!classificationAvailable) {
-        snapshot[@"cellMonitorParseError"] = [NSString stringWithFormat:
-            @"Critical Cell Monitor classification symbols are unavailable: %@",
-            [criticalMissingSymbols componentsJoinedByString:@", "]];
-    }
-
-    id legacyInfo = nil;
-    @try {
-        if ([cellInfoResult respondsToSelector:@selector(legacyInfo)]) {
-            legacyInfo = [(id<CCNMCellInfo>)cellInfoResult legacyInfo];
-        } else {
-            snapshot[@"cellMonitorParseError"] = @"CTCellInfo does not expose legacyInfo on this runtime.";
-        }
-    } @catch (NSException *exception) {
-        snapshot[@"cellMonitorParseError"] = [NSString stringWithFormat:@"legacyInfo access raised %@: %@", exception.name, exception.reason ?: @"(no reason)"];
-    }
-
-    snapshot[@"legacyInfoRuntimeClass"] = legacyInfo ? (NSStringFromClass([legacyInfo class]) ?: @"(unknown)") : @"(nil)";
-    snapshot[@"legacyInfoRaw"] = CCNMTypedPropertyListEvidence(legacyInfo);
-    if (![legacyInfo isKindOfClass:[NSArray class]]) {
-        if (legacyInfo) {
-            snapshot[@"cellMonitorParseError"] = @"legacyInfo is not an array on this runtime.";
-        } else if (!snapshot[@"cellMonitorParseError"]) {
-            snapshot[@"cellMonitorParseError"] = @"legacyInfo is nil.";
-        }
-        return snapshot;
-    }
-
-    NSMutableArray *servingCells = [NSMutableArray array];
-    NSMutableArray *allCells = [NSMutableArray array];
-    NSMutableArray *entryResults = [NSMutableArray array];
-    NSUInteger entryIndex = 0;
-    for (id legacyEntry in legacyInfo) {
-        NSMutableDictionary *entryResult = [@{
-            @"index": @(entryIndex++),
-            @"runtimeClass": NSStringFromClass([legacyEntry class]) ?: @"(unknown)",
-            @"raw": CCNMTypedPropertyListEvidence(legacyEntry)
-        } mutableCopy];
-        if (![legacyEntry isKindOfClass:[NSDictionary class]]) {
-            entryResult[@"parsed"] = @NO;
-            entryResult[@"reason"] = @"legacyInfo entry is not a dictionary";
-            [entryResults addObject:entryResult];
-            continue;
-        }
-
-        NSDictionary *cellDict = legacyEntry;
-        id cellType = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorCellType");
-        id rat = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorCellRadioAccessTechnology");
-        id isSA = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorIsSA");
-        id nrarfcn = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorNRARFCN");
-        id channel = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorChannelNumber");
-        id uarfcn = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorUARFCN");
-        id band = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorBandInfo");
-        id bandwidth = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorBandwidth");
-        id deploymentType = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorDeploymentType");
-        id pci = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorPCI");
-        id pid = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorPID");
-        id cellId = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorCellId");
-        id tac = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorTAC");
-        id mcc = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorMCC");
-        id mnc = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorMNC");
-        id rsrp = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorRSRP");
-        id rsrq = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorRSRQ");
-        id snr = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorSNR");
-        id gscn = CCNMCellMonitorValue(cellDict, cellMonitorSymbols, @"kCTCellMonitorGSCN");
-
-        // The target iPhone14,3 / iOS 15.1.1 sample used PID/UARFCN; prefer explicit PCI/newer frequency fields when present.
-        id physicalCellId = pci ?: pid;
-        NSString *physicalCellIdSource = pci ? @"kCTCellMonitorPCI" : (pid ? @"kCTCellMonitorPID" : nil);
-        id frequency = nrarfcn ?: channel ?: uarfcn;
-        NSString *frequencySource = nrarfcn ? @"kCTCellMonitorNRARFCN" :
-            (channel ? @"kCTCellMonitorChannelNumber" : (uarfcn ? @"kCTCellMonitorUARFCN" : nil));
-
-        NSMutableDictionary *parsed = [NSMutableDictionary dictionary];
-        CCNMSetProbeField(parsed, @"cellType", cellType);
-        CCNMSetProbeField(parsed, @"rat", rat);
-        CCNMSetProbeField(parsed, @"isSA", isSA);
-        CCNMSetProbeField(parsed, @"nrarfcn", nrarfcn);
-        CCNMSetProbeField(parsed, @"channelNumber", channel);
-        CCNMSetProbeField(parsed, @"uarfcn", uarfcn);
-        CCNMSetProbeField(parsed, @"frequency", frequency);
-        CCNMSetProbeField(parsed, @"frequencySource", frequencySource);
-        CCNMSetProbeField(parsed, @"band", band);
-        CCNMSetProbeField(parsed, @"bandwidth", bandwidth);
-        CCNMSetProbeField(parsed, @"deploymentType", deploymentType);
-        CCNMSetProbeField(parsed, @"pci", pci);
-        CCNMSetProbeField(parsed, @"pid", pid);
-        CCNMSetProbeField(parsed, @"physicalCellId", physicalCellId);
-        CCNMSetProbeField(parsed, @"physicalCellIdSource", physicalCellIdSource);
-        CCNMSetProbeField(parsed, @"cellId", cellId);
-        CCNMSetProbeField(parsed, @"tac", tac);
-        CCNMSetProbeField(parsed, @"mcc", mcc);
-        CCNMSetProbeField(parsed, @"mnc", mnc);
-        CCNMSetProbeField(parsed, @"rsrp", rsrp);
-        CCNMSetProbeField(parsed, @"rsrq", rsrq);
-        CCNMSetProbeField(parsed, @"snr", snr);
-        CCNMSetProbeField(parsed, @"gscn", gscn);
-
-        entryResult[@"parsed"] = @YES;
-        entryResult[@"fields"] = parsed;
-        [entryResults addObject:entryResult];
-        [allCells addObject:parsed];
-
-        id servingCellType = cellMonitorSymbols[@"kCTCellMonitorCellTypeServing"];
-        if (servingCellType && [cellType isEqual:servingCellType]) {
-            [servingCells addObject:parsed];
-        }
-    }
-
-    snapshot[@"servingCells"] = servingCells;
-    snapshot[@"allCells"] = allCells;
-    snapshot[@"cellMonitorEntryResults"] = entryResults;
-    snapshot[@"cellMonitorSucceeded"] = @(classificationAvailable);
-    return snapshot;
-}
-
-static BOOL CCNMCellMonitorAllPayloadsEqual(NSArray *payloads) {
-    if (payloads.count == 0) {
-        return NO;
-    }
-    id firstPayload = payloads.firstObject;
-    for (id payload in payloads) {
-        if (![payload isEqual:firstPayload]) {
-            return NO;
-        }
-    }
-    return YES;
-}
-
-static NSMutableDictionary *CCNMRunRatSelectionAttempt(id<CCNMCoreTelephonyClient> client,
-                                                        id context) {
-    NSTimeInterval startedMonotonic = CCNMMonotonicNow();
-    NSMutableDictionary *attempt = [@{
-        @"ratSelectionRequestedAt": @([[NSDate date] timeIntervalSince1970]),
-        @"ratSelectionRequestedMonotonic": @(startedMonotonic),
-        @"status": @"invoking",
-        @"ratSelectionWaitCompleted": @NO,
-        @"ratSelectionTimedOut": @NO
-    } mutableCopy];
-    dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
-    CCNMCellMonitorAsyncState *state = [CCNMCellMonitorAsyncState new];
-    @try {
-        [client getRatSelection:context completion:^(NSString *selection, NSString *preferred, NSError *error) {
-            NSMutableDictionary *values = [NSMutableDictionary dictionary];
-            if (selection) values[@"selection"] = selection;
-            if (preferred) values[@"preferred"] = preferred;
-            BOOL wasUnsafeOutstanding = NO;
-            BOOL accepted = [state completeWithResult:values
-                                                error:error
-                                           callbackAt:[[NSDate date] timeIntervalSince1970]
-                                    callbackMonotonic:CCNMMonotonicNow()
-                                 wasUnsafeOutstanding:&wasUnsafeOutstanding];
-            if (accepted) {
-                dispatch_semaphore_signal(semaphore);
-            }
-            if (wasUnsafeOutstanding) {
-                CCNMResolveCellMonitorUnsafeOutstanding();
-            }
-        }];
-    } @catch (NSException *exception) {
-        attempt[@"ratSelectionWaitFinishedAt"] = @([[NSDate date] timeIntervalSince1970]);
-        attempt[@"ratSelectionWaitFinishedMonotonic"] = @(CCNMMonotonicNow());
-        attempt[@"ratSelectionElapsedMilliseconds"] = CCNMElapsedMillisecondsSince(startedMonotonic);
-        attempt[@"ratSelectionUnsafeOutstandingLatchArmed"] = @([state markUnsafeOutstanding]);
-        attempt[@"status"] = @"invocationException";
-        attempt[@"ratSelectionInvocationException"] = CCNMExceptionEvidence(exception);
-        attempt[@"ratSelectionError"] = [NSString stringWithFormat:@"RAT-selection invocation raised %@: %@",
-            exception.name, exception.reason ?: @"(no reason)"];
-        return attempt;
-    }
-
-    long waitResult = dispatch_semaphore_wait(
-        semaphore, dispatch_time(DISPATCH_TIME_NOW, CCNMCellMonitorAttemptTimeoutSeconds * NSEC_PER_SEC));
-    attempt[@"ratSelectionWaitFinishedAt"] = @([[NSDate date] timeIntervalSince1970]);
-    attempt[@"ratSelectionWaitFinishedMonotonic"] = @(CCNMMonotonicNow());
-    attempt[@"ratSelectionElapsedMilliseconds"] = CCNMElapsedMillisecondsSince(startedMonotonic);
-    attempt[@"ratSelectionWaitResult"] = @(waitResult);
-    if (!CCNMProbeWaitCompleted(waitResult)) {
-        attempt[@"ratSelectionUnsafeOutstandingLatchArmed"] = @([state markUnsafeOutstanding]);
-        attempt[@"status"] = @"timeout";
-        attempt[@"ratSelectionTimedOut"] = @YES;
-        return attempt;
-    }
-
-    attempt[@"ratSelectionWaitCompleted"] = @YES;
-    attempt[@"ratSelectionCallbackAt"] = @(state.callbackAt);
-    attempt[@"ratSelectionCallbackMonotonic"] = @(state.callbackMonotonic);
-    attempt[@"ratSelectionCallbackLatencyMilliseconds"] =
-        CCNMMillisecondsBetween(startedMonotonic, state.callbackMonotonic);
-    if (state.error) {
-        attempt[@"status"] = @"callbackError";
-        attempt[@"ratSelectionError"] = state.error.localizedDescription ?: @"(no description)";
-        attempt[@"ratSelectionErrorEvidence"] = CCNMNSErrorEvidence(state.error);
-        return attempt;
-    }
-
-    NSDictionary *values = [state.result isKindOfClass:[NSDictionary class]] ? state.result : @{};
-    NSString *selection = [values[@"selection"] isKindOfClass:[NSString class]] ? values[@"selection"] : nil;
-    NSString *preferred = [values[@"preferred"] isKindOfClass:[NSString class]] ? values[@"preferred"] : nil;
-    if (!selection && !preferred) {
-        attempt[@"status"] = @"nilResult";
-        attempt[@"ratSelectionError"] = @"The callback completed without RAT-selection data.";
-        return attempt;
-    }
-    attempt[@"status"] = @"succeeded";
-    attempt[@"ratSelection"] = selection ?: @"";
-    attempt[@"ratPreferred"] = preferred ?: @"";
-    return attempt;
-}
-
-static NSMutableDictionary *CCNMRunCellMonitorRefreshAttempt(id<CCNMCoreTelephonyClient> client,
-                                                              id context) {
-    NSTimeInterval startedMonotonic = CCNMMonotonicNow();
-    NSTimeInterval requestedAt = [[NSDate date] timeIntervalSince1970];
-    NSMutableDictionary *attempt = [@{
-        @"refreshRequestedAt": @(requestedAt),
-        @"refreshRequestedMonotonic": @(startedMonotonic),
-        @"status": @"invoking",
-        @"cellMonitorRefreshWaitCompleted": @NO,
-        @"cellMonitorRefreshTimedOut": @NO,
-        @"cellMonitorRefreshSucceeded": @NO
-    } mutableCopy];
-    dispatch_semaphore_t refreshSema = dispatch_semaphore_create(0);
-    CCNMCellMonitorAsyncState *state = [CCNMCellMonitorAsyncState new];
-    @try {
-        [client refreshCellMonitor:context completion:^(NSError *error) {
-            BOOL wasUnsafeOutstanding = NO;
-            BOOL accepted = [state completeWithResult:nil
-                                                error:error
-                                           callbackAt:[[NSDate date] timeIntervalSince1970]
-                                    callbackMonotonic:CCNMMonotonicNow()
-                                 wasUnsafeOutstanding:&wasUnsafeOutstanding];
-            if (accepted) {
-                dispatch_semaphore_signal(refreshSema);
-            }
-            if (wasUnsafeOutstanding) {
-                CCNMResolveCellMonitorUnsafeOutstanding();
-            }
-        }];
-    } @catch (NSException *exception) {
-        attempt[@"refreshWaitFinishedAt"] = @([[NSDate date] timeIntervalSince1970]);
-        attempt[@"refreshWaitFinishedMonotonic"] = @(CCNMMonotonicNow());
-        attempt[@"refreshElapsedMilliseconds"] = CCNMElapsedMillisecondsSince(startedMonotonic);
-        attempt[@"cellMonitorRefreshUnsafeOutstandingLatchArmed"] = @([state markUnsafeOutstanding]);
-        attempt[@"status"] = @"invocationException";
-        attempt[@"cellMonitorRefreshInvocationException"] = CCNMExceptionEvidence(exception);
-        attempt[@"cellMonitorRefreshError"] = [NSString stringWithFormat:@"refresh invocation raised %@: %@",
-            exception.name, exception.reason ?: @"(no reason)"];
-        return attempt;
-    }
-
-    long refreshWaitResult = dispatch_semaphore_wait(
-        refreshSema, dispatch_time(DISPATCH_TIME_NOW, CCNMCellMonitorAttemptTimeoutSeconds * NSEC_PER_SEC));
-    attempt[@"refreshWaitFinishedAt"] = @([[NSDate date] timeIntervalSince1970]);
-    attempt[@"refreshWaitFinishedMonotonic"] = @(CCNMMonotonicNow());
-    attempt[@"refreshElapsedMilliseconds"] = CCNMElapsedMillisecondsSince(startedMonotonic);
-    attempt[@"refreshWaitResult"] = @(refreshWaitResult);
-    if (!CCNMProbeWaitCompleted(refreshWaitResult)) {
-        attempt[@"cellMonitorRefreshUnsafeOutstandingLatchArmed"] = @([state markUnsafeOutstanding]);
-        attempt[@"status"] = @"timeout";
-        attempt[@"cellMonitorRefreshTimedOut"] = @YES;
-        return attempt;
-    }
-
-    NSError *refreshError = state.error;
-    attempt[@"cellMonitorRefreshWaitCompleted"] = @YES;
-    attempt[@"refreshCallbackAt"] = @(state.callbackAt);
-    attempt[@"refreshCallbackMonotonic"] = @(state.callbackMonotonic);
-    attempt[@"refreshCallbackLatencyMilliseconds"] =
-        CCNMMillisecondsBetween(startedMonotonic, state.callbackMonotonic);
-    attempt[@"cellMonitorRefreshCallbackErrorRaw"] = CCNMTypedPropertyListEvidence(refreshError);
-    if (refreshError) {
-        attempt[@"status"] = @"callbackError";
-        attempt[@"cellMonitorRefreshError"] = refreshError.localizedDescription ?: @"(no description)";
-        attempt[@"cellMonitorRefreshErrorRaw"] = CCNMTypedPropertyListEvidence(refreshError);
-        attempt[@"cellMonitorRefreshErrorEvidence"] = CCNMNSErrorEvidence(refreshError);
-        attempt[@"cellMonitorRefreshErrorDomain"] = refreshError.domain ?: @"";
-        attempt[@"cellMonitorRefreshErrorCode"] = @(refreshError.code);
-        return attempt;
-    }
-
-    attempt[@"status"] = @"succeeded";
-    attempt[@"cellMonitorRefreshSucceeded"] = @YES;
-    return attempt;
-}
-
-static NSMutableDictionary *CCNMRunCellMonitorCopyAttempt(id<CCNMCoreTelephonyClient> client,
-                                                           id context,
-                                                           NSDictionary<NSString *, NSString *> *cellMonitorSymbols) {
-    NSTimeInterval startedMonotonic = CCNMMonotonicNow();
-    NSTimeInterval requestedAt = [[NSDate date] timeIntervalSince1970];
-    NSMutableDictionary *attempt = [@{
-        @"copyRequestedAt": @(requestedAt),
-        @"copyRequestedMonotonic": @(startedMonotonic),
-        @"sampledAt": @(requestedAt),
-        @"status": @"invoking",
-        @"cellMonitorCopyWaitCompleted": @NO,
-        @"cellMonitorCopyTimedOut": @NO,
-        @"cellMonitorCopySucceeded": @NO,
-        @"cellMonitorSucceeded": @NO
-    } mutableCopy];
-    dispatch_semaphore_t copySema = dispatch_semaphore_create(0);
-    CCNMCellMonitorAsyncState *state = [CCNMCellMonitorAsyncState new];
-    @try {
-        [client copyCellInfo:context completion:^(id cellInfo, NSError *error) {
-            BOOL wasUnsafeOutstanding = NO;
-            BOOL accepted = [state completeWithResult:cellInfo
-                                                error:error
-                                           callbackAt:[[NSDate date] timeIntervalSince1970]
-                                    callbackMonotonic:CCNMMonotonicNow()
-                                 wasUnsafeOutstanding:&wasUnsafeOutstanding];
-            if (accepted) {
-                dispatch_semaphore_signal(copySema);
-            }
-            if (wasUnsafeOutstanding) {
-                CCNMResolveCellMonitorUnsafeOutstanding();
-            }
-        }];
-    } @catch (NSException *exception) {
-        attempt[@"copyWaitFinishedAt"] = @([[NSDate date] timeIntervalSince1970]);
-        attempt[@"copyWaitFinishedMonotonic"] = @(CCNMMonotonicNow());
-        attempt[@"copyElapsedMilliseconds"] = CCNMElapsedMillisecondsSince(startedMonotonic);
-        attempt[@"cellMonitorCopyUnsafeOutstandingLatchArmed"] = @([state markUnsafeOutstanding]);
-        attempt[@"status"] = @"invocationException";
-        attempt[@"cellMonitorCopyInvocationException"] = CCNMExceptionEvidence(exception);
-        attempt[@"cellMonitorError"] = [NSString stringWithFormat:@"copy invocation raised %@: %@",
-            exception.name, exception.reason ?: @"(no reason)"];
-        return attempt;
-    }
-
-    long copyWaitResult = dispatch_semaphore_wait(
-        copySema, dispatch_time(DISPATCH_TIME_NOW, CCNMCellMonitorAttemptTimeoutSeconds * NSEC_PER_SEC));
-    attempt[@"copyWaitFinishedAt"] = @([[NSDate date] timeIntervalSince1970]);
-    attempt[@"copyWaitFinishedMonotonic"] = @(CCNMMonotonicNow());
-    attempt[@"copyElapsedMilliseconds"] = CCNMElapsedMillisecondsSince(startedMonotonic);
-    attempt[@"copyWaitResult"] = @(copyWaitResult);
-    if (!CCNMProbeWaitCompleted(copyWaitResult)) {
-        attempt[@"cellMonitorCopyUnsafeOutstandingLatchArmed"] = @([state markUnsafeOutstanding]);
-        attempt[@"status"] = @"timeout";
-        attempt[@"cellMonitorCopyTimedOut"] = @YES;
-        return attempt;
-    }
-
-    id cellInfoResult = state.result;
-    NSError *cellInfoError = state.error;
-    attempt[@"cellMonitorCopyWaitCompleted"] = @YES;
-    attempt[@"copyCallbackAt"] = @(state.callbackAt);
-    attempt[@"copyCallbackMonotonic"] = @(state.callbackMonotonic);
-    attempt[@"copyCallbackLatencyMilliseconds"] =
-        CCNMMillisecondsBetween(startedMonotonic, state.callbackMonotonic);
-    attempt[@"sampledAt"] = @(state.callbackAt);
-    attempt[@"cellMonitorCopyResultRuntimeClass"] = cellInfoResult
-        ? (NSStringFromClass([cellInfoResult class]) ?: @"(unknown)") : @"(nil)";
-    attempt[@"cellMonitorCopyResultRaw"] = CCNMTypedPropertyListEvidence(cellInfoResult);
-    if (cellInfoError) {
-        attempt[@"status"] = @"callbackError";
-        attempt[@"cellMonitorError"] = cellInfoError.localizedDescription ?: @"(no description)";
-        attempt[@"cellMonitorErrorRaw"] = CCNMTypedPropertyListEvidence(cellInfoError);
-        attempt[@"cellMonitorCopyErrorEvidence"] = CCNMNSErrorEvidence(cellInfoError);
-        attempt[@"cellMonitorErrorDomain"] = cellInfoError.domain ?: @"";
-        attempt[@"cellMonitorErrorCode"] = @(cellInfoError.code);
-        return attempt;
-    }
-    if (!cellInfoResult) {
-        attempt[@"status"] = @"nilResult";
-        attempt[@"cellMonitorResult"] = @"(nil)";
-        return attempt;
-    }
-
-    attempt[@"cellMonitorCopySucceeded"] = @YES;
-    @try {
-        [attempt addEntriesFromDictionary:CCNMParseCellMonitorSnapshot(cellInfoResult, cellMonitorSymbols)];
-        attempt[@"status"] = [attempt[@"cellMonitorSucceeded"] boolValue] ? @"parsed" : @"parseError";
-    } @catch (NSException *exception) {
-        attempt[@"status"] = @"parseException";
-        attempt[@"cellMonitorParseException"] = CCNMExceptionEvidence(exception);
-        attempt[@"cellMonitorParseError"] = [NSString stringWithFormat:@"snapshot parsing raised %@: %@",
-            exception.name, exception.reason ?: @"(no reason)"];
-    }
-    return attempt;
 }
 
 static NSString *CCNMSysctlString(const char *name) {
@@ -1105,7 +372,7 @@ static NSTimeInterval CCNMMonotonicNow(void) {
 static BOOL CCNMBeginServingCellProbe(void) {
     @synchronized([CCNMRootListController class]) {
         if (CCNMServingCellProbeInProgress ||
-            CCNMCellMonitorUnsafeOutstanding ||
+            CCNMServingCellSamplerHasUnsafeOutstandingAttempt() ||
             CCNMBandOperationInProgress ||
             CCNMRecoveryOperationInProgress ||
             CCNMManualRestoreInProgress ||
@@ -1128,7 +395,7 @@ static BOOL CCNMBeginBandOperation(NSUInteger *operationGeneration,
                                    NSUInteger *manualRecoveryGeneration) {
     @synchronized([CCNMRootListController class]) {
         if (CCNMServingCellProbeInProgress ||
-            CCNMCellMonitorUnsafeOutstanding ||
+            CCNMServingCellSamplerHasUnsafeOutstandingAttempt() ||
             CCNMBandOperationInProgress ||
             CCNMRecoveryOperationInProgress ||
             CCNMManualRestoreInProgress ||
@@ -1272,7 +539,7 @@ static BOOL CCNMBeginAutomaticRestoreOperation(NSUInteger operationGeneration) {
 static BOOL CCNMBeginManualRestoreOperation(NSUInteger *manualRestoreGeneration) {
     @synchronized([CCNMRootListController class]) {
         if (CCNMServingCellProbeInProgress ||
-            CCNMCellMonitorUnsafeOutstanding ||
+            CCNMServingCellSamplerHasUnsafeOutstandingAttempt() ||
             CCNMManualRestoreInProgress ||
             CCNMBandOperationInProgress ||
             CCNMRecoveryOperationInProgress ||
@@ -2185,33 +1452,6 @@ static BOOL CCNMValidatePublicNRFrequencyRangeSelectorABI(id client, NSString **
     return valid;
 }
 
-static BOOL CCNMValidateAsyncSelectorABI(id client, SEL selector, NSString **failure) {
-    if (!client || ![client respondsToSelector:selector]) {
-        if (failure) {
-            *failure = [NSString stringWithFormat:@"%@ is unavailable.", NSStringFromSelector(selector)];
-        }
-        return NO;
-    }
-
-    NSMethodSignature *signature = [client methodSignatureForSelector:selector];
-    const char *returnType = signature ? CCNMSkipTypeQualifiers(signature.methodReturnType) : NULL;
-    const char *argumentType = signature && signature.numberOfArguments > 2
-        ? CCNMSkipTypeQualifiers([signature getArgumentTypeAtIndex:2])
-        : NULL;
-    const char *completionType = signature && signature.numberOfArguments > 3
-        ? CCNMSkipTypeQualifiers([signature getArgumentTypeAtIndex:3])
-        : NULL;
-    BOOL valid = signature &&
-                 signature.numberOfArguments == 4 &&
-                 returnType && strcmp(returnType, @encode(void)) == 0 &&
-                 argumentType && argumentType[0] == '@' &&
-                 completionType && completionType[0] == '@' && completionType[1] == '?';
-    if (!valid && failure) {
-        *failure = [NSString stringWithFormat:@"%@ runtime ABI is not void(context, block).", NSStringFromSelector(selector)];
-    }
-    return valid;
-}
-
 static BOOL CCNMValidateSetterABI(id<CCNMCoreTelephonyClient> client, NSString **failure) {
     SEL selector = @selector(setActiveBandInfo:bands:error:);
     if (![client respondsToSelector:selector]) {
@@ -2960,10 +2200,9 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
         });
 
         void *ctHandle = coreTelephonyHandle;
-        NSMutableDictionary *result = [@{
-            @"schemaVersion": @3,
-            @"operation": @"serving_cell_refresh_ab"
-        } mutableCopy];
+        NSMutableDictionary *result = [NSMutableDictionary dictionary];
+        result[@"schemaVersion"] = @4;
+        result[@"operation"] = @"serving_cell_adaptive";
         NSString *failure = nil;
         Class clientClass = NSClassFromString(@"CoreTelephonyClient");
 
@@ -3003,47 +2242,8 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
                             if (![context respondsToSelector:@selector(slotID)] || [context slotID] != 1) return;
                             *stop = YES;
 
-                            NSMutableDictionary *report = [NSMutableDictionary dictionary];
-                            NSUInteger requestedRefreshCount =
-                                CCNMCellMonitorRequiredRefreshCount(CCNMCellMonitorRefreshOncePerPhase, CCNMCellMonitorPhaseSampleCount) +
-                                CCNMCellMonitorRequiredRefreshCount(CCNMCellMonitorRefreshBeforeEachCopy, CCNMCellMonitorPhaseSampleCount);
+                            NSMutableDictionary *report = [CCNMServingCellSamplerEmptyReport() mutableCopy];
                             report[@"slotID"] = @1;
-                            report[@"cellMonitorSucceeded"] = @NO;
-                            report[@"cellMonitorSamplingMode"] = @"single-refresh-vs-refresh-before-each-copy";
-                            report[@"cellMonitorPlan"] = @{
-                                @"phaseOrder": @[@"singleRefreshRepeatedCopy", @"refreshBeforeEachCopy"],
-                                @"samplesPerPhase": @(CCNMCellMonitorPhaseSampleCount),
-                                @"targetCopyIntervalMilliseconds": @(CCNMCellMonitorSampleIntervalMicroseconds / 1000),
-                                @"refreshBeforeCopyDelayMilliseconds": @(CCNMCellMonitorRefreshBeforeCopyDelayMicroseconds / 1000),
-                                @"refreshSettleMilliseconds": @(CCNMCellMonitorRefreshSettleMicroseconds / 1000),
-                                @"attemptTimeoutMilliseconds": @(CCNMCellMonitorAttemptTimeoutSeconds * 1000)
-                            };
-                            report[@"cellMonitorRequestedRefreshCount"] = @(requestedRefreshCount);
-                            report[@"cellMonitorAttemptedRefreshCount"] = @0;
-                            report[@"cellMonitorCompletedRefreshCount"] = @0;
-                            report[@"cellMonitorSuccessfulRefreshCount"] = @0;
-                            report[@"cellMonitorNotAttemptedRefreshCount"] = @(requestedRefreshCount);
-                            report[@"cellMonitorRequestedSampleCount"] = @(CCNMCellMonitorSampleCount);
-                            report[@"cellMonitorAttemptedSampleCount"] = @0;
-                            report[@"cellMonitorCompletedSampleCount"] = @0;
-                            report[@"cellMonitorSuccessfulCopyCount"] = @0;
-                            report[@"cellMonitorSuccessfulSampleCount"] = @0;
-                            report[@"cellMonitorNotAttemptedSampleCount"] = @(CCNMCellMonitorSampleCount);
-                            report[@"cellMonitorSamplingStatus"] = @"failed";
-                            report[@"cellMonitorSamplingPartial"] = @NO;
-                            report[@"cellMonitorSamplingAbortedAfterTimeout"] = @NO;
-                            report[@"cellMonitorSamplingAbortedAfterInvocationException"] = @NO;
-                            report[@"cellMonitorComparisonEligible"] = @NO;
-                            report[@"cellMonitorComparisonStatus"] = @"indeterminatePartial";
-                            report[@"cellMonitorComparisonReason"] = CCNMCellMonitorComparisonReason;
-                            report[@"cellMonitorComparison"] = @{
-                                @"eligible": @NO,
-                                @"descriptiveOnly": @YES,
-                                @"status": @"indeterminatePartial",
-                                @"reason": CCNMCellMonitorComparisonReason
-                            };
-                            report[@"nrServingCellObserved"] = @NO;
-                            report[@"nrObservationStatus"] = @"indeterminatePartial";
                             if ([context respondsToSelector:@selector(isSimPresent)]) report[@"isSimPresent"] = @([context isSimPresent]);
                             if ([context respondsToSelector:@selector(isSimGood)]) report[@"isSimGood"] = @([context isSimGood]);
                             if ([context respondsToSelector:@selector(uuid)]) {
@@ -3122,36 +2322,33 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
                                 report[@"nrStatusABIError"] = nrStatusABIFailure ?: @"(unknown)";
                             }
 
-                            // RAT Selection (async)
-                            NSString *ratSelectionABIFailure = nil;
+                            // RAT Selection (async, sampler-owned ABI and timeout handling)
                             BOOL abortAfterUnsafeAsyncAttempt = NO;
-                            if (CCNMValidateAsyncSelectorABI(client, @selector(getRatSelection:completion:), &ratSelectionABIFailure)) {
-                                NSDictionary *ratSelectionAttempt = CCNMRunRatSelectionAttempt(client, context);
-                                report[@"ratSelectionAttempt"] = ratSelectionAttempt;
-                                report[@"ratSelectionWaitCompleted"] = ratSelectionAttempt[@"ratSelectionWaitCompleted"] ?: @NO;
-                                report[@"ratSelectionTimedOut"] = ratSelectionAttempt[@"ratSelectionTimedOut"] ?: @NO;
-                                NSString *ratSelectionStatus = ratSelectionAttempt[@"status"];
-                                BOOL ratSelectionTimedOut = [ratSelectionStatus isEqualToString:@"timeout"];
-                                BOOL ratSelectionInvocationException =
-                                    [ratSelectionStatus isEqualToString:@"invocationException"];
-                                if (CCNMPrivateAsyncAttemptRequiresAbort(
-                                        ratSelectionTimedOut, ratSelectionInvocationException)) {
-                                    abortAfterUnsafeAsyncAttempt = YES;
-                                    report[@"ratSelectionAbortedLaterCalls"] = @YES;
-                                    report[@"cellMonitorSamplingFailure"] = ratSelectionTimedOut
-                                        ? @"RAT-selection timed out; later CoreTelephony calls were not attempted."
-                                        : @"RAT-selection invocation raised an exception; later CoreTelephony calls were not attempted.";
-                                    if (ratSelectionAttempt[@"ratSelectionInvocationException"]) {
-                                        report[@"ratSelectionInvocationException"] = ratSelectionAttempt[@"ratSelectionInvocationException"];
-                                    }
-                                } else if (ratSelectionAttempt[@"ratSelectionError"]) {
-                                    report[@"ratSelectionError"] = ratSelectionAttempt[@"ratSelectionError"];
-                                } else {
-                                    report[@"ratSelection"] = ratSelectionAttempt[@"ratSelection"] ?: @"";
-                                    report[@"ratPreferred"] = ratSelectionAttempt[@"ratPreferred"] ?: @"";
+                            NSDictionary *ratSelectionAttempt = CCNMRunServingCellRatSelectionAttempt(client, context);
+                            report[@"ratSelectionAttempt"] = ratSelectionAttempt;
+                            report[@"ratSelectionWaitCompleted"] = ratSelectionAttempt[@"ratSelectionWaitCompleted"] ?: @NO;
+                            report[@"ratSelectionTimedOut"] = ratSelectionAttempt[@"ratSelectionTimedOut"] ?: @NO;
+                            NSString *ratSelectionStatus = ratSelectionAttempt[@"status"];
+                            BOOL ratSelectionTimedOut = [ratSelectionStatus isEqualToString:@"timeout"];
+                            BOOL ratSelectionInvocationException =
+                                [ratSelectionStatus isEqualToString:@"invocationException"];
+                            if (CCNMPrivateAsyncAttemptRequiresAbort(
+                                    ratSelectionTimedOut, ratSelectionInvocationException)) {
+                                abortAfterUnsafeAsyncAttempt = YES;
+                                report[@"ratSelectionAbortedLaterCalls"] = @YES;
+                                report[@"cellMonitorSamplingFailure"] = ratSelectionTimedOut
+                                    ? @"RAT-selection timed out; later CoreTelephony calls were not attempted."
+                                    : @"RAT-selection invocation raised an exception; later CoreTelephony calls were not attempted.";
+                                if (ratSelectionAttempt[@"ratSelectionInvocationException"]) {
+                                    report[@"ratSelectionInvocationException"] = ratSelectionAttempt[@"ratSelectionInvocationException"];
                                 }
+                            } else if ([ratSelectionStatus isEqualToString:@"abiError"]) {
+                                report[@"ratSelectionABIError"] = ratSelectionAttempt[@"ratSelectionABIError"] ?: @"(unknown)";
+                            } else if (ratSelectionAttempt[@"ratSelectionError"]) {
+                                report[@"ratSelectionError"] = ratSelectionAttempt[@"ratSelectionError"];
                             } else {
-                                report[@"ratSelectionABIError"] = ratSelectionABIFailure ?: @"(unknown)";
+                                report[@"ratSelection"] = ratSelectionAttempt[@"ratSelection"] ?: @"";
+                                report[@"ratPreferred"] = ratSelectionAttempt[@"ratPreferred"] ?: @"";
                             }
                             if (abortAfterUnsafeAsyncAttempt) {
                                 result[@"slot1"] = report;
@@ -3175,7 +2372,7 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
                                 id frequencyRangeOutput = nil;
                                 unsigned int frRange = [client getPublicNrFrequencyRangeSync:&frequencyRangeOutput];
                                 report[@"publicNrFrequencyRangeRaw"] = @(frRange);
-                                report[@"publicNrFrequencyRangeSyncOut"] = CCNMTypedPropertyListEvidence(frequencyRangeOutput);
+                                report[@"publicNrFrequencyRangeSyncOut"] = CCNMServingCellTypedPropertyListEvidence(frequencyRangeOutput);
                                 report[@"publicNrFrequencyRangeScope"] = @"current data service; not slot-specific and not serving-band evidence";
                                 report[@"publicNrFrequencyRange"] = CCNMDescribePublicNRFrequencyRange(frRange);
                             } else {
@@ -3209,505 +2406,9 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
                                 report[@"bandInfoABIError"] = bandInfoABIFailure ?: @"(unknown)";
                             }
 
-                            // Cell Monitor (read-only A/B: one refresh vs refresh before every copy)
-                            NSString *refreshABIFailure = nil;
-                            NSString *copyABIFailure = nil;
-                            BOOL refreshABIValid = CCNMValidateAsyncSelectorABI(client, @selector(refreshCellMonitor:completion:), &refreshABIFailure);
-                            BOOL copyABIValid = CCNMValidateAsyncSelectorABI(client, @selector(copyCellInfo:completion:), &copyABIFailure);
-                            if (ctHandle && refreshABIValid && copyABIValid) {
-                                NSArray<NSString *> *missingSymbols = nil;
-                                NSDictionary<NSString *, NSString *> *cellMonitorSymbols = CCNMCellMonitorSymbols(ctHandle, &missingSymbols);
-                                report[@"cellMonitorResolvedSymbols"] = cellMonitorSymbols;
-                                report[@"cellMonitorMissingSymbols"] = missingSymbols ?: @[];
-
-                                NSArray<NSDictionary *> *phaseDefinitions = CCNMCellMonitorPhaseDefinitions();
-                                NSMutableArray *phaseResults = [NSMutableArray arrayWithCapacity:CCNMCellMonitorPhaseCount];
-                                NSMutableArray *refreshAttempts = [NSMutableArray arrayWithCapacity:requestedRefreshCount];
-                                NSMutableArray *samples = [NSMutableArray arrayWithCapacity:CCNMCellMonitorSampleCount];
-                                NSMutableArray *samplingFailures = [NSMutableArray array];
-                                NSMutableArray *observedServingCells = [NSMutableArray array];
-                                NSMutableDictionary<NSString *, NSMutableArray *> *phaseServingPayloads = [@{
-                                    @"singleRefreshRepeatedCopy": [NSMutableArray array],
-                                    @"refreshBeforeEachCopy": [NSMutableArray array]
-                                } mutableCopy];
-                                NSUInteger attemptedRefreshCount = 0;
-                                NSUInteger completedRefreshCount = 0;
-                                NSUInteger successfulRefreshCount = 0;
-                                NSUInteger attemptedSampleCount = 0;
-                                NSUInteger completedSampleCount = 0;
-                                NSUInteger successfulCopyCount = 0;
-                                NSUInteger successfulSampleCount = 0;
-                                BOOL stopSampling = NO;
-                                BOOL abortAfterTimeout = NO;
-                                BOOL abortAfterInvocationException = NO;
-                                BOOL nrServingCellObserved = NO;
-                                CCNMCellMonitorOrchestrationState orchestration =
-                                    CCNMCellMonitorOrchestrationStart(CCNMCellMonitorPhaseSampleCount);
-                                NSTimeInterval samplingStartedMonotonic = CCNMMonotonicNow();
-                                report[@"cellMonitorSampleIntervalSeconds"] = @(CCNMCellMonitorSampleIntervalMicroseconds / 1000000.0);
-                                report[@"cellMonitorRefreshSettleSeconds"] = @(CCNMCellMonitorRefreshSettleMicroseconds / 1000000.0);
-                                report[@"cellMonitorRefreshBeforeCopyDelaySeconds"] = @(CCNMCellMonitorRefreshBeforeCopyDelayMicroseconds / 1000000.0);
-                                report[@"cellMonitorSamplingStartedAt"] = @([[NSDate date] timeIntervalSince1970]);
-                                report[@"cellMonitorSamplingStartedMonotonic"] = @(samplingStartedMonotonic);
-
-                                for (NSUInteger phaseIndex = 0; phaseIndex < phaseDefinitions.count; phaseIndex++) {
-                                    NSDictionary *phaseDefinition = phaseDefinitions[phaseIndex];
-                                    NSString *phaseName = phaseDefinition[@"name"];
-                                    CCNMCellMonitorRefreshPolicy refreshPolicy =
-                                        (CCNMCellMonitorRefreshPolicy)[phaseDefinition[@"refreshPolicy"] unsignedIntegerValue];
-                                    NSUInteger phaseRequestedRefreshCount = CCNMCellMonitorRequiredRefreshCount(
-                                        refreshPolicy, CCNMCellMonitorPhaseSampleCount);
-                                    NSUInteger phaseAttemptedRefreshCount = 0;
-                                    NSUInteger phaseCompletedRefreshCount = 0;
-                                    NSUInteger phaseSuccessfulRefreshCount = 0;
-                                    NSUInteger phaseAttemptedSampleCount = 0;
-                                    NSUInteger phaseCompletedSampleCount = 0;
-                                    NSUInteger phaseSuccessfulCopyCount = 0;
-                                    NSUInteger phaseSuccessfulSampleCount = 0;
-                                    NSMutableArray *phaseRefreshAttemptIndexes = [NSMutableArray array];
-                                    NSMutableArray *phaseSampleIndexes = [NSMutableArray array];
-                                    NSMutableArray *phaseAttemptedRefreshSampleIndexes = [NSMutableArray array];
-                                    NSMutableArray *phaseAttemptedCopySampleIndexes = [NSMutableArray array];
-                                    NSTimeInterval phaseStartedAt = [[NSDate date] timeIntervalSince1970];
-                                    NSTimeInterval phaseStartedMonotonic = CCNMMonotonicNow();
-                                    BOOL phaseSkippedAfterTimeout = abortAfterTimeout;
-                                    BOOL phaseSkippedAfterInvocationException = abortAfterInvocationException;
-
-                                    for (NSUInteger phaseSampleIndex = 0;
-                                         phaseSampleIndex < CCNMCellMonitorPhaseSampleCount && !stopSampling;
-                                         phaseSampleIndex++) {
-                                        NSUInteger sampleIndex = phaseIndex * CCNMCellMonitorPhaseSampleCount + phaseSampleIndex;
-                                        BOOL refreshRequired = CCNMCellMonitorShouldRefresh(refreshPolicy, phaseSampleIndex);
-                                        CCNMCellMonitorOrchestrationOperation expectedOperation = refreshRequired
-                                            ? CCNMCellMonitorOrchestrationRefresh
-                                            : CCNMCellMonitorOrchestrationCopy;
-                                        if (!CCNMCellMonitorOrchestrationMatches(
-                                                &orchestration, phaseIndex, phaseSampleIndex, expectedOperation)) {
-                                            [samplingFailures addObject:@{
-                                                @"stage": @"orchestration",
-                                                @"kind": @"stateMismatch",
-                                                @"phaseIndex": @(phaseIndex),
-                                                @"phaseName": phaseName,
-                                                @"phaseSampleIndex": @(phaseSampleIndex),
-                                                @"sampleIndex": @(sampleIndex),
-                                                @"message": @"orchestration state did not match the next planned operation"
-                                            }];
-                                            stopSampling = YES;
-                                            break;
-                                        }
-
-                                        BOOL shouldDelayBeforeSample = phaseSampleIndex > 0 ||
-                                            (phaseIndex > 0 && refreshPolicy == CCNMCellMonitorRefreshBeforeEachCopy);
-                                        if (shouldDelayBeforeSample) {
-                                            useconds_t interSampleDelay =
-                                                refreshPolicy == CCNMCellMonitorRefreshBeforeEachCopy
-                                                ? CCNMCellMonitorRefreshBeforeCopyDelayMicroseconds
-                                                : CCNMCellMonitorSampleIntervalMicroseconds;
-                                            usleep(interSampleDelay);
-                                        }
-
-                                        [phaseSampleIndexes addObject:@(sampleIndex)];
-                                        NSMutableDictionary *sample = [@{
-                                            @"index": @(sampleIndex),
-                                            @"phaseIndex": @(phaseIndex),
-                                            @"phaseName": phaseName,
-                                            @"phaseSampleIndex": @(phaseSampleIndex),
-                                            @"refreshPolicy": refreshPolicy == CCNMCellMonitorRefreshOncePerPhase
-                                                ? @"onceAtPhaseStart" : @"beforeEachCopy",
-                                            @"refreshRequired": @(refreshRequired),
-                                            @"cellMonitorCopyAttempted": @NO,
-                                            @"cellMonitorCopyStatus": @"notAttempted",
-                                            @"cellMonitorSucceeded": @NO
-                                        } mutableCopy];
-
-                                        if (refreshRequired) {
-                                            attemptedRefreshCount++;
-                                            phaseAttemptedRefreshCount++;
-                                            [phaseAttemptedRefreshSampleIndexes addObject:@(sampleIndex)];
-                                            NSMutableDictionary *refreshAttempt = CCNMRunCellMonitorRefreshAttempt(client, context);
-                                            NSUInteger refreshAttemptIndex = refreshAttempts.count;
-                                            refreshAttempt[@"index"] = @(refreshAttemptIndex);
-                                            refreshAttempt[@"phaseIndex"] = @(phaseIndex);
-                                            refreshAttempt[@"phaseName"] = phaseName;
-                                            refreshAttempt[@"phaseSampleIndex"] = @(phaseSampleIndex);
-                                            [refreshAttempts addObject:refreshAttempt];
-                                            [phaseRefreshAttemptIndexes addObject:@(refreshAttemptIndex)];
-                                            sample[@"refreshAttemptIndex"] = @(refreshAttemptIndex);
-
-                                            if ([refreshAttempt[@"cellMonitorRefreshWaitCompleted"] boolValue]) {
-                                                completedRefreshCount++;
-                                                phaseCompletedRefreshCount++;
-                                            }
-                                            BOOL refreshSucceeded = [refreshAttempt[@"cellMonitorRefreshSucceeded"] boolValue];
-                                            BOOL refreshTimedOut = [refreshAttempt[@"cellMonitorRefreshTimedOut"] boolValue];
-                                            BOOL refreshInvocationException = refreshAttempt[@"cellMonitorRefreshInvocationException"] != nil;
-                                            CCNMCellMonitorOrchestrationOutcome refreshOutcome = refreshTimedOut
-                                                ? CCNMCellMonitorOrchestrationTimedOut
-                                                : (refreshInvocationException
-                                                    ? CCNMCellMonitorOrchestrationInvocationException
-                                                    : (refreshSucceeded
-                                                        ? CCNMCellMonitorOrchestrationSucceeded
-                                                        : CCNMCellMonitorOrchestrationRecoverableFailure));
-                                            if (!CCNMCellMonitorOrchestrationAdvance(&orchestration, refreshOutcome)) {
-                                                sample[@"cellMonitorSamplingFailure"] = @"orchestration reducer rejected the refresh result";
-                                                sample[@"cellMonitorCopyNotAttemptedReason"] = @"orchestrationStateMismatch";
-                                                [samplingFailures addObject:@{
-                                                    @"stage": @"orchestration",
-                                                    @"kind": @"stateMismatch",
-                                                    @"phaseIndex": @(phaseIndex),
-                                                    @"phaseName": phaseName,
-                                                    @"phaseSampleIndex": @(phaseSampleIndex),
-                                                    @"sampleIndex": @(sampleIndex),
-                                                    @"message": sample[@"cellMonitorSamplingFailure"]
-                                                }];
-                                                [samples addObject:sample];
-                                                stopSampling = YES;
-                                                break;
-                                            }
-                                            abortAfterTimeout = orchestration.abortedAfterTimeout;
-                                            abortAfterInvocationException = orchestration.abortedAfterInvocationException;
-                                            stopSampling = abortAfterTimeout || abortAfterInvocationException;
-
-                                            if (refreshSucceeded) {
-                                                successfulRefreshCount++;
-                                                phaseSuccessfulRefreshCount++;
-                                                usleep(CCNMCellMonitorRefreshSettleMicroseconds);
-                                            } else {
-                                                NSString *refreshFailure = refreshAttempt[@"cellMonitorRefreshError"] ?:
-                                                    (refreshTimedOut ? @"refresh timed out" : @"refresh failed without an error");
-                                                NSString *refreshFailureKind = refreshTimedOut
-                                                    ? @"timeout"
-                                                    : (refreshInvocationException ? @"invocationException" : @"apiError");
-                                                sample[@"cellMonitorSamplingFailure"] = refreshFailure;
-                                                sample[@"cellMonitorCopyNotAttemptedReason"] = refreshFailureKind;
-                                                [samplingFailures addObject:@{
-                                                    @"stage": @"refresh",
-                                                    @"kind": refreshFailureKind,
-                                                    @"phaseIndex": @(phaseIndex),
-                                                    @"phaseName": phaseName,
-                                                    @"phaseSampleIndex": @(phaseSampleIndex),
-                                                    @"sampleIndex": @(sampleIndex),
-                                                    @"message": refreshFailure
-                                                }];
-                                                if (refreshTimedOut) {
-                                                    report[@"cellMonitorRefreshTimedOut"] = @YES;
-                                                }
-                                                if (!report[@"cellMonitorRefreshError"]) {
-                                                    report[@"cellMonitorRefreshError"] = refreshFailure;
-                                                }
-                                                [samples addObject:sample];
-                                                if (stopSampling || refreshPolicy == CCNMCellMonitorRefreshOncePerPhase) {
-                                                    break;
-                                                }
-                                                continue;
-                                            }
-                                        }
-
-                                        if (!CCNMCellMonitorOrchestrationMatches(
-                                                &orchestration,
-                                                phaseIndex,
-                                                phaseSampleIndex,
-                                                CCNMCellMonitorOrchestrationCopy)) {
-                                            sample[@"cellMonitorSamplingFailure"] =
-                                                @"orchestration state did not authorize the copy operation";
-                                            sample[@"cellMonitorCopyNotAttemptedReason"] = @"orchestrationStateMismatch";
-                                            [samplingFailures addObject:@{
-                                                @"stage": @"orchestration",
-                                                @"kind": @"stateMismatch",
-                                                @"phaseIndex": @(phaseIndex),
-                                                @"phaseName": phaseName,
-                                                @"phaseSampleIndex": @(phaseSampleIndex),
-                                                @"sampleIndex": @(sampleIndex),
-                                                @"message": sample[@"cellMonitorSamplingFailure"]
-                                            }];
-                                            [samples addObject:sample];
-                                            stopSampling = YES;
-                                            break;
-                                        }
-
-                                        attemptedSampleCount++;
-                                        phaseAttemptedSampleCount++;
-                                        [phaseAttemptedCopySampleIndexes addObject:@(sampleIndex)];
-                                        sample[@"cellMonitorCopyAttempted"] = @YES;
-                                        NSMutableDictionary *copyAttempt = CCNMRunCellMonitorCopyAttempt(
-                                            client, context, cellMonitorSymbols);
-                                        [sample addEntriesFromDictionary:copyAttempt];
-                                        sample[@"cellMonitorCopyStatus"] = copyAttempt[@"status"] ?: @"unknown";
-                                        [samples addObject:sample];
-                                        if ([copyAttempt[@"cellMonitorCopyWaitCompleted"] boolValue]) {
-                                            completedSampleCount++;
-                                            phaseCompletedSampleCount++;
-                                        }
-                                        if ([copyAttempt[@"cellMonitorCopySucceeded"] boolValue]) {
-                                            successfulCopyCount++;
-                                            phaseSuccessfulCopyCount++;
-                                        }
-
-                                        BOOL copyParsed = [copyAttempt[@"cellMonitorSucceeded"] boolValue];
-                                        BOOL copyTimedOut = [copyAttempt[@"cellMonitorCopyTimedOut"] boolValue];
-                                        BOOL copyInvocationException = copyAttempt[@"cellMonitorCopyInvocationException"] != nil;
-                                        CCNMCellMonitorOrchestrationOutcome copyOutcome = copyTimedOut
-                                            ? CCNMCellMonitorOrchestrationTimedOut
-                                            : (copyInvocationException
-                                                ? CCNMCellMonitorOrchestrationInvocationException
-                                                : (copyParsed
-                                                    ? CCNMCellMonitorOrchestrationSucceeded
-                                                    : CCNMCellMonitorOrchestrationRecoverableFailure));
-                                        if (!CCNMCellMonitorOrchestrationAdvance(&orchestration, copyOutcome)) {
-                                            sample[@"cellMonitorSamplingFailure"] =
-                                                @"orchestration reducer rejected the copy result";
-                                            [samplingFailures addObject:@{
-                                                @"stage": @"orchestration",
-                                                @"kind": @"stateMismatch",
-                                                @"phaseIndex": @(phaseIndex),
-                                                @"phaseName": phaseName,
-                                                @"phaseSampleIndex": @(phaseSampleIndex),
-                                                @"sampleIndex": @(sampleIndex),
-                                                @"message": sample[@"cellMonitorSamplingFailure"]
-                                            }];
-                                            stopSampling = YES;
-                                            break;
-                                        }
-                                        abortAfterTimeout = orchestration.abortedAfterTimeout;
-                                        abortAfterInvocationException = orchestration.abortedAfterInvocationException;
-                                        stopSampling = abortAfterTimeout || abortAfterInvocationException;
-
-                                        if (!copyParsed) {
-                                            NSString *copyFailure = nil;
-                                            NSString *failureKind = nil;
-                                            if (copyTimedOut) {
-                                                copyFailure = @"copy timed out";
-                                                failureKind = @"timeout";
-                                                report[@"cellMonitorCopyTimedOut"] = @YES;
-                                            } else if (copyInvocationException) {
-                                                copyFailure = copyAttempt[@"cellMonitorError"] ?: @"copy invocation raised an exception";
-                                                failureKind = @"invocationException";
-                                                if (!report[@"cellMonitorError"]) {
-                                                    report[@"cellMonitorError"] = copyFailure;
-                                                }
-                                            } else if (copyAttempt[@"cellMonitorError"]) {
-                                                copyFailure = copyAttempt[@"cellMonitorError"];
-                                                failureKind = @"apiError";
-                                                if (!report[@"cellMonitorError"]) {
-                                                    report[@"cellMonitorError"] = copyFailure;
-                                                }
-                                            } else if (copyAttempt[@"cellMonitorResult"]) {
-                                                copyFailure = @"copy completed without Cell Monitor data";
-                                                failureKind = @"nilResult";
-                                                report[@"cellMonitorResult"] = copyAttempt[@"cellMonitorResult"];
-                                            } else {
-                                                copyFailure = copyAttempt[@"cellMonitorParseError"] ?: @"Cell Monitor snapshot parsing failed";
-                                                failureKind = @"parseError";
-                                            }
-                                            sample[@"cellMonitorSamplingFailure"] = copyFailure;
-                                            [samplingFailures addObject:@{
-                                                @"stage": @"copy",
-                                                @"kind": failureKind,
-                                                @"phaseIndex": @(phaseIndex),
-                                                @"phaseName": phaseName,
-                                                @"phaseSampleIndex": @(phaseSampleIndex),
-                                                @"sampleIndex": @(sampleIndex),
-                                                @"message": copyFailure
-                                            }];
-                                            if (stopSampling) {
-                                                break;
-                                            }
-                                            continue;
-                                        }
-
-                                        successfulSampleCount++;
-                                        phaseSuccessfulSampleCount++;
-                                        NSArray *servingPayload = [copyAttempt[@"servingCells"] isKindOfClass:[NSArray class]]
-                                            ? copyAttempt[@"servingCells"] : @[];
-                                        [phaseServingPayloads[phaseName] addObject:servingPayload];
-                                        NSNumber *sampledAt = copyAttempt[@"sampledAt"] ?: @([[NSDate date] timeIntervalSince1970]);
-                                        for (NSDictionary *servingCell in copyAttempt[@"servingCells"]) {
-                                            NSMutableDictionary *observation = [servingCell mutableCopy];
-                                            observation[@"sampleIndex"] = @(sampleIndex);
-                                            observation[@"phaseIndex"] = @(phaseIndex);
-                                            observation[@"phaseName"] = phaseName;
-                                            observation[@"phaseSampleIndex"] = @(phaseSampleIndex);
-                                            observation[@"sampledAt"] = sampledAt;
-                                            [observedServingCells addObject:observation];
-
-                                            NSString *servingRat = [servingCell[@"rat"] isKindOfClass:[NSString class]] ? servingCell[@"rat"] : nil;
-                                            if (CCNMCellMonitorRATIsNR(servingRat ? servingRat.UTF8String : NULL)) {
-                                                nrServingCellObserved = YES;
-                                            }
-                                        }
-                                    }
-
-                                    NSMutableArray *phaseNotAttemptedRefreshSampleIndexes = [NSMutableArray array];
-                                    NSMutableArray *phaseNotAttemptedCopySampleIndexes = [NSMutableArray array];
-                                    for (NSUInteger plannedPhaseSampleIndex = 0;
-                                         plannedPhaseSampleIndex < CCNMCellMonitorPhaseSampleCount;
-                                         plannedPhaseSampleIndex++) {
-                                        NSNumber *plannedSampleIndex = @(
-                                            phaseIndex * CCNMCellMonitorPhaseSampleCount + plannedPhaseSampleIndex);
-                                        if (![phaseAttemptedCopySampleIndexes containsObject:plannedSampleIndex]) {
-                                            [phaseNotAttemptedCopySampleIndexes addObject:plannedSampleIndex];
-                                        }
-                                        if (CCNMCellMonitorShouldRefresh(refreshPolicy, plannedPhaseSampleIndex) &&
-                                            ![phaseAttemptedRefreshSampleIndexes containsObject:plannedSampleIndex]) {
-                                            [phaseNotAttemptedRefreshSampleIndexes addObject:plannedSampleIndex];
-                                        }
-                                    }
-                                    NSString *phaseNotAttemptedReason = @"";
-                                    if (phaseNotAttemptedRefreshSampleIndexes.count > 0 ||
-                                        phaseNotAttemptedCopySampleIndexes.count > 0) {
-                                        if (abortAfterTimeout) {
-                                            phaseNotAttemptedReason = @"runAbortedAfterTimeout";
-                                        } else if (abortAfterInvocationException) {
-                                            phaseNotAttemptedReason = @"runAbortedAfterInvocationException";
-                                        } else if (refreshPolicy == CCNMCellMonitorRefreshOncePerPhase &&
-                                                   phaseSuccessfulRefreshCount == 0) {
-                                            phaseNotAttemptedReason = @"phaseInitialRefreshFailed";
-                                        } else {
-                                            phaseNotAttemptedReason = @"refreshPrerequisiteFailed";
-                                        }
-                                    }
-
-                                    CCNMCellMonitorSamplingStatus phaseStatus = CCNMClassifyCellMonitorABSamplingStatus(
-                                        CCNMCellMonitorPhaseSampleCount,
-                                        phaseAttemptedSampleCount,
-                                        phaseCompletedSampleCount,
-                                        phaseSuccessfulCopyCount,
-                                        phaseSuccessfulSampleCount,
-                                        phaseRequestedRefreshCount,
-                                        phaseAttemptedRefreshCount,
-                                        phaseCompletedRefreshCount,
-                                        phaseSuccessfulRefreshCount);
-                                    [phaseResults addObject:@{
-                                        @"phaseIndex": @(phaseIndex),
-                                        @"phaseName": phaseName,
-                                        @"refreshPolicy": refreshPolicy == CCNMCellMonitorRefreshOncePerPhase
-                                            ? @"onceAtPhaseStart" : @"beforeEachCopy",
-                                        @"requestedRefreshCount": @(phaseRequestedRefreshCount),
-                                        @"attemptedRefreshCount": @(phaseAttemptedRefreshCount),
-                                        @"completedRefreshCount": @(phaseCompletedRefreshCount),
-                                        @"successfulRefreshCount": @(phaseSuccessfulRefreshCount),
-                                        @"requestedSampleCount": @(CCNMCellMonitorPhaseSampleCount),
-                                        @"attemptedSampleCount": @(phaseAttemptedSampleCount),
-                                        @"completedSampleCount": @(phaseCompletedSampleCount),
-                                        @"successfulCopyCount": @(phaseSuccessfulCopyCount),
-                                        @"successfulSampleCount": @(phaseSuccessfulSampleCount),
-                                        @"notAttemptedRefreshCount": @(phaseRequestedRefreshCount - phaseAttemptedRefreshCount),
-                                        @"notAttemptedSampleCount": @(CCNMCellMonitorPhaseSampleCount - phaseAttemptedSampleCount),
-                                        @"notAttemptedRefreshSampleIndexes": phaseNotAttemptedRefreshSampleIndexes,
-                                        @"notAttemptedCopySampleIndexes": phaseNotAttemptedCopySampleIndexes,
-                                        @"notAttemptedReason": phaseNotAttemptedReason,
-                                        @"samplingStatus": CCNMCellMonitorSamplingStatusName(phaseStatus),
-                                        @"samplingPartial": @(phaseStatus == CCNMCellMonitorSamplingPartial),
-                                        @"skippedAfterTimeout": @(phaseSkippedAfterTimeout),
-                                        @"skippedAfterInvocationException": @(phaseSkippedAfterInvocationException),
-                                        @"refreshAttemptIndexes": phaseRefreshAttemptIndexes,
-                                        @"sampleIndexes": phaseSampleIndexes,
-                                        @"startedAt": @(phaseStartedAt),
-                                        @"startedMonotonic": @(phaseStartedMonotonic),
-                                        @"completedAt": @([[NSDate date] timeIntervalSince1970]),
-                                        @"completedMonotonic": @(CCNMMonotonicNow()),
-                                        @"elapsedMilliseconds": CCNMElapsedMillisecondsSince(phaseStartedMonotonic)
-                                    }];
-                                }
-
-                                CCNMCellMonitorSamplingStatus samplingStatus = CCNMClassifyCellMonitorABSamplingStatus(
-                                    CCNMCellMonitorSampleCount,
-                                    attemptedSampleCount,
-                                    completedSampleCount,
-                                    successfulCopyCount,
-                                    successfulSampleCount,
-                                    requestedRefreshCount,
-                                    attemptedRefreshCount,
-                                    completedRefreshCount,
-                                    successfulRefreshCount);
-                                BOOL orchestrationEndedNormally =
-                                    CCNMCellMonitorOrchestrationIsDone(&orchestration) &&
-                                    !orchestration.abortedAfterTimeout &&
-                                    !orchestration.abortedAfterInvocationException &&
-                                    orchestration.phaseIndex >= CCNMCellMonitorPhaseCount;
-                                if (samplingStatus == CCNMCellMonitorSamplingComplete && !orchestrationEndedNormally) {
-                                    samplingStatus = CCNMCellMonitorSamplingPartial;
-                                }
-                                report[@"cellMonitorOrchestration"] = @{
-                                    @"endedNormally": @(orchestrationEndedNormally),
-                                    @"phaseIndex": @(orchestration.phaseIndex),
-                                    @"sampleIndex": @(orchestration.sampleIndex),
-                                    @"nextOperation": @(orchestration.nextOperation),
-                                    @"abortedAfterTimeout": @(orchestration.abortedAfterTimeout),
-                                    @"abortedAfterInvocationException": @(orchestration.abortedAfterInvocationException)
-                                };
-                                report[@"cellMonitorPhaseResults"] = phaseResults;
-                                report[@"cellMonitorRefreshAttempts"] = refreshAttempts;
-                                report[@"cellMonitorAttemptedRefreshCount"] = @(attemptedRefreshCount);
-                                report[@"cellMonitorCompletedRefreshCount"] = @(completedRefreshCount);
-                                report[@"cellMonitorSuccessfulRefreshCount"] = @(successfulRefreshCount);
-                                report[@"cellMonitorNotAttemptedRefreshCount"] = @(requestedRefreshCount - attemptedRefreshCount);
-                                report[@"cellMonitorSamples"] = samples;
-                                report[@"cellMonitorAttemptedSampleCount"] = @(attemptedSampleCount);
-                                report[@"cellMonitorCompletedSampleCount"] = @(completedSampleCount);
-                                report[@"cellMonitorSuccessfulCopyCount"] = @(successfulCopyCount);
-                                report[@"cellMonitorSuccessfulSampleCount"] = @(successfulSampleCount);
-                                report[@"cellMonitorNotAttemptedSampleCount"] = @(CCNMCellMonitorSampleCount - attemptedSampleCount);
-                                report[@"cellMonitorSamplingStatus"] = CCNMCellMonitorSamplingStatusName(samplingStatus);
-                                report[@"cellMonitorSamplingPartial"] = @(samplingStatus == CCNMCellMonitorSamplingPartial);
-                                report[@"cellMonitorSamplingStoppedEarly"] = @(stopSampling);
-                                report[@"cellMonitorCopyPlanIncomplete"] = @(attemptedSampleCount < CCNMCellMonitorSampleCount);
-                                report[@"cellMonitorSamplingAbortedAfterTimeout"] = @(abortAfterTimeout);
-                                report[@"cellMonitorSamplingAbortedAfterInvocationException"] = @(abortAfterInvocationException);
-                                BOOL comparisonEligible = samplingStatus == CCNMCellMonitorSamplingComplete;
-                                NSArray *phaseAPayloads = phaseServingPayloads[@"singleRefreshRepeatedCopy"];
-                                NSArray *phaseBPayloads = phaseServingPayloads[@"refreshBeforeEachCopy"];
-                                NSMutableArray *allServingPayloads = [NSMutableArray arrayWithArray:phaseAPayloads];
-                                [allServingPayloads addObjectsFromArray:phaseBPayloads];
-                                BOOL phaseAAllEqual = comparisonEligible && CCNMCellMonitorAllPayloadsEqual(phaseAPayloads);
-                                BOOL phaseBAllEqual = comparisonEligible && CCNMCellMonitorAllPayloadsEqual(phaseBPayloads);
-                                BOOL allPayloadsEqual = comparisonEligible && CCNMCellMonitorAllPayloadsEqual(allServingPayloads);
-                                NSString *comparisonStatus = comparisonEligible
-                                    ? (allPayloadsEqual ? @"allServingPayloadsEqual" : @"servingPayloadChangeObserved")
-                                    : @"indeterminatePartial";
-                                NSMutableDictionary *comparison = [@{
-                                    @"eligible": @(comparisonEligible),
-                                    @"descriptiveOnly": @YES,
-                                    @"status": comparisonStatus,
-                                    @"reason": CCNMCellMonitorComparisonReason,
-                                    @"phaseAPayloadCount": @(phaseAPayloads.count),
-                                    @"phaseBPayloadCount": @(phaseBPayloads.count)
-                                } mutableCopy];
-                                if (comparisonEligible) {
-                                    comparison[@"phaseAAllServingPayloadsEqual"] = @(phaseAAllEqual);
-                                    comparison[@"phaseBAllServingPayloadsEqual"] = @(phaseBAllEqual);
-                                    comparison[@"allServingPayloadsEqual"] = @(allPayloadsEqual);
-                                    comparison[@"phaseBoundaryServingPayloadEqual"] =
-                                        @([phaseAPayloads.lastObject isEqual:phaseBPayloads.firstObject]);
-                                }
-                                report[@"cellMonitorComparisonEligible"] = @(comparisonEligible);
-                                report[@"cellMonitorComparisonStatus"] = comparisonStatus;
-                                report[@"cellMonitorComparisonReason"] = CCNMCellMonitorComparisonReason;
-                                report[@"cellMonitorComparison"] = comparison;
-                                report[@"cellMonitorSamplingCompletedAt"] = @([[NSDate date] timeIntervalSince1970]);
-                                report[@"cellMonitorSamplingCompletedMonotonic"] = @(CCNMMonotonicNow());
-                                report[@"cellMonitorSamplingElapsedMilliseconds"] = CCNMElapsedMillisecondsSince(samplingStartedMonotonic);
-                                report[@"cellMonitorSamplingFailures"] = samplingFailures;
-                                if (samplingFailures.count > 0) {
-                                    report[@"cellMonitorSamplingFailure"] = samplingFailures.firstObject[@"message"];
-                                }
-                                report[@"observedServingCells"] = observedServingCells;
-                                report[@"nrServingCellObserved"] = @(nrServingCellObserved);
-                                CCNMNRObservationStatus nrObservationStatus = CCNMClassifyNRObservationStatus(
-                                    nrServingCellObserved, samplingStatus);
-                                report[@"nrObservationStatus"] = CCNMNRObservationStatusName(nrObservationStatus);
-                                report[@"cellMonitorSucceeded"] = @(samplingStatus == CCNMCellMonitorSamplingComplete);
-                            } else {
-                                if (!ctHandle) {
-                                    report[@"cellMonitorAvailabilityError"] = @"CoreTelephony framework handle is unavailable.";
-                                }
-                                if (!refreshABIValid) {
-                                    report[@"cellMonitorRefreshABIError"] = refreshABIFailure ?: @"(unknown)";
-                                }
-                                if (!copyABIValid) {
-                                    report[@"cellMonitorCopyABIError"] = copyABIFailure ?: @"(unknown)";
-                                }
-                            }
+                            // Cell Monitor (read-only adaptive refresh/copy sampler)
+                            NSDictionary *samplingReport = CCNMRunAdaptiveServingCellSampler(client, context, ctHandle);
+                            [report addEntriesFromDictionary:samplingReport];
 
                             result[@"slot1"] = report;
                         }];
@@ -3727,15 +2428,12 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
         }
         if (!failure && ![slotReport[@"cellMonitorSucceeded"] boolValue]) {
             NSString *cellMonitorFailure = slotReport[@"cellMonitorSamplingFailure"] ?:
-                (slotReport[@"cellMonitorRefreshError"] ?:
-                (slotReport[@"cellMonitorRefreshTimedOut"] ? @"refresh timed out" :
-                (slotReport[@"cellMonitorCopyTimedOut"] ? @"copy timed out" :
-                (slotReport[@"cellMonitorError"] ?:
-                (slotReport[@"cellMonitorParseError"] ?: @"Cell Monitor data is unavailable.")))));
-            failure = [NSString stringWithFormat:@"Cell Monitor A/B %@ (%@/%@ copies, %@/%@ refreshes successful): %@",
+                @"Cell Monitor data is unavailable.";
+            failure = [NSString stringWithFormat:@"Serving-cell sampling %@ after %@ (%@/%@ parsed copies, %@/%@ refreshes successful): %@",
                 slotReport[@"cellMonitorSamplingStatus"] ?: @"failed",
+                slotReport[@"cellMonitorStopReason"] ?: @"unknown",
                 slotReport[@"cellMonitorSuccessfulSampleCount"] ?: @0,
-                slotReport[@"cellMonitorRequestedSampleCount"] ?: @(CCNMCellMonitorSampleCount),
+                slotReport[@"cellMonitorRequestedSampleCount"] ?: @0,
                 slotReport[@"cellMonitorSuccessfulRefreshCount"] ?: @0,
                 slotReport[@"cellMonitorRequestedRefreshCount"] ?: @0,
                 cellMonitorFailure];
@@ -3752,18 +2450,13 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
 
         NSString *message = failure;
         if (!message) {
-            NSArray *phaseResults = [slotReport[@"cellMonitorPhaseResults"] isKindOfClass:[NSArray class]]
-                ? slotReport[@"cellMonitorPhaseResults"] : @[];
-            NSDictionary *phaseA = phaseResults.count > 0 ? phaseResults[0] : @{};
-            NSDictionary *phaseB = phaseResults.count > 1 ? phaseResults[1] : @{};
             message = [NSString stringWithFormat:
-                @"A/B complete. Phase A: %@/%@ parsed copies after one refresh. Phase B: %@/%@ parsed copies with refresh-before-each-copy. Serving payload comparison: %@ (descriptive only). Serving-cell observations: %@. NR observation status: %@. Full evidence was saved to %@.",
-                phaseA[@"successfulSampleCount"] ?: @0,
-                phaseA[@"requestedSampleCount"] ?: @0,
-                phaseB[@"successfulSampleCount"] ?: @0,
-                phaseB[@"requestedSampleCount"] ?: @0,
-                slotReport[@"cellMonitorComparisonStatus"] ?: @"indeterminatePartial",
-                @([slotReport[@"observedServingCells"] count]),
+                @"Adaptive serving-cell sampling completed after %@. Parsed copies: %@/%@. Explicit NR samples: %@; confirmation streak: %@. NR observation status: %@. Full evidence was saved to %@.",
+                slotReport[@"cellMonitorStopReason"] ?: @"unknown",
+                slotReport[@"cellMonitorSuccessfulSampleCount"] ?: @0,
+                slotReport[@"cellMonitorRequestedSampleCount"] ?: @0,
+                slotReport[@"explicitNRSampleCount"] ?: @0,
+                slotReport[@"explicitNRConfirmationCount"] ?: @0,
                 slotReport[@"nrObservationStatus"] ?: @"indeterminatePartial",
                 CCNMCellMonitorProbePath()];
         }
@@ -3772,7 +2465,7 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
             CCNMRootListController *strongSelf = weakSelf;
             if (!strongSelf.view.window) return;
 
-            NSString *title = failure ? @"Cell monitor A/B failed" : @"Serving cell A/B complete";
+            NSString *title = failure ? @"Serving-cell sampling failed" : @"Serving-cell sampling complete";
             UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleAlert];
             if (!failure) {
                 [alert addAction:[UIAlertAction actionWithTitle:@"Copy" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {

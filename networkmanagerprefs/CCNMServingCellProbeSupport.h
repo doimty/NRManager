@@ -11,228 +11,6 @@ typedef enum {
     CCNMPublicNRFrequencyRangeSub6AndMmWave,
 } CCNMPublicNRFrequencyRange;
 
-typedef enum {
-    CCNMCellMonitorSamplingFailed = 0,
-    CCNMCellMonitorSamplingPartial,
-    CCNMCellMonitorSamplingComplete,
-} CCNMCellMonitorSamplingStatus;
-
-typedef enum {
-    CCNMNRObservationIndeterminatePartial = 0,
-    CCNMNRObservationNotObservedComplete,
-    CCNMNRObservationObserved,
-} CCNMNRObservationStatus;
-
-typedef enum {
-    CCNMCellMonitorRefreshOncePerPhase = 0,
-    CCNMCellMonitorRefreshBeforeEachCopy,
-} CCNMCellMonitorRefreshPolicy;
-
-typedef enum {
-    CCNMCellMonitorOrchestrationDone = 0,
-    CCNMCellMonitorOrchestrationRefresh,
-    CCNMCellMonitorOrchestrationCopy,
-} CCNMCellMonitorOrchestrationOperation;
-
-typedef enum {
-    CCNMCellMonitorOrchestrationSucceeded = 0,
-    CCNMCellMonitorOrchestrationRecoverableFailure,
-    CCNMCellMonitorOrchestrationTimedOut,
-    CCNMCellMonitorOrchestrationInvocationException,
-} CCNMCellMonitorOrchestrationOutcome;
-
-typedef struct {
-    size_t samplesPerPhase;
-    size_t phaseIndex;
-    size_t sampleIndex;
-    CCNMCellMonitorOrchestrationOperation nextOperation;
-    int abortedAfterTimeout;
-    int abortedAfterInvocationException;
-} CCNMCellMonitorOrchestrationState;
-
-static inline CCNMCellMonitorOrchestrationState CCNMCellMonitorOrchestrationStart(
-    size_t samplesPerPhase) {
-    CCNMCellMonitorOrchestrationState state = {
-        samplesPerPhase,
-        0,
-        0,
-        samplesPerPhase > 0 ? CCNMCellMonitorOrchestrationRefresh
-                            : CCNMCellMonitorOrchestrationDone,
-        0,
-        0,
-    };
-    return state;
-}
-
-static inline int CCNMCellMonitorOrchestrationIsDone(
-    const CCNMCellMonitorOrchestrationState *state) {
-    return !state || state->nextOperation == CCNMCellMonitorOrchestrationDone;
-}
-
-static inline int CCNMCellMonitorOrchestrationMatches(
-    const CCNMCellMonitorOrchestrationState *state,
-    size_t phaseIndex,
-    size_t sampleIndex,
-    CCNMCellMonitorOrchestrationOperation operation) {
-    return state &&
-           state->phaseIndex == phaseIndex &&
-           state->sampleIndex == sampleIndex &&
-           state->nextOperation == operation;
-}
-
-static inline void CCNMCellMonitorOrchestrationAdvanceSample(
-    CCNMCellMonitorOrchestrationState *state) {
-    state->sampleIndex++;
-    if (state->sampleIndex >= state->samplesPerPhase) {
-        state->phaseIndex++;
-        state->sampleIndex = 0;
-    }
-    if (state->phaseIndex >= 2) {
-        state->nextOperation = CCNMCellMonitorOrchestrationDone;
-    } else if (state->phaseIndex == 0) {
-        state->nextOperation = CCNMCellMonitorOrchestrationCopy;
-    } else {
-        state->nextOperation = CCNMCellMonitorOrchestrationRefresh;
-    }
-}
-
-static inline int CCNMCellMonitorOrchestrationAdvance(
-    CCNMCellMonitorOrchestrationState *state,
-    CCNMCellMonitorOrchestrationOutcome outcome) {
-    if (!state || state->nextOperation == CCNMCellMonitorOrchestrationDone) {
-        return 0;
-    }
-    if (outcome == CCNMCellMonitorOrchestrationTimedOut) {
-        state->abortedAfterTimeout = 1;
-        state->nextOperation = CCNMCellMonitorOrchestrationDone;
-        return 1;
-    }
-    if (outcome == CCNMCellMonitorOrchestrationInvocationException) {
-        state->abortedAfterInvocationException = 1;
-        state->nextOperation = CCNMCellMonitorOrchestrationDone;
-        return 1;
-    }
-    if (outcome != CCNMCellMonitorOrchestrationSucceeded &&
-        outcome != CCNMCellMonitorOrchestrationRecoverableFailure) {
-        return 0;
-    }
-
-    if (state->nextOperation == CCNMCellMonitorOrchestrationRefresh) {
-        if (outcome == CCNMCellMonitorOrchestrationSucceeded) {
-            state->nextOperation = CCNMCellMonitorOrchestrationCopy;
-        } else if (state->phaseIndex == 0) {
-            state->phaseIndex = 1;
-            state->sampleIndex = 0;
-            state->nextOperation = CCNMCellMonitorOrchestrationRefresh;
-        } else {
-            CCNMCellMonitorOrchestrationAdvanceSample(state);
-        }
-        return 1;
-    }
-
-    CCNMCellMonitorOrchestrationAdvanceSample(state);
-    return 1;
-}
-
-static inline int CCNMProbeWaitCompleted(long waitResult) {
-    return waitResult == 0;
-}
-
-static inline int CCNMPrivateAsyncAttemptRequiresAbort(int timedOut,
-                                                        int invocationException) {
-    return timedOut || invocationException;
-}
-
-static inline int CCNMCellMonitorClassificationSymbolsAvailable(int hasCellTypeKey,
-                                                                 int hasServingTypeValue,
-                                                                 int hasRATKey) {
-    return hasCellTypeKey && hasServingTypeValue && hasRATKey;
-}
-
-static inline CCNMCellMonitorSamplingStatus CCNMClassifyCellMonitorSamplingStatus(size_t requested,
-                                                                                  size_t completed,
-                                                                                  size_t successful) {
-    if (requested > 0 && completed == requested && successful == requested) {
-        return CCNMCellMonitorSamplingComplete;
-    }
-    if (successful > 0) {
-        return CCNMCellMonitorSamplingPartial;
-    }
-    return CCNMCellMonitorSamplingFailed;
-}
-
-static inline int CCNMCellMonitorShouldRefresh(CCNMCellMonitorRefreshPolicy policy,
-                                                size_t sampleIndex) {
-    switch (policy) {
-        case CCNMCellMonitorRefreshOncePerPhase:
-            return sampleIndex == 0;
-        case CCNMCellMonitorRefreshBeforeEachCopy:
-            return 1;
-        default:
-            return 0;
-    }
-}
-
-static inline size_t CCNMCellMonitorRequiredRefreshCount(CCNMCellMonitorRefreshPolicy policy,
-                                                         size_t sampleCount) {
-    if (sampleCount == 0) {
-        return 0;
-    }
-    switch (policy) {
-        case CCNMCellMonitorRefreshOncePerPhase:
-            return 1;
-        case CCNMCellMonitorRefreshBeforeEachCopy:
-            return sampleCount;
-        default:
-            return 0;
-    }
-}
-
-static inline CCNMCellMonitorSamplingStatus CCNMClassifyCellMonitorABSamplingStatus(
-    size_t requestedSamples,
-    size_t attemptedSamples,
-    size_t callbackCompletedSamples,
-    size_t apiSucceededSamples,
-    size_t parsedSamples,
-    size_t requestedRefreshes,
-    size_t attemptedRefreshes,
-    size_t callbackCompletedRefreshes,
-    size_t succeededRefreshes) {
-    if (requestedSamples > 0 &&
-        requestedRefreshes > 0 &&
-        attemptedSamples == requestedSamples &&
-        callbackCompletedSamples == requestedSamples &&
-        apiSucceededSamples == requestedSamples &&
-        parsedSamples == requestedSamples &&
-        attemptedRefreshes == requestedRefreshes &&
-        callbackCompletedRefreshes == requestedRefreshes &&
-        succeededRefreshes == requestedRefreshes) {
-        return CCNMCellMonitorSamplingComplete;
-    }
-    if (parsedSamples > 0) {
-        return CCNMCellMonitorSamplingPartial;
-    }
-    return CCNMCellMonitorSamplingFailed;
-}
-
-static inline CCNMNRObservationStatus CCNMClassifyNRObservationStatus(
-    int explicitNRServingCellObserved,
-    CCNMCellMonitorSamplingStatus samplingStatus) {
-    if (explicitNRServingCellObserved) {
-        return CCNMNRObservationObserved;
-    }
-    if (samplingStatus == CCNMCellMonitorSamplingComplete) {
-        return CCNMNRObservationNotObservedComplete;
-    }
-    return CCNMNRObservationIndeterminatePartial;
-}
-
-static inline int CCNMCellMonitorRATIsNR(const char *rat) {
-    return rat &&
-           (strcmp(rat, "kCTCellMonitorRadioAccessTechnologyNR") == 0 ||
-            strcmp(rat, "kCTCellMonitorRadioAccessTechnologyNRNSA") == 0);
-}
-
 static inline CCNMPublicNRFrequencyRange CCNMClassifyPublicNRFrequencyRange(unsigned int rawValue) {
     switch (rawValue) {
         case 4:
@@ -244,6 +22,189 @@ static inline CCNMPublicNRFrequencyRange CCNMClassifyPublicNRFrequencyRange(unsi
         default:
             return CCNMPublicNRFrequencyRangeUnknown;
     }
+}
+
+static inline int CCNMProbeWaitCompleted(long waitResult) {
+    return waitResult == 0;
+}
+
+typedef enum {
+    CCNMCellMonitorSamplingFailed = 0,
+    CCNMCellMonitorSamplingPartial,
+    CCNMCellMonitorSamplingComplete,
+} CCNMCellMonitorSamplingStatus;
+
+typedef enum {
+    CCNMAdaptiveSamplerStopRunning = 0,
+    CCNMAdaptiveSamplerStopExplicitNRConfirmed,
+    CCNMAdaptiveSamplerStopWindowExhausted,
+    CCNMAdaptiveSamplerStopTimedOut,
+    CCNMAdaptiveSamplerStopInvocationException,
+    CCNMAdaptiveSamplerStopInvalidConfiguration,
+} CCNMAdaptiveSamplerStopReason;
+
+typedef struct {
+    size_t maximumSampleCount;
+    size_t requiredConsecutiveNRSampleCount;
+    size_t consumedSampleCount;
+    size_t consecutiveNRSampleCount;
+    size_t explicitNRSampleCount;
+    CCNMAdaptiveSamplerStopReason stopReason;
+} CCNMAdaptiveSamplerState;
+
+static inline CCNMAdaptiveSamplerState CCNMAdaptiveSamplerStart(
+    size_t maximumSampleCount,
+    size_t requiredConsecutiveNRSampleCount
+) {
+    CCNMAdaptiveSamplerState state = {
+        .maximumSampleCount = maximumSampleCount,
+        .requiredConsecutiveNRSampleCount = requiredConsecutiveNRSampleCount,
+        .consumedSampleCount = 0,
+        .consecutiveNRSampleCount = 0,
+        .explicitNRSampleCount = 0,
+        .stopReason = CCNMAdaptiveSamplerStopRunning,
+    };
+    if (maximumSampleCount == 0 || requiredConsecutiveNRSampleCount == 0 ||
+        requiredConsecutiveNRSampleCount > maximumSampleCount) {
+        state.stopReason = CCNMAdaptiveSamplerStopInvalidConfiguration;
+    }
+    return state;
+}
+
+static inline int CCNMAdaptiveSamplerShouldContinue(const CCNMAdaptiveSamplerState *state) {
+    return state && state->stopReason == CCNMAdaptiveSamplerStopRunning;
+}
+
+static inline int CCNMAdaptiveSamplerObserve(
+    CCNMAdaptiveSamplerState *state,
+    int parsedSample,
+    int explicitNRServingCellObserved
+) {
+    if (!CCNMAdaptiveSamplerShouldContinue(state)) return 0;
+
+    state->consumedSampleCount++;
+    if (parsedSample && explicitNRServingCellObserved) {
+        state->consecutiveNRSampleCount++;
+        state->explicitNRSampleCount++;
+    } else {
+        state->consecutiveNRSampleCount = 0;
+    }
+
+    if (state->consecutiveNRSampleCount >= state->requiredConsecutiveNRSampleCount) {
+        state->stopReason = CCNMAdaptiveSamplerStopExplicitNRConfirmed;
+    } else if (state->consumedSampleCount >= state->maximumSampleCount) {
+        state->stopReason = CCNMAdaptiveSamplerStopWindowExhausted;
+    }
+    return 1;
+}
+
+static inline int CCNMAdaptiveSamplerAbort(
+    CCNMAdaptiveSamplerState *state,
+    int timedOut,
+    int invocationException
+) {
+    if (!CCNMAdaptiveSamplerShouldContinue(state) || (!timedOut && !invocationException)) return 0;
+    state->stopReason = timedOut
+        ? CCNMAdaptiveSamplerStopTimedOut
+        : CCNMAdaptiveSamplerStopInvocationException;
+    return 1;
+}
+
+static inline int CCNMAdaptiveSamplerStoppedEarly(const CCNMAdaptiveSamplerState *state) {
+    if (!state || state->consumedSampleCount >= state->maximumSampleCount) return 0;
+    return state->stopReason == CCNMAdaptiveSamplerStopExplicitNRConfirmed ||
+           state->stopReason == CCNMAdaptiveSamplerStopTimedOut ||
+           state->stopReason == CCNMAdaptiveSamplerStopInvocationException;
+}
+
+static inline CCNMCellMonitorSamplingStatus CCNMClassifyAdaptiveCellMonitorSamplingStatus(
+    size_t maximumSampleCount,
+    size_t requiredConsecutiveNRSampleCount,
+    size_t attemptedRefreshCount,
+    size_t completedRefreshCount,
+    size_t successfulRefreshCount,
+    size_t attemptedCopyCount,
+    size_t completedCopyCount,
+    size_t successfulCopyCount,
+    size_t parsedSampleCount,
+    int explicitNRConfirmed,
+    int windowExhausted
+) {
+    if (maximumSampleCount == 0) return CCNMCellMonitorSamplingFailed;
+
+    if (explicitNRConfirmed && requiredConsecutiveNRSampleCount > 0 &&
+        parsedSampleCount >= requiredConsecutiveNRSampleCount &&
+        attemptedRefreshCount >= requiredConsecutiveNRSampleCount &&
+        completedRefreshCount >= requiredConsecutiveNRSampleCount &&
+        successfulRefreshCount >= requiredConsecutiveNRSampleCount &&
+        attemptedCopyCount >= requiredConsecutiveNRSampleCount &&
+        completedCopyCount >= requiredConsecutiveNRSampleCount &&
+        successfulCopyCount >= requiredConsecutiveNRSampleCount) {
+        return CCNMCellMonitorSamplingComplete;
+    }
+
+    if (windowExhausted &&
+        attemptedRefreshCount == maximumSampleCount &&
+        completedRefreshCount == maximumSampleCount &&
+        successfulRefreshCount == maximumSampleCount &&
+        attemptedCopyCount == maximumSampleCount &&
+        completedCopyCount == maximumSampleCount &&
+        successfulCopyCount == maximumSampleCount &&
+        parsedSampleCount == maximumSampleCount) {
+        return CCNMCellMonitorSamplingComplete;
+    }
+
+    return parsedSampleCount > 0
+        ? CCNMCellMonitorSamplingPartial
+        : CCNMCellMonitorSamplingFailed;
+}
+
+static inline int CCNMCellMonitorRATIsNR(const char *ratValue) {
+    return ratValue &&
+           (strcmp(ratValue, "kCTCellMonitorRadioAccessTechnologyNR") == 0 ||
+            strcmp(ratValue, "kCTCellMonitorRadioAccessTechnologyNRNSA") == 0);
+}
+
+static inline int CCNMPrivateAsyncAttemptRequiresAbort(int timedOut, int invocationException) {
+    return timedOut || invocationException;
+}
+
+static inline int CCNMCellMonitorClassificationSymbolsAvailable(
+    int hasCellTypeKey,
+    int hasServingValue,
+    int hasRATKey
+) {
+    return hasCellTypeKey && hasServingValue && hasRATKey;
+}
+
+static inline int CCNMCellMonitorEntryIsStructurallyClassifiable(
+    int isDictionary,
+    int hasCellTypeValue
+) {
+    return isDictionary && hasCellTypeValue;
+}
+
+static inline int CCNMCellMonitorServingEntryHasClassifiableRAT(
+    int isServingEntry,
+    int hasRATValue
+) {
+    return !isServingEntry || hasRATValue;
+}
+
+typedef enum {
+    CCNMNRObservationIndeterminatePartial = 0,
+    CCNMNRObservationNotObservedComplete,
+    CCNMNRObservationObserved,
+} CCNMNRObservationStatus;
+
+static inline CCNMNRObservationStatus CCNMClassifyNRObservationStatus(
+    int nrServingCellObserved,
+    CCNMCellMonitorSamplingStatus samplingStatus
+) {
+    if (nrServingCellObserved) return CCNMNRObservationObserved;
+    return samplingStatus == CCNMCellMonitorSamplingComplete
+        ? CCNMNRObservationNotObservedComplete
+        : CCNMNRObservationIndeterminatePartial;
 }
 
 #endif
