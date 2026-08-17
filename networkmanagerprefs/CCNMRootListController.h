@@ -1,43 +1,32 @@
 #import <Preferences/PSListController.h>
 #import <Preferences/PSSpecifier.h>
 
-#if __has_include(<roothide.h>)
-#import <roothide.h>
-#else
-#define jbroot(path) (@path)
-#endif
+NS_ASSUME_NONNULL_BEGIN
+
+typedef void (^CCNMSettingsPreferenceRequestHandler)(BOOL enabled);
+typedef void (^CCNMSettingsActionHandler)(void);
 
 @interface CCNMRootListController : PSListController
-- (void)showHelpAlert:(PSSpecifier *)specifier;
+
+// The policy owner supplies these handlers. Without them, all state-changing
+// controls remain unavailable and this controller only renders placeholders.
+@property (nonatomic, copy, nullable) CCNMSettingsPreferenceRequestHandler n78PreferenceRequestHandler;
+@property (nonatomic, copy, nullable) CCNMSettingsActionHandler refreshServingStatusHandler;
+@property (nonatomic, copy, nullable) CCNMSettingsActionHandler restoreOriginalBandConfigurationHandler;
+
+- (void)updateN78PreferenceEnabled:(BOOL)enabled controlAvailable:(BOOL)available;
+- (void)updateTransitionStateWithLocalizationKey:(NSString *)localizationKey;
+- (void)updateCurrentStateWithRequestedValue:(NSString *)requestedValue
+                                appliedValue:(NSString *)appliedValue
+                                servingValue:(NSString *)servingValue
+                               dataLineValue:(NSString *)dataLineValue
+                              freshnessValue:(NSString *)freshnessValue
+                            refreshAvailable:(BOOL)refreshAvailable;
+- (void)updateRecoveryStateWithLocalizationKey:(NSString *)localizationKey
+                                       visible:(BOOL)visible
+                        hasRecoverableBaseline:(BOOL)hasRecoverableBaseline
+                                requiresReboot:(BOOL)requiresReboot;
+
 @end
 
-@interface CCNMTelegramCell : PSTableCell
-@property (nonatomic, retain) NSBundle *bundle;
-- (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier specifier:(PSSpecifier *)specifier;
-- (void)openTelegram;
-@end
-
-@interface CCNMDiscordCell : PSTableCell
-@property (nonatomic, retain) NSBundle *bundle;
-- (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier specifier:(PSSpecifier *)specifier;
-- (void)openDiscord;
-@end
-
-@interface CCNMTwitterCell : PSTableCell
-@property (nonatomic, retain) NSBundle *bundle;
-- (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier specifier:(PSSpecifier *)specifier;
-- (void)openTwitter;
-@end
-
-@interface CCNMRedditCell : PSTableCell
-@property (nonatomic, retain) NSBundle *bundle;
-- (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier specifier:(PSSpecifier *)specifier;
-- (void)openReddit;
-@end
-
-@interface NetworkManagerLogo : PSTableCell {
-	UILabel *background;
-	UILabel *tweakName;
-	UILabel *version;
-}
-@end
+NS_ASSUME_NONNULL_END

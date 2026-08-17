@@ -1,248 +1,610 @@
-#include "CCNMRootListController.h"
+#import "CCNMRootListController.h"
+#import "CCNMN78PolicyController.h"
+#import "CCNMPreferencesCells.h"
+#import "CCNMServingStatusProvider.h"
+
+static NSString * const CCNMN78PreferenceSpecifierID = @"n78Preference";
+static NSString * const CCNMTransitionStateSpecifierID = @"transitionState";
+static NSString * const CCNMRequestedPolicySpecifierID = @"requestedPolicy";
+static NSString * const CCNMAppliedPolicySpecifierID = @"appliedPolicy";
+static NSString * const CCNMServingStateSpecifierID = @"servingState";
+static NSString * const CCNMDataLineSpecifierID = @"dataLine";
+static NSString * const CCNMFreshnessSpecifierID = @"freshness";
+static NSString * const CCNMRefreshSpecifierID = @"refreshServingStatus";
+static NSString * const CCNMRecoveryGroupSpecifierID = @"recoveryGroup";
+static NSString * const CCNMRecoveryStateSpecifierID = @"recoveryState";
+static NSString * const CCNMRebootRequirementSpecifierID = @"rebootRequirement";
+static NSString * const CCNMRestoreSpecifierID = @"restoreOriginalBands";
+static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
+
+@interface CCNMRootListController ()
+
+@property (nonatomic, assign) BOOL n78PreferenceEnabled;
+@property (nonatomic, assign) BOOL n78PreferenceControlAvailable;
+@property (nonatomic, assign) BOOL recoverySectionVisible;
+@property (nonatomic, assign) BOOL hasRecoverableBaseline;
+@property (nonatomic, assign) BOOL requiresReboot;
+@property (nonatomic, copy) NSArray<PSSpecifier *> *recoverySpecifiers;
+@property (nonatomic, copy) NSDictionary<NSString *, id> *policySummary;
+@property (nonatomic, copy) NSDictionary<NSString *, id> *servingSummary;
+@property (nonatomic, assign) BOOL policyOperationInProgress;
+@property (nonatomic, assign) BOOL servingRefreshInProgress;
+
+- (void)configureProductionHandlers;
+- (void)refreshPolicyState;
+- (void)requestN78PreferenceEnabled:(BOOL)enabled;
+- (void)beginPolicyRecovery;
+- (void)applyPolicySummary:(NSDictionary<NSString *, id> *)summary;
+- (void)beginServingRefresh;
+- (void)applyServingSummary:(NSDictionary<NSString *, id> *)summary;
+- (void)showPolicyFailureForSummary:(NSDictionary<NSString *, id> *)summary;
+- (void)localizeSpecifiers:(NSArray<PSSpecifier *> *)specifiers;
+- (NSArray<PSSpecifier *> *)recoverySpecifiersFromArray:(NSArray<PSSpecifier *> *)specifiers;
+- (PSSpecifier *)recoverySpecifierForID:(NSString *)identifier;
+- (void)setDisplayValue:(NSString *)valueOrLocalizationKey forSpecifierID:(NSString *)identifier;
+- (id)readN78PreferenceValue:(PSSpecifier *)specifier;
+- (void)setN78PreferenceValue:(id)value specifier:(PSSpecifier *)specifier;
+- (void)refreshServingStatus:(PSSpecifier *)specifier;
+- (void)restoreOriginalBandConfiguration:(PSSpecifier *)specifier;
+- (void)openRepository:(PSSpecifier *)specifier;
+- (void)showLinkOpenFailure;
+- (void)rebuildRecoverySection;
+
+@end
 
 @implementation CCNMRootListController
 
-- (void)showHelpAlert:(PSSpecifier *)specifier {
-    // Usually 2g/3g GSM are enough. Enable their CDMA counterparts only if your carrier is Sprint or Verizon or if you don't get any signal when forcing 2G/3G
-    NSString* explanation = @"You can enable every network you want to switch between in the control center.\n"
-        "\n"
-        "About the different variations\n (GSM/CDMA/NR...):\n"
-        "It all depends on your country/carrier. \n"
-        "For 2G/3G usually you should be using GSM, but some carriers (Sprint, Verizon) are using CDMA.\n"
-        "For 5G, I unfortunately couldn't do extensive testing, so it's up to you to try out which works. Personally I'm using the 5G NR Non StandAlone.\n"
-        "\n"
-        "Of course, you can use any number of module you want. Eg only LTE (which will switch between LTE & auto), or LTE+5G NSA (my personal setup), or any other combination you want.";
+- (NSArray *)specifiers {
+    if (!_specifiers) {
+        NSBundle *bundle = [NSBundle bundleForClass:self.class];
+        NSMutableArray<PSSpecifier *> *loaded = [self loadSpecifiersFromPlistName:@"Root"
+                                                                           target:self
+                                                                           bundle:bundle];
+        [self localizeSpecifiers:loaded];
 
-    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"What do I need to enable?" message:explanation preferredStyle:UIAlertControllerStyleAlert];
-        UIAlertAction *dismissAction = [UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:^(UIAlertAction * action) {
-    }];
-    
-    [alertController addAction:dismissAction];
-    [self presentViewController:alertController animated:YES completion:nil];
+        self.recoverySpecifiers = [self recoverySpecifiersFromArray:loaded];
+        [loaded removeObjectsInArray:self.recoverySpecifiers];
+        _specifiers = loaded;
+    }
+
+    return _specifiers;
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = CCNMPreferencesLocalizedString(@"SETTINGS_TITLE");
+    [self configureProductionHandlers];
+    [self refreshPolicyState];
+
+    self.servingSummary = [[CCNMServingStatusProvider sharedProvider] currentSummary];
+    [self applyServingSummary:self.servingSummary];
+    if ([self.servingSummary[CCNMServingSummaryStaleKey] boolValue]) {
+        [self beginServingRefresh];
+    }
 }
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    UIBarButtonItem *applyButton = [[UIBarButtonItem alloc] initWithTitle:@"Save" style:UIBarButtonItemStylePlain target:self action:@selector(save)];
-    self.navigationItem.rightBarButtonItem = applyButton;
-
-    // As of the latest Dopamine version, an oldabi check should no longer be required as it's implemented into Dopamine now.
-}
-
-- (NSArray *)specifiers {
-	if (!_specifiers) {
-		_specifiers = [self loadSpecifiersFromPlistName:@"Root" target:self];
-	}
-
-	return _specifiers;
-}
-
-- (id)readPreferenceValue:(PSSpecifier*)specifier {
-	NSString *path = [NSString stringWithFormat:jbroot(@"/var/mobile/Library/Preferences/%@.plist"), specifier.properties[@"defaults"]];
-	NSDictionary *settings = [NSDictionary dictionaryWithContentsOfFile:path];
-	return (settings[specifier.properties[@"key"]]) ?: specifier.properties[@"default"];
-}
-
-- (void)setPreferenceValue:(id)value specifier:(PSSpecifier*)specifier {
-	NSString *path = [NSString stringWithFormat:jbroot(@"/var/mobile/Library/Preferences/%@.plist"), specifier.properties[@"defaults"]];
-	NSMutableDictionary *settings = [NSMutableDictionary dictionaryWithContentsOfFile:path];
-	[settings setObject:value forKey:specifier.properties[@"key"]];
-	[settings writeToFile:path atomically:YES];
-	CFStringRef notificationName = (__bridge CFStringRef)specifier.properties[@"PostNotification"];
-	if (notificationName) {
-		CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(), notificationName, NULL, NULL, YES);
-	}
-}
-
--(void)save {
-	[self.view endEditing:YES];
-}
-@end
-
-@implementation CCNMTelegramCell
--(instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier specifier:(PSSpecifier *)specifier {
-    self = [super initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:reuseIdentifier specifier:specifier];
-
-    if(self) {
-        _bundle = [NSBundle bundleWithPath:jbroot(@"/Library/PreferenceBundles/NetworkManagerPrefs.bundle")];
-        [_bundle load];
-
-        // Labels
-        self.textLabel.text = @"Telegram";
-        self.detailTextLabel.text = @"@Nixuge";
-        self.detailTextLabel.textColor = [UIColor colorWithRed:0.60 green:0.60 blue:0.60 alpha:1.0];
-
-        // Right image
-        UIImage *telegramLogo = [UIImage imageNamed:@"telegram" inBundle:_bundle compatibleWithTraitCollection:nil];
-        self.accessoryView = [[UIImageView alloc] initWithImage:telegramLogo];
-
-        [specifier setTarget:self];
-        [specifier setButtonAction:@selector(openTelegram)];
+    [self refreshPolicyState];
+    NSDictionary *current = [[CCNMServingStatusProvider sharedProvider] currentSummary];
+    self.servingSummary = current;
+    [self applyServingSummary:current];
+    if ([current[CCNMServingSummaryStaleKey] boolValue] &&
+        ![current[CCNMServingSummaryUnsafeOutstandingKey] boolValue]) {
+        [self beginServingRefresh];
     }
-
-    return self;
 }
 
--(void)openTelegram {
-    if ([[UIApplication sharedApplication] canOpenURL:[NSURL URLWithString:@"tg:"]]) {
-        [[UIApplication sharedApplication] openURL:[NSURL URLWithString:@"tg://resolve?domain=Nixuge"] options:@{} completionHandler:nil];
+- (void)configureProductionHandlers {
+    __weak typeof(self) weakSelf = self;
+    self.n78PreferenceRequestHandler = ^(BOOL enabled) {
+        [weakSelf requestN78PreferenceEnabled:enabled];
+    };
+    self.refreshServingStatusHandler = ^{
+        [weakSelf beginServingRefresh];
+    };
+    self.restoreOriginalBandConfigurationHandler = ^{
+        [weakSelf beginPolicyRecovery];
+    };
+}
+
+- (void)refreshPolicyState {
+    [self applyPolicySummary:CCNMReadN78PolicyState()];
+}
+
+- (void)requestN78PreferenceEnabled:(BOOL)enabled {
+    if (self.policyOperationInProgress) {
+        return;
+    }
+    self.policyOperationInProgress = YES;
+    [self rebuildRecoverySection];
+    [self updateTransitionStateWithLocalizationKey:@"TRANSITION_APPLYING"];
+    [self updateN78PreferenceEnabled:[self.policySummary[CCNMN78PolicySummaryRequestedModeKey]
+        isEqual:CCNMRequestedModeN78Preferred] controlAvailable:NO];
+    [self applyServingSummary:self.servingSummary];
+
+    __weak typeof(self) weakSelf = self;
+    CCNMN78PolicyCompletion completion = ^(NSDictionary<NSString *, id> *summary) {
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self) {
+            return;
+        }
+        self.policyOperationInProgress = NO;
+        [self applyPolicySummary:summary];
+        if (![summary[CCNMN78PolicySummarySuccessKey] boolValue]) {
+            [self showPolicyFailureForSummary:summary];
+        } else {
+            [self beginServingRefresh];
+        }
+    };
+    if (enabled) {
+        CCNMEnableN78Preference(completion);
     } else {
-        [[UIApplication sharedApplication] openURL:[NSURL URLWithString:@"https://t.me/Nixuge"] options:@{} completionHandler:nil];
-    }
-}
-@end
-
-@implementation CCNMDiscordCell
--(instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier specifier:(PSSpecifier *)specifier {
-    self = [super initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:reuseIdentifier specifier:specifier];
-
-    if(self) {
-        _bundle = [NSBundle bundleWithPath:jbroot(@"/Library/PreferenceBundles/NetworkManagerPrefs.bundle")];
-        [_bundle load];
-
-        // Labels
-        self.textLabel.text = @"Discord";
-        self.detailTextLabel.text = @"@Nixuge";
-        self.detailTextLabel.textColor = [UIColor colorWithRed:0.60 green:0.60 blue:0.60 alpha:1.0];
-
-        // Right image
-        UIImage *discordLogo = [UIImage imageNamed:@"discord" inBundle:_bundle compatibleWithTraitCollection:nil];
-        self.accessoryView = [[UIImageView alloc] initWithImage:discordLogo];
-
-        [specifier setTarget:self];
-        [specifier setButtonAction:@selector(openDiscord)];
-    }
-
-    return self;
-}
-
--(void)openDiscord {
-    if ([[UIApplication sharedApplication] canOpenURL:[NSURL URLWithString:@"discord:"]]) {
-        [[UIApplication sharedApplication] openURL:[NSURL URLWithString:@"discord://discord.com/users/784062518901473351"] options:@{} completionHandler:nil];
-    }
-    // not opening in the browser as discord browser on mobile is horrendous
-}
-@end
-
-@implementation CCNMTwitterCell
-
--(instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier specifier:(PSSpecifier *)specifier {
-    self = [super initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:reuseIdentifier specifier:specifier];
-
-    if(self) {
-        _bundle = [NSBundle bundleWithPath:jbroot(@"/Library/PreferenceBundles/NetworkManagerPrefs.bundle")];
-        [_bundle load];
-
-        // Labels
-        self.textLabel.text = @"Twitter";
-        self.detailTextLabel.text = @"@JeanFilsYTB";
-        self.detailTextLabel.textColor = [UIColor colorWithRed:0.60 green:0.60 blue:0.60 alpha:1.0];
-
-        // Right image
-        UIImage *twitterLogo = [UIImage imageNamed:@"twitter" inBundle:_bundle compatibleWithTraitCollection:nil];
-        self.accessoryView = [[UIImageView alloc] initWithImage:twitterLogo];
-
-        [specifier setTarget:self];
-        [specifier setButtonAction:@selector(openTwitter)];
-    }
-
-    return self;
-}
-
--(void)openTwitter {
-    if ([[UIApplication sharedApplication] canOpenURL:[NSURL URLWithString:@"twitter:"]]) {
-        [[UIApplication sharedApplication] openURL:[NSURL URLWithString:@"twitter://user?screen_name=JeanFilsYTB"] options:@{} completionHandler:nil];
-    } else {
-        [[UIApplication sharedApplication] openURL:[NSURL URLWithString:@"https://www.twitter.com/JeanFilsYTB"] options:@{} completionHandler:nil];
+        CCNMDisableN78Preference(completion);
     }
 }
 
-@end
+- (void)beginPolicyRecovery {
+    if (self.policyOperationInProgress) {
+        return;
+    }
+    self.policyOperationInProgress = YES;
+    [self rebuildRecoverySection];
+    [self updateTransitionStateWithLocalizationKey:@"TRANSITION_APPLYING"];
+    [self updateN78PreferenceEnabled:[self.policySummary[CCNMN78PolicySummaryRequestedModeKey]
+        isEqual:CCNMRequestedModeN78Preferred] controlAvailable:NO];
+    [self applyServingSummary:self.servingSummary];
 
-@implementation CCNMRedditCell
--(instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier specifier:(PSSpecifier *)specifier {
-    self = [super initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:reuseIdentifier specifier:specifier];
+    __weak typeof(self) weakSelf = self;
+    CCNMRecoverN78Preference(^(NSDictionary<NSString *, id> *summary) {
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self) {
+            return;
+        }
+        self.policyOperationInProgress = NO;
+        [self applyPolicySummary:summary];
+        if (![summary[CCNMN78PolicySummarySuccessKey] boolValue]) {
+            [self showPolicyFailureForSummary:summary];
+        } else {
+            [self beginServingRefresh];
+        }
+    });
+}
 
-    if(self) {
-        _bundle = [NSBundle bundleWithPath:jbroot(@"/Library/PreferenceBundles/NetworkManagerPrefs.bundle")];
-        [_bundle load];
+- (NSString *)requestedPolicyDisplayValue:(NSDictionary *)summary {
+    return [summary[CCNMN78PolicySummaryRequestedModeKey] isEqual:CCNMRequestedModeN78Preferred]
+        ? CCNMPreferencesLocalizedString(@"REQUESTED_N78_PREFERENCE")
+        : CCNMPreferencesLocalizedString(@"REQUESTED_SYSTEM_DEFAULT");
+}
 
-        // Labels
-        self.textLabel.text = @"Reddit";
-        self.detailTextLabel.text = @"/u/Nixugay";
-        self.detailTextLabel.textColor = [UIColor colorWithRed:0.60 green:0.60 blue:0.60 alpha:1.0];
+- (NSString *)appliedPolicyDisplayValue:(NSDictionary *)summary {
+    NSString *applied = summary[CCNMN78PolicySummaryAppliedPolicyKey];
+    NSDictionary *keys = @{
+        CCNMAppliedPolicyUnknown: @"APPLIED_UNKNOWN",
+        CCNMAppliedPolicyApplying: @"APPLIED_APPLYING",
+        CCNMAppliedPolicyVerifiedSystemDefault: @"APPLIED_VERIFIED_SYSTEM_DEFAULT",
+        CCNMAppliedPolicyVerifiedN78Only: @"APPLIED_VERIFIED_N78_ONLY",
+        CCNMAppliedPolicyDiverged: @"APPLIED_DIVERGED",
+        CCNMAppliedPolicyRecoveryRequired: @"APPLIED_RECOVERY_REQUIRED",
+    };
+    return CCNMPreferencesLocalizedString(keys[applied] ?: @"APPLIED_UNKNOWN");
+}
 
-        // Right image
-        UIImage *redditLogo = [UIImage imageNamed:@"reddit" inBundle:_bundle compatibleWithTraitCollection:nil];
-        self.accessoryView = [[UIImageView alloc] initWithImage:redditLogo];
+- (NSString *)recoveryDisplayValue:(NSDictionary *)summary {
+    NSString *recovery = summary[CCNMN78PolicySummaryRecoveryStateKey];
+    NSDictionary *keys = @{
+        CCNMRecoveryStateClean: @"RECOVERY_STATE_CLEAN",
+        CCNMRecoveryStateEnablePending: @"RECOVERY_STATE_ENABLE_PENDING",
+        CCNMRecoveryStateEnabledWithBaseline: @"RECOVERY_STATE_ENABLED_WITH_BASELINE",
+        CCNMRecoveryStateRestorePending: @"RECOVERY_STATE_RESTORE_PENDING",
+        CCNMRecoveryStateRebootRequired: @"RECOVERY_STATE_REBOOT_REQUIRED",
+        CCNMRecoveryStateRecoveryFailed: @"RECOVERY_STATE_FAILED",
+    };
+    return CCNMPreferencesLocalizedString(keys[recovery] ?: @"RECOVERY_STATE_FAILED");
+}
 
-        [specifier setTarget:self];
-        [specifier setButtonAction:@selector(openReddit)];
+- (void)applyPolicySummary:(NSDictionary<NSString *, id> *)summary {
+    self.policySummary = summary ?: @{};
+    NSString *requestedMode = summary[CCNMN78PolicySummaryRequestedModeKey];
+    NSString *appliedPolicy = summary[CCNMN78PolicySummaryAppliedPolicyKey];
+    NSString *recoveryState = summary[CCNMN78PolicySummaryRecoveryStateKey];
+    BOOL requested = [requestedMode isEqual:CCNMRequestedModeN78Preferred];
+    BOOL mayWrite = [summary[CCNMN78PolicySummaryMayWriteKey] boolValue] &&
+        !self.policyOperationInProgress && !self.servingRefreshInProgress &&
+        ![self.servingSummary[CCNMServingSummaryUnsafeOutstandingKey] boolValue];
+    [self updateN78PreferenceEnabled:requested controlAvailable:mayWrite];
+
+    NSString *transitionKey = @"TRANSITION_RECOVERY_REQUIRED";
+    if ([appliedPolicy isEqual:CCNMAppliedPolicyApplying]) {
+        transitionKey = @"TRANSITION_APPLYING";
+    } else if ([recoveryState isEqual:CCNMRecoveryStateClean] ||
+        [recoveryState isEqual:CCNMRecoveryStateEnabledWithBaseline]) {
+        transitionKey = @"TRANSITION_VERIFIED";
+    }
+    [self updateTransitionStateWithLocalizationKey:transitionKey];
+
+    [self setDisplayValue:[self requestedPolicyDisplayValue:summary]
+           forSpecifierID:CCNMRequestedPolicySpecifierID];
+    [self setDisplayValue:[self appliedPolicyDisplayValue:summary]
+           forSpecifierID:CCNMAppliedPolicySpecifierID];
+
+    BOOL baselineValid = [summary[@"baselineValid"] boolValue];
+    BOOL recoveryVisible = ![recoveryState isEqual:CCNMRecoveryStateClean];
+    [self updateRecoveryStateWithLocalizationKey:[self recoveryDisplayValue:summary]
+                                         visible:recoveryVisible
+                          hasRecoverableBaseline:baselineValid
+                                  requiresReboot:[summary[CCNMN78PolicySummaryRequiresRebootKey] boolValue]];
+}
+
+- (NSString *)servingDisplayValue:(NSDictionary *)summary {
+    if ([summary[CCNMServingSummaryUnsafeOutstandingKey] boolValue]) {
+        return CCNMPreferencesLocalizedString(@"SERVING_UNKNOWN_RESTART_SETTINGS");
+    }
+    if ([summary[CCNMServingSummaryStaleKey] boolValue] ||
+        ![summary[CCNMServingSummarySuccessKey] boolValue]) {
+        return CCNMPreferencesLocalizedString(@"SERVING_UNKNOWN_STALE");
+    }
+    NSString *state = summary[CCNMServingSummaryStateKey];
+    NSNumber *band = [summary[CCNMServingSummaryBandKey] isKindOfClass:NSNumber.class]
+        ? summary[CCNMServingSummaryBandKey] : nil;
+    NSNumber *frequency = [summary[CCNMServingSummaryFrequencyMHzKey] isKindOfClass:NSNumber.class]
+        ? summary[CCNMServingSummaryFrequencyMHzKey] : nil;
+    if ([state isEqual:CCNMServingStateNRN78]) {
+        if (frequency) {
+            NSString *machineFrequency = [NSString stringWithFormat:@"%.3f MHz", frequency.doubleValue];
+            return [NSString stringWithFormat:CCNMPreferencesLocalizedString(@"SERVING_NR_N78_FORMAT"), machineFrequency];
+        }
+        return CCNMPreferencesLocalizedString(@"SERVING_NR_N78");
+    }
+    if ([state isEqual:CCNMServingStateNROther]) {
+        NSString *machineBand = band ? [NSString stringWithFormat:@"n%@", band] : @"NR";
+        return [NSString stringWithFormat:CCNMPreferencesLocalizedString(@"SERVING_NR_OTHER_FORMAT"), machineBand];
+    }
+    if ([state isEqual:CCNMServingStateLTE]) {
+        NSString *machineBand = band ? [NSString stringWithFormat:@"B%@", band] : @"B?";
+        return [NSString stringWithFormat:CCNMPreferencesLocalizedString(@"SERVING_LTE_FORMAT"), machineBand];
+    }
+    return CCNMPreferencesLocalizedString(@"SERVING_OTHER");
+}
+
+- (NSString *)freshnessDisplayValue:(NSDictionary *)summary {
+    long long milliseconds = [summary[CCNMServingSummarySampledAtMillisecondsKey] longLongValue];
+    if (milliseconds <= 0) {
+        return CCNMPreferencesLocalizedString(@"VALUE_UNKNOWN");
+    }
+    NSDate *date = [NSDate dateWithTimeIntervalSince1970:(NSTimeInterval)milliseconds / 1000.0];
+    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+    formatter.dateStyle = NSDateFormatterShortStyle;
+    formatter.timeStyle = NSDateFormatterMediumStyle;
+    NSString *timestamp = [formatter stringFromDate:date] ?: @"";
+    NSString *formatKey = [summary[CCNMServingSummaryStaleKey] boolValue]
+        ? @"FRESHNESS_STALE_FORMAT" : @"FRESHNESS_UPDATED_FORMAT";
+    return [NSString stringWithFormat:CCNMPreferencesLocalizedString(formatKey), timestamp];
+}
+
+- (void)beginServingRefresh {
+    if (self.servingRefreshInProgress || self.policyOperationInProgress ||
+        [self.servingSummary[CCNMServingSummaryUnsafeOutstandingKey] boolValue]) {
+        return;
+    }
+    self.servingRefreshInProgress = YES;
+    [self rebuildRecoverySection];
+    [self updateN78PreferenceEnabled:[self.policySummary[CCNMN78PolicySummaryRequestedModeKey]
+        isEqual:CCNMRequestedModeN78Preferred] controlAvailable:NO];
+    [self setDisplayValue:@"FRESHNESS_REFRESHING" forSpecifierID:CCNMFreshnessSpecifierID];
+    [self updateCurrentStateWithRequestedValue:[self requestedPolicyDisplayValue:self.policySummary]
+                                  appliedValue:[self appliedPolicyDisplayValue:self.policySummary]
+                                  servingValue:[self servingDisplayValue:self.servingSummary]
+                                 dataLineValue:CCNMPreferencesLocalizedString(@"DATA_LINE_SLOT_1")
+                                freshnessValue:CCNMPreferencesLocalizedString(@"FRESHNESS_REFRESHING")
+                              refreshAvailable:NO];
+
+    __weak typeof(self) weakSelf = self;
+    [[CCNMServingStatusProvider sharedProvider] refreshWithCompletion:^(NSDictionary<NSString *,id> *summary) {
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self) {
+            return;
+        }
+        self.servingRefreshInProgress = NO;
+        self.servingSummary = summary;
+        [self refreshPolicyState];
+        [self applyServingSummary:summary];
+    }];
+}
+
+- (void)applyServingSummary:(NSDictionary<NSString *, id> *)summary {
+    self.servingSummary = summary ?: CCNMServingStatusEmptySummary();
+    [self updateCurrentStateWithRequestedValue:[self requestedPolicyDisplayValue:self.policySummary]
+                                  appliedValue:[self appliedPolicyDisplayValue:self.policySummary]
+                                  servingValue:[self servingDisplayValue:self.servingSummary]
+                                 dataLineValue:CCNMPreferencesLocalizedString(@"DATA_LINE_SLOT_1")
+                                freshnessValue:[self freshnessDisplayValue:self.servingSummary]
+                              refreshAvailable:!self.servingRefreshInProgress && !self.policyOperationInProgress &&
+                                  ![self.servingSummary[CCNMServingSummaryUnsafeOutstandingKey] boolValue]];
+}
+
+- (NSString *)policyFailureLocalizationKey:(NSString *)errorCode {
+    if ([errorCode isEqual:CCNMN78PolicyErrorBusy]) return @"POLICY_ERROR_BUSY";
+    if ([errorCode isEqual:CCNMN78PolicyErrorUnsupportedTarget]) return @"POLICY_ERROR_UNSUPPORTED_TARGET";
+    if ([errorCode isEqual:CCNMN78PolicyErrorUnsafeSubscription] ||
+        [errorCode isEqual:CCNMN78PolicyErrorUUIDDrift]) return @"POLICY_ERROR_SUBSCRIPTION";
+    if ([errorCode isEqual:CCNMN78PolicyErrorN78Unavailable]) return @"POLICY_ERROR_N78_UNAVAILABLE";
+    if ([errorCode isEqual:CCNMN78PolicyErrorSetterUncertain]) return @"POLICY_ERROR_REBOOT_REQUIRED";
+    if ([errorCode isEqual:CCNMN78PolicyErrorRecoveryRequired] ||
+        [errorCode isEqual:CCNMN78PolicyErrorInvalidRecords]) return @"POLICY_ERROR_RECOVERY_REQUIRED";
+    return @"POLICY_ERROR_GENERIC";
+}
+
+- (void)showPolicyFailureForSummary:(NSDictionary<NSString *, id> *)summary {
+    NSString *key = [self policyFailureLocalizationKey:summary[CCNMN78PolicySummaryErrorCodeKey]];
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:CCNMPreferencesLocalizedString(@"POLICY_ERROR_TITLE")
+        message:CCNMPreferencesLocalizedString(key)
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction
+        actionWithTitle:CCNMPreferencesLocalizedString(@"BUTTON_OK")
+        style:UIAlertActionStyleDefault
+        handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)localizeSpecifiers:(NSArray<PSSpecifier *> *)specifiers {
+    NSArray<NSString *> *localizedPropertyKeys = @[
+        PSTitleKey,
+        PSFooterTextGroupKey,
+        CCNMPreferenceSubtitleKey,
+        CCNMPreferenceValueKey,
+    ];
+
+    for (PSSpecifier *specifier in specifiers) {
+        for (NSString *propertyKey in localizedPropertyKeys) {
+            NSString *localizationKey = [specifier propertyForKey:propertyKey];
+            if (![localizationKey isKindOfClass:NSString.class] || localizationKey.length == 0) {
+                continue;
+            }
+
+            NSString *localizedValue = CCNMPreferencesLocalizedString(localizationKey);
+            [specifier setProperty:localizedValue forKey:propertyKey];
+            if ([propertyKey isEqualToString:PSTitleKey]) {
+                specifier.name = localizedValue;
+            }
+        }
+    }
+}
+
+- (NSArray<PSSpecifier *> *)recoverySpecifiersFromArray:(NSArray<PSSpecifier *> *)specifiers {
+    NSSet<NSString *> *recoveryIDs = [NSSet setWithArray:@[
+        CCNMRecoveryGroupSpecifierID,
+        CCNMRecoveryStateSpecifierID,
+        CCNMRebootRequirementSpecifierID,
+        CCNMRestoreSpecifierID,
+    ]];
+    NSMutableArray<PSSpecifier *> *result = [NSMutableArray array];
+
+    for (PSSpecifier *specifier in specifiers) {
+        if ([recoveryIDs containsObject:specifier.identifier]) {
+            [result addObject:specifier];
+        }
+    }
+    return result;
+}
+
+- (PSSpecifier *)recoverySpecifierForID:(NSString *)identifier {
+    for (PSSpecifier *specifier in self.recoverySpecifiers) {
+        if ([specifier.identifier isEqualToString:identifier]) {
+            return specifier;
+        }
+    }
+    return nil;
+}
+
+- (void)setDisplayValue:(NSString *)valueOrLocalizationKey forSpecifierID:(NSString *)identifier {
+    NSString *displayValue = valueOrLocalizationKey.length > 0
+        ? CCNMPreferencesLocalizedString(valueOrLocalizationKey)
+        : CCNMPreferencesLocalizedString(@"VALUE_UNKNOWN");
+    PSSpecifier *specifier = [self specifierForID:identifier];
+    if (!specifier) {
+        specifier = [self recoverySpecifierForID:identifier];
+    }
+    if (!specifier) {
+        return;
     }
 
-    return self;
-}
-
--(void)openReddit {
-    if ([[UIApplication sharedApplication] canOpenURL:[NSURL URLWithString:@"reddit:"]]) {
-        [[UIApplication sharedApplication] openURL:[NSURL URLWithString:@"reddit:///u/Nixugay"] options:@{} completionHandler:nil];
-    } else if ([[UIApplication sharedApplication] canOpenURL:[NSURL URLWithString:@"apollo:"]]) {
-        [[UIApplication sharedApplication] openURL:[NSURL URLWithString:@"apollo://www.reddit.com/u/Nixugay"] options:@{} completionHandler:nil];
-    } else {
-        [[UIApplication sharedApplication] openURL:[NSURL URLWithString:@"https://www.reddit.com/u/Nixugay"] options:@{} completionHandler:nil];
+    [specifier setProperty:displayValue forKey:CCNMPreferenceValueKey];
+    if ([_specifiers containsObject:specifier] && self.isViewLoaded) {
+        [self reloadSpecifier:specifier animated:NO];
     }
 }
-@end
 
-@implementation NetworkManagerLogo
-
-- (id)initWithSpecifier:(PSSpecifier *)specifier
-{
-	self = [super initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"Banner" specifier:specifier];
-	if (self) {
-		// CGFloat width = 320;
-        CGFloat width = [UIScreen mainScreen].bounds.size.width;
-		CGFloat height = 70;
-
-		CGRect backgroundFrame = CGRectMake(-50, -35, width, height);
-		background = [[UILabel alloc] initWithFrame:backgroundFrame];
-		[background layoutIfNeeded];
-		background.backgroundColor = [UIColor colorWithRed:0.11 green:0.11 blue:0.12 alpha:0.0];
-		background.autoresizingMask = (UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight);
-
-		CGRect tweakNameFrame = CGRectMake(-50, -40, width, height);
-		tweakName = [[UILabel alloc] initWithFrame:tweakNameFrame];
-		[tweakName layoutIfNeeded];
-		tweakName.numberOfLines = 1;
-		tweakName.autoresizingMask = (UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight);
-        [tweakName setFont:[UIFont systemFontOfSize:30]];
-		tweakName.textColor = [UIColor colorWithRed:1.00 green:0.58 blue:0.00 alpha:1.0];
-		tweakName.text = @"NetworkManagerReborn";
-		tweakName.textAlignment = NSTextAlignmentCenter;
-
-		CGRect versionFrame = CGRectMake(-50, -5, width, height);
-		version = [[UILabel alloc] initWithFrame:versionFrame];
-		version.numberOfLines = 1;
-		version.autoresizingMask = (UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight);
-        [version setFont:[UIFont systemFontOfSize:15]];
-		version.textColor = [UIColor colorWithRed:0.82 green:0.82 blue:0.84 alpha:1.0];
-
-        // For future reference (not really important here), could use either:
-        // - %s and NETWORK_MANAGER_VERSION (Cstring) -> no perf impact but cant handle eg unicode & crashes if undefined macro
-        // - %@ and @NETWORK_MANAGER_VERSION (NSString) -> slight perf impact (new obj) but can handle unicode & empty string if undefined macro
-		version.text = [NSString stringWithFormat:@"Version %@", @(NETWORK_MANAGER_VERSION)];
-
-		version.backgroundColor = [UIColor clearColor];
-		version.textAlignment = NSTextAlignmentCenter;
-
-		[self addSubview:background];
-		[self addSubview:tweakName];
-		[self addSubview:version];
-	}
-    return self;
+- (id)readN78PreferenceValue:(PSSpecifier *)specifier {
+    (void)specifier;
+    return @(self.n78PreferenceEnabled);
 }
 
-- (CGFloat)preferredHeightForWidth:(CGFloat)width {
-	return 100.0f;
+- (void)setN78PreferenceValue:(id)value specifier:(PSSpecifier *)specifier {
+    if (self.n78PreferenceControlAvailable && self.n78PreferenceRequestHandler) {
+        self.n78PreferenceRequestHandler([value boolValue]);
+    }
+
+    // The switch reflects verified requested state, not an optimistic tap.
+    [self reloadSpecifier:specifier animated:YES];
 }
+
+- (void)refreshServingStatus:(PSSpecifier *)specifier {
+    (void)specifier;
+    if (self.refreshServingStatusHandler) {
+        self.refreshServingStatusHandler();
+    }
+}
+
+- (void)restoreOriginalBandConfiguration:(PSSpecifier *)specifier {
+    (void)specifier;
+    if (!self.hasRecoverableBaseline || self.requiresReboot || self.policyOperationInProgress ||
+        self.servingRefreshInProgress || !self.restoreOriginalBandConfigurationHandler) {
+        return;
+    }
+
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:CCNMPreferencesLocalizedString(@"RESTORE_ALERT_TITLE")
+        message:CCNMPreferencesLocalizedString(@"RESTORE_ALERT_MESSAGE")
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction
+        actionWithTitle:CCNMPreferencesLocalizedString(@"BUTTON_CANCEL")
+        style:UIAlertActionStyleCancel
+        handler:nil]];
+
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction
+        actionWithTitle:CCNMPreferencesLocalizedString(@"BUTTON_RESTORE")
+        style:UIAlertActionStyleDestructive
+        handler:^(UIAlertAction *action) {
+            (void)action;
+            CCNMSettingsActionHandler handler = weakSelf.restoreOriginalBandConfigurationHandler;
+            if (handler) {
+                handler();
+            }
+        }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)openRepository:(PSSpecifier *)specifier {
+    NSString *URLString = [specifier propertyForKey:CCNMPreferenceURLKey];
+    NSURLComponents *components = [URLString isKindOfClass:NSString.class]
+        ? [NSURLComponents componentsWithString:URLString]
+        : nil;
+    if (![components.scheme.lowercaseString isEqualToString:@"https"] ||
+        ![components.host.lowercaseString isEqualToString:@"github.com"] ||
+        components.URL == nil) {
+        [self showLinkOpenFailure];
+        return;
+    }
+
+    __weak typeof(self) weakSelf = self;
+    [UIApplication.sharedApplication openURL:components.URL
+                                     options:@{}
+                           completionHandler:^(BOOL success) {
+        if (!success) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [weakSelf showLinkOpenFailure];
+            });
+        }
+    }];
+}
+
+- (void)showLinkOpenFailure {
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:CCNMPreferencesLocalizedString(@"LINK_OPEN_FAILED_TITLE")
+        message:CCNMPreferencesLocalizedString(@"LINK_OPEN_FAILED_MESSAGE")
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction
+        actionWithTitle:CCNMPreferencesLocalizedString(@"BUTTON_OK")
+        style:UIAlertActionStyleDefault
+        handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)updateN78PreferenceEnabled:(BOOL)enabled controlAvailable:(BOOL)available {
+    (void)[self specifiers];
+    self.n78PreferenceEnabled = enabled;
+    self.n78PreferenceControlAvailable = available && self.n78PreferenceRequestHandler != nil;
+
+    PSSpecifier *specifier = [self specifierForID:CCNMN78PreferenceSpecifierID];
+    if (!specifier) {
+        return;
+    }
+    [specifier setProperty:@(self.n78PreferenceControlAvailable) forKey:PSEnabledKey];
+    if (self.isViewLoaded) {
+        [self reloadSpecifier:specifier animated:NO];
+    }
+}
+
+- (void)updateTransitionStateWithLocalizationKey:(NSString *)localizationKey {
+    (void)[self specifiers];
+    [self setDisplayValue:localizationKey forSpecifierID:CCNMTransitionStateSpecifierID];
+}
+
+- (void)updateCurrentStateWithRequestedValue:(NSString *)requestedValue
+                                appliedValue:(NSString *)appliedValue
+                                servingValue:(NSString *)servingValue
+                               dataLineValue:(NSString *)dataLineValue
+                              freshnessValue:(NSString *)freshnessValue
+                            refreshAvailable:(BOOL)refreshAvailable {
+    (void)[self specifiers];
+    [self setDisplayValue:requestedValue forSpecifierID:CCNMRequestedPolicySpecifierID];
+    [self setDisplayValue:appliedValue forSpecifierID:CCNMAppliedPolicySpecifierID];
+    [self setDisplayValue:servingValue forSpecifierID:CCNMServingStateSpecifierID];
+    [self setDisplayValue:dataLineValue forSpecifierID:CCNMDataLineSpecifierID];
+    [self setDisplayValue:freshnessValue forSpecifierID:CCNMFreshnessSpecifierID];
+
+    PSSpecifier *refreshSpecifier = [self specifierForID:CCNMRefreshSpecifierID];
+    if (!refreshSpecifier) {
+        return;
+    }
+    BOOL enabled = refreshAvailable && self.refreshServingStatusHandler != nil;
+    [refreshSpecifier setProperty:@(enabled) forKey:PSEnabledKey];
+    if (self.isViewLoaded) {
+        [self reloadSpecifier:refreshSpecifier animated:NO];
+    }
+}
+
+- (void)updateRecoveryStateWithLocalizationKey:(NSString *)localizationKey
+                                       visible:(BOOL)visible
+                        hasRecoverableBaseline:(BOOL)hasRecoverableBaseline
+                                requiresReboot:(BOOL)requiresReboot {
+    (void)[self specifiers];
+    self.recoverySectionVisible = visible;
+    self.hasRecoverableBaseline = hasRecoverableBaseline;
+    self.requiresReboot = requiresReboot;
+    [self setDisplayValue:localizationKey forSpecifierID:CCNMRecoveryStateSpecifierID];
+    [self rebuildRecoverySection];
+}
+
+- (void)rebuildRecoverySection {
+    NSMutableArray<PSSpecifier *> *updatedSpecifiers = [_specifiers mutableCopy];
+    [updatedSpecifiers removeObjectsInArray:self.recoverySpecifiers];
+
+    if (self.recoverySectionVisible) {
+        NSMutableArray<PSSpecifier *> *visibleRecoverySpecifiers = [NSMutableArray array];
+        PSSpecifier *group = [self recoverySpecifierForID:CCNMRecoveryGroupSpecifierID];
+        PSSpecifier *state = [self recoverySpecifierForID:CCNMRecoveryStateSpecifierID];
+        PSSpecifier *reboot = [self recoverySpecifierForID:CCNMRebootRequirementSpecifierID];
+        PSSpecifier *restore = [self recoverySpecifierForID:CCNMRestoreSpecifierID];
+
+        if (group) {
+            [visibleRecoverySpecifiers addObject:group];
+        }
+        if (state) {
+            [visibleRecoverySpecifiers addObject:state];
+        }
+        if (self.requiresReboot && reboot) {
+            [visibleRecoverySpecifiers addObject:reboot];
+        }
+        if (self.hasRecoverableBaseline && restore) {
+            BOOL restoreEnabled = self.restoreOriginalBandConfigurationHandler != nil &&
+                !self.requiresReboot && !self.policyOperationInProgress && !self.servingRefreshInProgress;
+            [restore setProperty:@(restoreEnabled) forKey:PSEnabledKey];
+            [visibleRecoverySpecifiers addObject:restore];
+        }
+
+        PSSpecifier *aboutGroup = nil;
+        for (PSSpecifier *specifier in updatedSpecifiers) {
+            if ([specifier.identifier isEqualToString:CCNMAboutGroupSpecifierID]) {
+                aboutGroup = specifier;
+                break;
+            }
+        }
+        NSUInteger insertionIndex = aboutGroup
+            ? [updatedSpecifiers indexOfObjectIdenticalTo:aboutGroup]
+            : updatedSpecifiers.count;
+        NSIndexSet *indexes = [NSIndexSet indexSetWithIndexesInRange:
+            NSMakeRange(insertionIndex, visibleRecoverySpecifiers.count)];
+        [updatedSpecifiers insertObjects:visibleRecoverySpecifiers atIndexes:indexes];
+    }
+
+    _specifiers = updatedSpecifiers;
+    if (self.isViewLoaded) {
+        [self.tableView reloadData];
+    }
+}
+
 @end

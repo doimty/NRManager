@@ -1,16 +1,15 @@
 include $(THEOS)/makefiles/common.mk
 
-export TARGET = iphone:clang:latest:11.0
+export TARGET = iphone:clang:latest:14.0
 export ARCHS = arm64 arm64e
 
 BUNDLE_NAME = NetworkManager
 NetworkManager_BUNDLE_EXTENSION = bundle
-NetworkManager_FILES = CCNetworkManager.x
-NetworkManager_FRAMEWORKS = CoreTelephony
-NetworkManager_INSTALL_PATH = /Library/ControlCenter/Bundles/
+NetworkManager_FILES = CCNetworkManager.x networkmanagerprefs/CCNMN78PolicyController.m
+NetworkManager_FRAMEWORKS = CoreTelephony Foundation UIKit
+NetworkManager_INSTALL_PATH = /Library/ControlCenter/Bundles
 
-NetworkManager_CFLAGS += "-Wno-unused-function"
-NetworkManager_CFLAGS += "-Wno-unused-variable"
+NetworkManager_CFLAGS += -fobjc-arc
 NetworkManager_CFLAGS += "-Wno-error=objc-method-access"
 
 # For non-roothide: link to ControlCenterUIKit
@@ -29,4 +28,5 @@ after-install::
 
 include $(THEOS_MAKE_PATH)/bundle.mk
 SUBPROJECTS += networkmanagerprefs
+SUBPROJECTS += package-actions
 include $(THEOS_MAKE_PATH)/aggregate.mk

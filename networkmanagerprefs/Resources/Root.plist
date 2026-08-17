@@ -5,141 +5,269 @@
 	<key>items</key>
 	<array>
 		<dict>
-			<key>cell</key>						<string>PSGroupCell</string>
-			<key>footerCellClass</key>			<string>NetworkManagerLogo</string>
- 		</dict>
-
- 		<dict>
-			<key>cell</key> 					<string>PSGroupCell</string>
-			<key>label</key> 					<string>Module Settings</string>
-			<key>footerText</key> 				<string>Custom text for the toggle in auto mode</string>
+			<key>cell</key>
+			<string>PSStaticTextCell</string>
+			<key>cellClass</key>
+			<string>CCNMHeaderCell</string>
+			<key>height</key>
+			<real>88.0</real>
+			<key>id</key>
+			<string>productHeader</string>
+			<key>label</key>
+			<string>HEADER_TITLE</string>
+			<key>subtitle</key>
+			<string>HEADER_SUBTITLE</string>
 		</dict>
 
-		<dict>
-			<key>cell</key>						<string>PSSwitchCell</string>
-			<key>default</key>					<true/>
-			<key>defaults</key>					<string>me.nixuge.networkmanager</string>
-			<key>key</key>						<string>enable2gGSM</string>
-			<key>label</key>					<string>Show 2G GSM</string>
-			<key>PostNotification</key> 		<string>me.nixuge.networkmanager/prefsupdated</string>
-		</dict>
-		<dict>
-			<key>cell</key>						<string>PSSwitchCell</string>
-			<key>default</key>					<true/>
-			<key>defaults</key>					<string>me.nixuge.networkmanager</string>
-			<key>key</key>						<string>enable3gGSM</string>
-			<key>label</key>					<string>Show 3G GSM</string>
-			<key>PostNotification</key> 		<string>me.nixuge.networkmanager/prefsupdated</string>
-		</dict>
-
-		<dict>
-			<key>cell</key>						<string>PSSwitchCell</string>
-			<key>default</key>					<true/>
-			<key>defaults</key>					<string>me.nixuge.networkmanager</string>
-			<key>key</key>						<string>enable2gCDMA</string>
-			<key>label</key>					<string>Show 2G CDMA</string>
-			<key>PostNotification</key> 		<string>me.nixuge.networkmanager/prefsupdated</string>
-		</dict>
-		<dict>
-			<key>cell</key>						<string>PSSwitchCell</string>
-			<key>default</key>					<true/>
-			<key>defaults</key>					<string>me.nixuge.networkmanager</string>
-			<key>key</key>						<string>enable3gCDMA</string>
-			<key>label</key>					<string>Show 3G CDMA</string>
-			<key>PostNotification</key> 		<string>me.nixuge.networkmanager/prefsupdated</string>
-		</dict>
-
-		<dict>
-			<key>cell</key>						<string>PSSwitchCell</string>
-			<key>default</key>					<true/>
-			<key>defaults</key>					<string>me.nixuge.networkmanager</string>
-			<key>key</key>						<string>enableLTE</string>
-			<key>label</key>					<string>Show LTE</string>
-			<key>PostNotification</key> 		<string>me.nixuge.networkmanager/prefsupdated</string>
-		</dict>
-
-		<dict>
-			<key>cell</key>						<string>PSSwitchCell</string>
-			<key>default</key>					<true/>
-			<key>defaults</key>					<string>me.nixuge.networkmanager</string>
-			<key>key</key>						<string>enable5gNRStandAlone</string>
-			<key>label</key>					<string>Show 5g NR StandAlone</string>
-			<key>PostNotification</key> 		<string>me.nixuge.networkmanager/prefsupdated</string>
-		</dict>
-		<dict>
-			<key>cell</key>						<string>PSSwitchCell</string>
-			<key>default</key>					<true/>
-			<key>defaults</key>					<string>me.nixuge.networkmanager</string>
-			<key>key</key>						<string>enable5gNRNonStandAlone</string>
-			<key>label</key>					<string>Show 5g NR Non StandAlone</string>
-			<key>PostNotification</key> 		<string>me.nixuge.networkmanager/prefsupdated</string>
-		</dict>
-		<dict>
-			<key>cell</key>						<string>PSSwitchCell</string>
-			<key>default</key>					<true/>
-			<key>defaults</key>					<string>me.nixuge.networkmanager</string>
-			<key>key</key>						<string>enable5gNR</string>
-			<key>label</key>					<string>Show 5g NR</string>
-			<key>PostNotification</key> 		<string>me.nixuge.networkmanager/prefsupdated</string>
-		</dict>
-
-		<dict>
-			<key>cell</key> 					<string>PSEditTextCell</string>
-			<key>default</key> 					<string></string>
-			<key>defaults</key> 				<string>me.nixuge.networkmanager</string>
-			<key>placeholder</key> 				<string>Auto Network</string>
-			<key>noAutoCorrect</key> 			<true/>
-			<key>key</key> 						<string>customText</string>
-			<key>label</key> 					<string></string>
-			<key>PostNotification</key> 		<string>me.nixuge.networkmanager/prefsupdated</string>
-		</dict>
-
-		<!-- Spacing cell to have the "What do I need to enable" button separate -->
 		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>N78_PREFERENCE_FOOTER</string>
+			<key>id</key>
+			<string>n78PreferenceGroup</string>
 			<key>label</key>
-			<string></string>
+			<string>GROUP_N78_PREFERENCE</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<false/>
+			<key>enabled</key>
+			<false/>
+			<key>get</key>
+			<string>readN78PreferenceValue:</string>
+			<key>id</key>
+			<string>n78Preference</string>
+			<key>label</key>
+			<string>TOGGLE_N78_PREFERENCE</string>
+			<key>set</key>
+			<string>setN78PreferenceValue:specifier:</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSStaticTextCell</string>
+			<key>cellClass</key>
+			<string>CCNMStatusCell</string>
+			<key>height</key>
+			<real>54.0</real>
+			<key>id</key>
+			<string>transitionState</string>
+			<key>label</key>
+			<string>ROW_TRANSITION_STATE</string>
+			<key>value</key>
+			<string>VALUE_UNKNOWN</string>
 		</dict>
 
 		<dict>
-			<key>cell</key> 					<string>PSButtonCell</string>
-			<key>label</key> 					<string>What do I need to enable?</string>
-			<key>action</key> 					<string>showHelpAlert:</string>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>CURRENT_STATE_FOOTER</string>
+			<key>id</key>
+			<string>currentStateGroup</string>
+			<key>label</key>
+			<string>GROUP_CURRENT_STATE</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSStaticTextCell</string>
+			<key>cellClass</key>
+			<string>CCNMStatusCell</string>
+			<key>height</key>
+			<real>54.0</real>
+			<key>id</key>
+			<string>requestedPolicy</string>
+			<key>label</key>
+			<string>ROW_REQUESTED_POLICY</string>
+			<key>value</key>
+			<string>VALUE_UNKNOWN</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSStaticTextCell</string>
+			<key>cellClass</key>
+			<string>CCNMStatusCell</string>
+			<key>height</key>
+			<real>54.0</real>
+			<key>id</key>
+			<string>appliedPolicy</string>
+			<key>label</key>
+			<string>ROW_APPLIED_POLICY</string>
+			<key>value</key>
+			<string>VALUE_UNKNOWN</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSStaticTextCell</string>
+			<key>cellClass</key>
+			<string>CCNMStatusCell</string>
+			<key>height</key>
+			<real>54.0</real>
+			<key>id</key>
+			<string>servingState</string>
+			<key>label</key>
+			<string>ROW_SERVING_NETWORK</string>
+			<key>value</key>
+			<string>VALUE_UNKNOWN</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSStaticTextCell</string>
+			<key>cellClass</key>
+			<string>CCNMStatusCell</string>
+			<key>height</key>
+			<real>54.0</real>
+			<key>id</key>
+			<string>dataLine</string>
+			<key>label</key>
+			<string>ROW_DATA_LINE</string>
+			<key>value</key>
+			<string>VALUE_UNKNOWN</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSStaticTextCell</string>
+			<key>cellClass</key>
+			<string>CCNMStatusCell</string>
+			<key>height</key>
+			<real>54.0</real>
+			<key>id</key>
+			<string>freshness</string>
+			<key>label</key>
+			<string>ROW_FRESHNESS</string>
+			<key>value</key>
+			<string>VALUE_UNKNOWN</string>
+		</dict>
+		<dict>
+			<key>action</key>
+			<string>refreshServingStatus:</string>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>enabled</key>
+			<false/>
+			<key>id</key>
+			<string>refreshServingStatus</string>
+			<key>label</key>
+			<string>REFRESH_SERVING_STATUS</string>
 		</dict>
 
 		<dict>
-			<key>cell</key> 					<string>PSGroupCell</string>
-			<key>label</key> 					<string>Support</string>
-			<key>footerText</key> 				<string>Developed with ♥ by NoisyFlake &amp; Nixuge</string>
-			<key>footerAlignment</key> 			<string>1</string>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>RECOVERY_FOOTER</string>
+			<key>id</key>
+			<string>recoveryGroup</string>
+			<key>label</key>
+			<string>GROUP_RECOVERY</string>
 		</dict>
 		<dict>
-            <key>cell</key> 		            <string>PSLinkCell</string>
-            <key>cellClass</key> 	            <string>CCNMTelegramCell</string>
-            <key>height</key> 		            <real>60.0</real>
-            <key>hasIcon</key> 		            <true/>
-        </dict>
+			<key>cell</key>
+			<string>PSStaticTextCell</string>
+			<key>cellClass</key>
+			<string>CCNMStatusCell</string>
+			<key>height</key>
+			<real>54.0</real>
+			<key>id</key>
+			<string>recoveryState</string>
+			<key>label</key>
+			<string>ROW_RECOVERY_STATE</string>
+			<key>value</key>
+			<string>VALUE_UNKNOWN</string>
+		</dict>
 		<dict>
-            <key>cell</key> 		            <string>PSLinkCell</string>
-            <key>cellClass</key> 	            <string>CCNMDiscordCell</string>
-            <key>height</key> 		            <real>60.0</real>
-            <key>hasIcon</key> 		            <true/>
-        </dict>
-        <dict>
-            <key>cell</key> 		            <string>PSLinkCell</string>
-            <key>cellClass</key> 	            <string>CCNMTwitterCell</string>
-            <key>height</key> 		            <real>60.0</real>
-            <key>hasIcon</key> 		            <true/>
-        </dict>
+			<key>cell</key>
+			<string>PSStaticTextCell</string>
+			<key>cellClass</key>
+			<string>CCNMStatusCell</string>
+			<key>height</key>
+			<real>64.0</real>
+			<key>id</key>
+			<string>rebootRequirement</string>
+			<key>label</key>
+			<string>ROW_MAINTENANCE</string>
+			<key>value</key>
+			<string>RECOVERY_REBOOT_REQUIRED_DETAIL</string>
+		</dict>
 		<dict>
-            <key>cell</key> 		            <string>PSLinkCell</string>
-            <key>cellClass</key> 	            <string>CCNMRedditCell</string>
-            <key>height</key> 		            <real>60.0</real>
-            <key>hasIcon</key> 		            <true/>
-        </dict>
+			<key>action</key>
+			<string>restoreOriginalBandConfiguration:</string>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>enabled</key>
+			<false/>
+			<key>id</key>
+			<string>restoreOriginalBands</string>
+			<key>label</key>
+			<string>RESTORE_ORIGINAL_BANDS</string>
+		</dict>
+
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerAlignment</key>
+			<integer>1</integer>
+			<key>footerText</key>
+			<string>ABOUT_CREDITS_FOOTER</string>
+			<key>id</key>
+			<string>aboutGroup</string>
+			<key>label</key>
+			<string>GROUP_ABOUT</string>
+		</dict>
+		<dict>
+			<key>action</key>
+			<string>openRepository:</string>
+			<key>cell</key>
+			<string>PSLinkCell</string>
+			<key>cellClass</key>
+			<string>CCNMRepositoryLinkCell</string>
+			<key>height</key>
+			<real>60.0</real>
+			<key>id</key>
+			<string>originalProject</string>
+			<key>label</key>
+			<string>ORIGINAL_PROJECT</string>
+			<key>subtitle</key>
+			<string>ORIGINAL_PROJECT_SUBTITLE</string>
+			<key>url</key>
+			<string>https://github.com/NoisyFlake/NetworkManager</string>
+		</dict>
+		<dict>
+			<key>action</key>
+			<string>openRepository:</string>
+			<key>cell</key>
+			<string>PSLinkCell</string>
+			<key>cellClass</key>
+			<string>CCNMRepositoryLinkCell</string>
+			<key>height</key>
+			<real>60.0</real>
+			<key>id</key>
+			<string>maintainedSource</string>
+			<key>label</key>
+			<string>MAINTAINED_SOURCE</string>
+			<key>subtitle</key>
+			<string>MAINTAINED_SOURCE_SUBTITLE</string>
+			<key>url</key>
+			<string>https://github.com/doimty/NetworkManagerReborn</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSStaticTextCell</string>
+			<key>cellClass</key>
+			<string>CCNMStatusCell</string>
+			<key>height</key>
+			<real>54.0</real>
+			<key>id</key>
+			<string>version</string>
+			<key>label</key>
+			<string>VERSION</string>
+			<key>value</key>
+			<string>1.5.0</string>
+		</dict>
 	</array>
 	<key>title</key>
-	<string></string>
+	<string>SETTINGS_TITLE</string>
 </dict>
 </plist>

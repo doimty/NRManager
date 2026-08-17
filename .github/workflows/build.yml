@@ -1,95 +1,425 @@
-name: Build iOS Tweak with Theos
+name: NetworkManagerReborn 1.5.0 validation
 
-on: [push]
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  RELEASE_VERSION: 1.5.0
+  THEOS_COMMIT: 88506b2c22e9e07dd4ed055f23c9e398a117a2c7
+  THEOS_SDK_COMMIT: 0222fd5413cf4b9af096f37b4621afa2688572f7
+  CCSUPPORT_COMMIT: ec20c982b3f74f2f0500a83761363384e92a0ca3
+  XCODE_DEVELOPER_DIR: /Applications/Xcode_15.4.app/Contents/Developer
 
 jobs:
-  build:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [macos-14]
-
+  host-tests:
+    name: Host release gates
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           submodules: true
 
-      - name: Select Xcode 15.4
+      - name: Run release tests before packaging
         run: |
-          sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
-          test "$(xcodebuild -version | head -n 1)" = "Xcode 15.4"
-          xcodebuild -version
-          xcrun clang --version
-          xcrun ld -version_details
-          xcrun --sdk iphoneos --show-sdk-version
+          set -euo pipefail
+          python3 --version
+          python3 -m unittest discover -s tests -v
+          python3 -m py_compile scripts/*.py
+          python3 scripts/verify_release_source.py \
+            --repo "$GITHUB_WORKSPACE" \
+            --report "$RUNNER_TEMP/source-verification.json"
+          git diff --check
+
+  rootless:
+    name: Package rootless (macOS 14 / Xcode 15.4)
+    needs: host-tests
+    runs-on: macos-14
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_15.4.app/Contents/Developer
+      THEOS: ${{ github.workspace }}/theos
+      THEOS_PACKAGE_SCHEME: rootless
+      FINALPACKAGE: 1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          submodules: true
+
+      - name: Run host tests before packaging
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests -v
+          python3 scripts/verify_release_source.py \
+            --repo "$GITHUB_WORKSPACE" \
+            --report "$RUNNER_TEMP/rootless-source-verification.json"
+
+      - name: Select and verify Xcode 15.4 toolchain
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s "$XCODE_DEVELOPER_DIR"
+          test -d "$XCODE_DEVELOPER_DIR"
+          xcode_version="$(xcodebuild -version)"
+          printf '%s\n' "$xcode_version"
+          test "$(printf '%s\n' "$xcode_version" | sed -n '1p')" = "Xcode 15.4"
+          test "$(printf '%s\n' "$xcode_version" | sed -n '2p')" = "Build version 15F31d"
+
+          clang_version="$(xcrun clang --version)"
+          printf '%s\n' "$clang_version"
+          printf '%s\n' "$clang_version" | grep -Eq 'Apple clang version 15\.0\.0'
+
+          ld_version="$(xcrun ld -version_details)"
+          printf '%s\n' "$ld_version"
+          printf '%s\n' "$ld_version" | grep -Eq 'PROJECT:ld-1053\.12|ld-1053\.12'
+
+          system_sdk="$(xcrun --sdk iphoneos --show-sdk-version)"
+          system_sdk_path="$(xcrun --sdk iphoneos --show-sdk-path)"
+          printf 'system_sdk=%s\n' "$system_sdk"
+          printf 'system_sdk_path=%s\n' "$system_sdk_path"
+          test "$system_sdk" = "17.5"
 
       - name: Install packaging tools
         run: |
+          set -euo pipefail
           brew update
           brew install dpkg ldid make
 
-      - name: Install Theos
-        env:
-          THEOS: ${{ github.workspace }}/theos
+      - name: Install pinned roothide Theos
         run: |
+          set -euo pipefail
+          rm -rf "$THEOS"
           git clone --recursive https://github.com/roothide/theos.git "$THEOS"
+          git -C "$THEOS" checkout --detach "$THEOS_COMMIT"
+          git -C "$THEOS" submodule sync --recursive
+          git -C "$THEOS" submodule update --init --recursive
+          test "$(git -C "$THEOS" rev-parse HEAD)" = "$THEOS_COMMIT"
+          printf 'roothide_theos_commit=%s\n' "$(git -C "$THEOS" rev-parse HEAD)"
+          git -C "$THEOS" submodule status --recursive
 
-      - name: Install Theos SDK with private frameworks
-        env:
-          THEOS: ${{ github.workspace }}/theos
+      - name: Install pinned Theos iPhoneOS16.5 SDK (rootless only)
         run: |
-          git clone --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks.git /tmp/theos-sdks
-          cd /tmp/theos-sdks
-          git sparse-checkout set iPhoneOS16.5.sdk
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/theos-sdks"
+          git clone https://github.com/theos/sdks.git "$RUNNER_TEMP/theos-sdks"
+          git -C "$RUNNER_TEMP/theos-sdks" checkout --detach "$THEOS_SDK_COMMIT"
+          test "$(git -C "$RUNNER_TEMP/theos-sdks" rev-parse HEAD)" = "$THEOS_SDK_COMMIT"
+          test -d "$RUNNER_TEMP/theos-sdks/iPhoneOS16.5.sdk"
           mkdir -p "$THEOS/sdks"
-          mv iPhoneOS16.5.sdk "$THEOS/sdks/"
+          rm -rf "$THEOS/sdks/iPhoneOS16.5.sdk"
+          cp -R "$RUNNER_TEMP/theos-sdks/iPhoneOS16.5.sdk" "$THEOS/sdks/"
+          printf 'theos_sdk_repository_commit=%s\n' "$(git -C "$RUNNER_TEMP/theos-sdks" rev-parse HEAD)"
+          printf 'theos_sdk_path=%s\n' "$THEOS/sdks/iPhoneOS16.5.sdk"
 
-      - name: Install CCSupport
-        env:
-          THEOS: ${{ github.workspace }}/theos
+      - name: Install pinned CCSupport templates
         run: |
-          git clone https://github.com/opa334/CCSupportTemplates.git $HOME/CCSupportTemplates
-          cd $HOME/CCSupportTemplates/
+          set -euo pipefail
+          rm -rf "$HOME/CCSupportTemplates"
+          git clone https://github.com/opa334/CCSupportTemplates.git "$HOME/CCSupportTemplates"
+          git -C "$HOME/CCSupportTemplates" checkout --detach "$CCSUPPORT_COMMIT"
+          test "$(git -C "$HOME/CCSupportTemplates" rev-parse HEAD)" = "$CCSUPPORT_COMMIT"
+          cd "$HOME/CCSupportTemplates"
           chmod +x install.sh
+          export PATH="/opt/homebrew/opt/make/libexec/gnubin:$THEOS/bin:$PATH"
           ./install.sh
-          echo "Should be done installing CCSupport"
+          printf 'ccsupport_commit=%s\n' "$(git -C "$HOME/CCSupportTemplates" rev-parse HEAD)"
 
-      - name: Build package (rootless)
-        env:
-          THEOS: ${{ github.workspace }}/theos
-          THEOS_PACKAGE_SCHEME: rootless
-          FINALPACKAGE: 1
+      - name: Build rootless package and capture nonempty log
         run: |
-          rm -f packages/*.deb
-          make package SYSROOT=$THEOS/sdks/iPhoneOS16.5.sdk
+          set -euo pipefail
+          export PATH="/opt/homebrew/opt/make/libexec/gnubin:$THEOS/bin:$PATH"
+          rm -rf packages packages-rootless release-artifacts/rootless
+          mkdir -p packages packages-rootless release-artifacts/rootless
+          make clean
+          build_log="$GITHUB_WORKSPACE/release-artifacts/rootless/build.log"
+          set +e
+          make package SYSROOT="$THEOS/sdks/iPhoneOS16.5.sdk" 2>&1 | tee "$build_log"
+          build_status=${PIPESTATUS[0]}
+          set -e
+          test -s "$build_log"
+          python3 scripts/verify_build_log.py "$build_log"
+          test "$build_status" -eq 0
 
-      - name: Archive rootless packages
+      - name: Verify and stage exactly one rootless deb
         run: |
-          mkdir -p packages-rootless
-          mv packages/*.deb packages-rootless/
+          set -euo pipefail
+          export PATH="/opt/homebrew/opt/make/libexec/gnubin:$THEOS/bin:$PATH"
+          shopt -s nullglob
+          debs=(packages/*.deb)
+          if [[ "${#debs[@]}" -ne 1 ]]; then
+            printf 'expected exactly one rootless deb, found %d\n' "${#debs[@]}" >&2
+            printf '%s\n' "${debs[@]}" >&2
+            exit 1
+          fi
+          deb="${debs[0]}"
+          python3 scripts/verify_release_source.py \
+            --repo "$GITHUB_WORKSPACE" \
+            --report "$GITHUB_WORKSPACE/release-artifacts/rootless/source-verification.json"
+          python3 scripts/verify_release_package.py \
+            --package "$deb" \
+            --lane rootless \
+            --source-control control \
+            --build-log "$GITHUB_WORKSPACE/release-artifacts/rootless/build.log" \
+            --report "$GITHUB_WORKSPACE/release-artifacts/rootless/verification-report.json" \
+            --checksums "$GITHUB_WORKSPACE/release-artifacts/rootless/SHA256SUMS" \
+            --source-sha "$GITHUB_SHA" \
+            --run-id "$GITHUB_RUN_ID" \
+            --expected-sdk 16.4,16.5 \
+            --require-mach-o
+          cp "$deb" packages-rootless/
+          {
+            printf 'lane=rootless\n'
+            printf 'release_version=%s\n' "$RELEASE_VERSION"
+            printf 'source_sha=%s\n' "$GITHUB_SHA"
+            printf 'run_id=%s\n' "$GITHUB_RUN_ID"
+            printf 'package=%s\n' "$(basename "$deb")"
+            printf 'package_size_bytes=%s\n' "$(stat -f '%z' "$deb")"
+            printf 'package_sha256=%s\n' "$(shasum -a 256 "$deb" | awk '{print $1}')"
+            printf 'theos_commit=%s\n' "$(git -C "$THEOS" rev-parse HEAD)"
+            printf 'theos_sdk_repository_commit=%s\n' "$THEOS_SDK_COMMIT"
+            printf 'ccsupport_commit=%s\n' "$CCSUPPORT_COMMIT"
+            printf 'xcode=%s\n' "$(xcodebuild -version | tr '\n' ' ')"
+            printf 'clang=%s\n' "$(xcrun clang --version | sed -n '1p')"
+            printf 'ld=%s\n' "$(xcrun ld -version_details | sed -n '1p')"
+            printf 'system_sdk=%s\n' "$(xcrun --sdk iphoneos --show-sdk-version)"
+          } > release-artifacts/rootless/provenance.txt
+          shasum -a 256 release-artifacts/rootless/build.log \
+            release-artifacts/rootless/source-verification.json \
+            release-artifacts/rootless/verification-report.json \
+            release-artifacts/rootless/provenance.txt >> release-artifacts/rootless/SHA256SUMS
 
-      - name: Build package (roothide)
-        env:
-          THEOS: ${{ github.workspace }}/theos
-          THEOS_PACKAGE_SCHEME: roothide
-          FINALPACKAGE: 1
-        run: |
-          rm -f packages/*.deb
-          make package
-
-      - name: Archive roothide packages
-        run: |
-          mkdir -p packages-roothide
-          mv packages/*.deb packages-roothide/ 2>/dev/null || true
-
-      - name: Upload rootless packages
-        uses: actions/upload-artifact@v4
+      - name: Upload rootless deb, logs, report, and checksums
+        id: upload_rootless
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: "NetworkManagerReborn rootless"
-          path: ${{ github.workspace }}/packages-rootless/*.deb
+          name: NetworkManagerReborn-1.5.0-rootless-${{ github.run_id }}
+          path: |
+            packages-rootless/*.deb
+            release-artifacts/rootless/*
+          if-no-files-found: error
+          retention-days: 30
 
-      - name: Upload roothide packages
-        uses: actions/upload-artifact@v4
+      - name: Record rootless artifact identity
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p release-artifacts/rootless
+          {
+            printf 'lane=rootless\n'
+            printf 'artifact_name=NetworkManagerReborn-1.5.0-rootless-%s\n' "$GITHUB_RUN_ID"
+            printf 'artifact_id=%s\n' "${{ steps.upload_rootless.outputs.artifact-id }}"
+            printf 'source_sha=%s\n' "$GITHUB_SHA"
+            printf 'run_id=%s\n' "$GITHUB_RUN_ID"
+          } > release-artifacts/rootless/uploaded-artifact.txt
+          cat release-artifacts/rootless/uploaded-artifact.txt >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload rootless artifact identity
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: "NetworkManagerReborn roothide"
-          path: ${{ github.workspace }}/packages-roothide/*.deb
+          name: NetworkManagerReborn-1.5.0-rootless-provenance-${{ github.run_id }}
+          path: release-artifacts/rootless/uploaded-artifact.txt
+          if-no-files-found: error
+          retention-days: 30
+
+  roothide:
+    name: Package roothide (macOS 14 / Xcode 15.4)
+    needs: host-tests
+    runs-on: macos-14
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_15.4.app/Contents/Developer
+      THEOS: ${{ github.workspace }}/theos
+      THEOS_PACKAGE_SCHEME: roothide
+      FINALPACKAGE: 1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          submodules: true
+
+      - name: Run host tests before packaging
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests -v
+          python3 scripts/verify_release_source.py \
+            --repo "$GITHUB_WORKSPACE" \
+            --report "$RUNNER_TEMP/roothide-source-verification.json"
+
+      - name: Select and verify Xcode 15.4 toolchain
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s "$XCODE_DEVELOPER_DIR"
+          test -d "$XCODE_DEVELOPER_DIR"
+          xcode_version="$(xcodebuild -version)"
+          printf '%s\n' "$xcode_version"
+          test "$(printf '%s\n' "$xcode_version" | sed -n '1p')" = "Xcode 15.4"
+          test "$(printf '%s\n' "$xcode_version" | sed -n '2p')" = "Build version 15F31d"
+
+          clang_version="$(xcrun clang --version)"
+          printf '%s\n' "$clang_version"
+          printf '%s\n' "$clang_version" | grep -Eq 'Apple clang version 15\.0\.0'
+
+          ld_version="$(xcrun ld -version_details)"
+          printf '%s\n' "$ld_version"
+          printf '%s\n' "$ld_version" | grep -Eq 'PROJECT:ld-1053\.12|ld-1053\.12'
+
+          system_sdk="$(xcrun --sdk iphoneos --show-sdk-version)"
+          system_sdk_path="$(xcrun --sdk iphoneos --show-sdk-path)"
+          printf 'system_sdk=%s\n' "$system_sdk"
+          printf 'system_sdk_path=%s\n' "$system_sdk_path"
+          test "$system_sdk" = "17.5"
+
+      - name: Install packaging tools
+        run: |
+          set -euo pipefail
+          brew update
+          brew install dpkg ldid make
+
+      - name: Install pinned roothide Theos
+        run: |
+          set -euo pipefail
+          rm -rf "$THEOS"
+          git clone --recursive https://github.com/roothide/theos.git "$THEOS"
+          git -C "$THEOS" checkout --detach "$THEOS_COMMIT"
+          git -C "$THEOS" submodule sync --recursive
+          git -C "$THEOS" submodule update --init --recursive
+          test "$(git -C "$THEOS" rev-parse HEAD)" = "$THEOS_COMMIT"
+          printf 'roothide_theos_commit=%s\n' "$(git -C "$THEOS" rev-parse HEAD)"
+          git -C "$THEOS" submodule status --recursive
+
+      - name: Materialize pinned SDK for provenance only (roothide must use system SDK)
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/theos-sdks"
+          git clone https://github.com/theos/sdks.git "$RUNNER_TEMP/theos-sdks"
+          git -C "$RUNNER_TEMP/theos-sdks" checkout --detach "$THEOS_SDK_COMMIT"
+          test "$(git -C "$RUNNER_TEMP/theos-sdks" rev-parse HEAD)" = "$THEOS_SDK_COMMIT"
+          test -d "$RUNNER_TEMP/theos-sdks/iPhoneOS16.5.sdk"
+          # Theos prefers SDKs under $THEOS/sdks over the Xcode system SDK.
+          # The roothide lane must build against the Xcode 15.4 system SDK
+          # (iPhoneOS 17.5), so the pinned 16.5 SDK stays outside the toolchain
+          # tree and is materialized only for provenance/verification.
+          if [ -d "$THEOS/sdks" ] && find "$THEOS/sdks" -maxdepth 1 -name '*.sdk' -print -quit | grep -q .; then
+            echo "roothide lane must not place an SDK in \$THEOS/sdks" >&2
+            exit 1
+          fi
+          printf 'theos_sdk_repository_commit=%s\n' "$(git -C "$RUNNER_TEMP/theos-sdks" rev-parse HEAD)"
+          printf 'pinned_iphoneos_16_5_sdk=%s\n' "$RUNNER_TEMP/theos-sdks/iPhoneOS16.5.sdk"
+          printf 'system_sdk_for_roothide=%s\n' "$(xcrun --sdk iphoneos --show-sdk-path)"
+
+      - name: Install pinned CCSupport templates
+        run: |
+          set -euo pipefail
+          rm -rf "$HOME/CCSupportTemplates"
+          git clone https://github.com/opa334/CCSupportTemplates.git "$HOME/CCSupportTemplates"
+          git -C "$HOME/CCSupportTemplates" checkout --detach "$CCSUPPORT_COMMIT"
+          test "$(git -C "$HOME/CCSupportTemplates" rev-parse HEAD)" = "$CCSUPPORT_COMMIT"
+          cd "$HOME/CCSupportTemplates"
+          chmod +x install.sh
+          export PATH="/opt/homebrew/opt/make/libexec/gnubin:$THEOS/bin:$PATH"
+          ./install.sh
+          printf 'ccsupport_commit=%s\n' "$(git -C "$HOME/CCSupportTemplates" rev-parse HEAD)"
+
+      - name: Build roothide package and capture nonempty log
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/opt/make/libexec/gnubin:$THEOS/bin:$PATH"
+          rm -rf packages packages-roothide release-artifacts/roothide
+          mkdir -p packages packages-roothide release-artifacts/roothide
+          make clean
+          build_log="$GITHUB_WORKSPACE/release-artifacts/roothide/build.log"
+          unset SYSROOT
+          set +e
+          make package 2>&1 | tee "$build_log"
+          build_status=${PIPESTATUS[0]}
+          set -e
+          test -s "$build_log"
+          python3 scripts/verify_build_log.py "$build_log"
+          test "$build_status" -eq 0
+
+      - name: Verify and stage exactly one roothide deb
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/opt/make/libexec/gnubin:$THEOS/bin:$PATH"
+          shopt -s nullglob
+          debs=(packages/*.deb)
+          if [[ "${#debs[@]}" -ne 1 ]]; then
+            printf 'expected exactly one roothide deb, found %d\n' "${#debs[@]}" >&2
+            printf '%s\n' "${debs[@]}" >&2
+            exit 1
+          fi
+          deb="${debs[0]}"
+          python3 scripts/verify_release_source.py \
+            --repo "$GITHUB_WORKSPACE" \
+            --report "$GITHUB_WORKSPACE/release-artifacts/roothide/source-verification.json"
+          python3 scripts/verify_release_package.py \
+            --package "$deb" \
+            --lane roothide \
+            --source-control control \
+            --build-log "$GITHUB_WORKSPACE/release-artifacts/roothide/build.log" \
+            --report "$GITHUB_WORKSPACE/release-artifacts/roothide/verification-report.json" \
+            --checksums "$GITHUB_WORKSPACE/release-artifacts/roothide/SHA256SUMS" \
+            --source-sha "$GITHUB_SHA" \
+            --run-id "$GITHUB_RUN_ID" \
+            --expected-sdk 17.5 \
+            --require-mach-o
+          cp "$deb" packages-roothide/
+          {
+            printf 'lane=roothide\n'
+            printf 'release_version=%s\n' "$RELEASE_VERSION"
+            printf 'source_sha=%s\n' "$GITHUB_SHA"
+            printf 'run_id=%s\n' "$GITHUB_RUN_ID"
+            printf 'package=%s\n' "$(basename "$deb")"
+            printf 'package_size_bytes=%s\n' "$(stat -f '%z' "$deb")"
+            printf 'package_sha256=%s\n' "$(shasum -a 256 "$deb" | awk '{print $1}')"
+            printf 'theos_commit=%s\n' "$(git -C "$THEOS" rev-parse HEAD)"
+            printf 'theos_sdk_repository_commit=%s\n' "$THEOS_SDK_COMMIT"
+            printf 'ccsupport_commit=%s\n' "$CCSUPPORT_COMMIT"
+            printf 'xcode=%s\n' "$(xcodebuild -version | tr '\n' ' ')"
+            printf 'clang=%s\n' "$(xcrun clang --version | sed -n '1p')"
+            printf 'ld=%s\n' "$(xcrun ld -version_details | sed -n '1p')"
+            printf 'system_sdk=%s\n' "$(xcrun --sdk iphoneos --show-sdk-version)"
+            printf 'explicit_sysroot=none\n'
+          } > release-artifacts/roothide/provenance.txt
+          shasum -a 256 release-artifacts/roothide/build.log \
+            release-artifacts/roothide/source-verification.json \
+            release-artifacts/roothide/verification-report.json \
+            release-artifacts/roothide/provenance.txt >> release-artifacts/roothide/SHA256SUMS
+
+      - name: Upload roothide deb, logs, report, and checksums
+        id: upload_roothide
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: NetworkManagerReborn-1.5.0-roothide-${{ github.run_id }}
+          path: |
+            packages-roothide/*.deb
+            release-artifacts/roothide/*
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Record roothide artifact identity
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p release-artifacts/roothide
+          {
+            printf 'lane=roothide\n'
+            printf 'artifact_name=NetworkManagerReborn-1.5.0-roothide-%s\n' "$GITHUB_RUN_ID"
+            printf 'artifact_id=%s\n' "${{ steps.upload_roothide.outputs.artifact-id }}"
+            printf 'source_sha=%s\n' "$GITHUB_SHA"
+            printf 'run_id=%s\n' "$GITHUB_RUN_ID"
+          } > release-artifacts/roothide/uploaded-artifact.txt
+          cat release-artifacts/roothide/uploaded-artifact.txt >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload roothide artifact identity
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: NetworkManagerReborn-1.5.0-roothide-provenance-${{ github.run_id }}
+          path: release-artifacts/roothide/uploaded-artifact.txt
+          if-no-files-found: error
+          retention-days: 30

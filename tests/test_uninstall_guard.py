@@ -1,0 +1,98 @@
+#!/usr/bin/env python3
+"""P0 contracts for removal/downgrade restoration and cleanup recovery."""
+
+from pathlib import Path
+import sys
+import unittest
+
+
+ROOT = Path(__file__).resolve().parents[1]
+ACTIONS_MAKEFILE = ROOT / "package-actions/Makefile"
+PRERM_SOURCE = ROOT / "package-actions/prerm.m"
+POSTINST_SOURCE = ROOT / "package-actions/postinst.m"
+ROOT_MAKEFILE = ROOT / "Makefile"
+POLICY_SOURCE = ROOT / "networkmanagerprefs/CCNMN78PolicyController.m"
+SCRIPTS = ROOT / "scripts"
+sys.path.insert(0, str(SCRIPTS))
+import verify_release_package  # noqa: E402
+
+
+class UninstallGuardTests(unittest.TestCase):
+    def test_compiled_prerm_is_built_as_a_package_control_script(self):
+        self.assertTrue(ACTIONS_MAKEFILE.exists())
+        self.assertTrue(PRERM_SOURCE.exists())
+        self.assertTrue(POSTINST_SOURCE.exists())
+        makefile = ACTIONS_MAKEFILE.read_text()
+        root_makefile = ROOT_MAKEFILE.read_text()
+        self.assertIn("TOOL_NAME = postinst prerm", makefile)
+        self.assertIn("postinst_INSTALL_PATH = /DEBIAN", makefile)
+        self.assertIn("prerm_INSTALL_PATH = /DEBIAN", makefile)
+        self.assertIn("../networkmanagerprefs/CCNMN78PolicyController.m", makefile)
+        self.assertIn("SUBPROJECTS += package-actions", root_makefile)
+
+    def test_remove_upgrade_and_downgrade_path_all_restore_first(self):
+        source = PRERM_SOURCE.read_text()
+        for action in ('@"remove"', '@"upgrade"', '@"deconfigure"', '@"failed-upgrade"'):
+            self.assertIn(action, source)
+        self.assertIn("CCNMReadN78PolicyState()", source)
+        self.assertIn("CCNMRecoverN78Preference", source)
+        self.assertIn("CCNMN78PolicySummaryMayUninstallKey", source)
+        self.assertIn("CCNMArmN78PolicyRemovalGuard()", source)
+        self.assertIn('summary[@"baselinePresent"]', source)
+        self.assertIn('summary[@"transitionPresent"]', source)
+        self.assertIn("CCNMExitWhenSetterSettled(allowed ? CCNMRemovalAllowed", source)
+        self.assertIn("CCNMN78PolicyHasOutstandingSetter()", source)
+        self.assertIn("dispatch_after", source)
+
+    def test_durable_guard_closes_prerm_to_dpkg_race_and_postinst_clears_it(self):
+        policy = POLICY_SOURCE.read_text()
+        prerm = PRERM_SOURCE.read_text()
+        postinst = POSTINST_SOURCE.read_text()
+        for token in (
+            "CCNMN78PolicyRemovalGuardPath",
+            "CCNMBuildRemovalGuardRecord",
+            "CCNMValidateRemovalGuardRecord",
+            "CCNMArmN78PolicyRemovalGuard",
+            "CCNMClearN78PolicyRemovalGuardIfSafe",
+            'summary[@"removalGuardPresent"]',
+            'summary[@"removalGuardValid"]',
+        ):
+            self.assertIn(token, policy + prerm + postinst)
+        self.assertIn('[@"removalGuardPresent"] boolValue', prerm)
+        self.assertIn("CCNMClearN78PolicyRemovalGuardIfSafe()", postinst)
+        self.assertIn('@"abort-remove"', postinst)
+
+    def test_removal_is_fail_closed(self):
+        source = PRERM_SOURCE.read_text()
+        self.assertIn("geteuid() != 0", source)
+        self.assertIn("return CCNMPrermBlocked", source)
+        self.assertNotIn("|| true", source)
+        self.assertNotIn("_exit(allowed ?", source)
+        self.assertNotIn("unlink(CCNMN78PolicyBaselinePath", source)
+        self.assertNotIn("removeItemAtPath:CCNMN78PolicyBaselinePath", source)
+
+    def test_root_helper_preserves_mobile_access_to_policy_records_and_lock(self):
+        source = POLICY_SOURCE.read_text()
+        self.assertIn("CCNMNormalizePolicyDescriptorOwnership", source)
+        self.assertIn('getpwnam("mobile")', source)
+        self.assertIn("fchown", source)
+        write_body = source[source.index("static BOOL CCNMWriteDataExclusively"):source.index("static BOOL CCNMCreateDurableRecord")]
+        lock_body = source[source.index("static int CCNMAcquirePolicyLock"):source.index("static void CCNMReleasePolicyLock")]
+        self.assertIn("CCNMNormalizePolicyDescriptorOwnership", write_body)
+        self.assertIn("CCNMNormalizePolicyDescriptorOwnership", lock_body)
+
+    def test_missing_baseline_only_cleans_a_verified_restore_checkpoint(self):
+        source = POLICY_SOURCE.read_text()
+        self.assertIn("CCNMIsVerifiedRestoreCleanupCheckpoint", source)
+        self.assertIn('state[@"readBackVerified"]', source)
+        self.assertIn('state[@"verifiedActiveBands"]', source)
+        self.assertIn("CCNMDictionariesEqual(fresh[@\"activeBands\"], state[@\"verifiedActiveBands\"])", source)
+        self.assertIn("A required policy baseline is missing; no modem write was issued.", source)
+
+    def test_package_verifier_requires_and_inspects_prerm(self):
+        self.assertEqual(verify_release_package.REQUIRED_MAINTAINER_FILES, {"postinst", "prerm"})
+        self.assertEqual(verify_release_package.MAINTAINER_BINARY_FILES, ("postinst", "prerm"))
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
