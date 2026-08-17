@@ -105,6 +105,8 @@ class WorkflowTests(unittest.TestCase):
         ):
             self.assertIn(expected, self.rootless)
             self.assertIn(expected, self.roothide)
+        self.assertIn('"version"[[:space:]]*:[[:space:]]*"1053\\.12"', self.rootless)
+        self.assertIn('"version"[[:space:]]*:[[:space:]]*"1053\\.12"', self.roothide)
 
     def test_only_rootless_build_receives_explicit_sysroot(self) -> None:
         self.assertIn('make package SYSROOT="$THEOS/sdks/iPhoneOS16.5.sdk"', self.rootless)

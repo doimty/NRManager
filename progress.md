@@ -19,6 +19,7 @@ Target: iPhone14,3 / iOS 15.1.1 (19B81), slot 1, one present and good SIM
 - `python3 -m unittest discover -v tests`: 59/59 passed.
 - `python3 -m py_compile scripts/*.py`: passed.
 - `python3 scripts/verify_release_source.py --repo .`: passed.
+- First cloud run `32052865548`: host gates passed; both package lanes stopped before build because `ld -version_details` now emits JSON (`"version": "1053.12"`). Workflow matching now accepts the pinned JSON form while retaining legacy output compatibility; rerun pending.
 - Local rootless and roothide packages compiled and passed Linux structural verification: 13-file payloads, 5 parsed plists, compiled `postinst` + `prerm`, zero legacy social assets, zero forbidden strings. These are compile/package evidence only, not deliverables. The build-log gate correctly rejects all local incompatible-arm64e warnings; local roothide also uses the non-accepted local SDK/linker dependency shape, so only the pinned cloud lane can satisfy Mach-O acceptance.
 
 ## Review result

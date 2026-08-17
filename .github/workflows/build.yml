@@ -75,7 +75,7 @@ jobs:
 
           ld_version="$(xcrun ld -version_details)"
           printf '%s\n' "$ld_version"
-          printf '%s\n' "$ld_version" | grep -Eq 'PROJECT:ld-1053\.12|ld-1053\.12'
+          printf '%s\n' "$ld_version" | grep -Eq '"version"[[:space:]]*:[[:space:]]*"1053\.12"|PROJECT:ld-1053\.12|ld-1053\.12'
 
           system_sdk="$(xcrun --sdk iphoneos --show-sdk-version)"
           system_sdk_path="$(xcrun --sdk iphoneos --show-sdk-path)"
@@ -265,7 +265,7 @@ jobs:
 
           ld_version="$(xcrun ld -version_details)"
           printf '%s\n' "$ld_version"
-          printf '%s\n' "$ld_version" | grep -Eq 'PROJECT:ld-1053\.12|ld-1053\.12'
+          printf '%s\n' "$ld_version" | grep -Eq '"version"[[:space:]]*:[[:space:]]*"1053\.12"|PROJECT:ld-1053\.12|ld-1053\.12'
 
           system_sdk="$(xcrun --sdk iphoneos --show-sdk-version)"
           system_sdk_path="$(xcrun --sdk iphoneos --show-sdk-path)"
