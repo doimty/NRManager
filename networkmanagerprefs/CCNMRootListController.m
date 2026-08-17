@@ -4,6 +4,7 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <math.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
@@ -60,6 +61,9 @@ static const useconds_t CCNMBandReadBackPollIntervalMicroseconds = 1000000;
 static const NSUInteger CCNMBandReadBackMaximumAttempts = 121;
 static const long long CCNMMaximumExpectedBandIdentifier = 1024;
 static const NSTimeInterval CCNMNR78ObservationSeconds = 60.0;
+static const NSUInteger CCNMLTEServingConfirmationSamples = 2;
+static NSString *const CCNMLTERATKey = @"kCTRegistrationRadioAccessTechnologyLTE";
+static NSString *const CCNMCellMonitorLTERAT = @"kCTCellMonitorRadioAccessTechnologyLTE";
 static NSTimeInterval CCNMMonotonicNow(void);
 
 static BOOL CCNMServingCellProbeInProgress = NO;
@@ -143,7 +147,11 @@ static NSString *CCNMBandRemovalResultPath(void) {
     return jbroot(@"/var/mobile/Library/Preferences/me.nixuge.networkmanager.bandwrite.removal.plist");
 }
 
-static NSString *CCNMBandNR78ResultPath(void) {
+static NSString *CCNMBandLTEB1ResultPath(void) {
+    return jbroot(@"/var/mobile/Library/Preferences/me.nixuge.networkmanager.bandwrite.lte-b1.plist");
+}
+
+static NSString *CCNMLegacyNR78ResultPath(void) {
     return jbroot(@"/var/mobile/Library/Preferences/me.nixuge.networkmanager.bandwrite.nr78.plist");
 }
 
@@ -229,7 +237,7 @@ static CCNMBootRelation CCNMMarkerBootRelation(NSDictionary *marker) {
 }
 
 static BOOL CCNMValidateSetterInFlightMarkerHeader(NSDictionary *record, NSString **failure) {
-    NSArray<NSString *> *allowedOperations = @[@"same_value_write", @"cold_band_removal", @"nr78_only"];
+    NSArray<NSString *> *allowedOperations = @[@"same_value_write", @"cold_band_removal", @"nr78_only", @"lte_b1_only"];
     BOOL valid = [record isKindOfClass:[NSDictionary class]] &&
                  [record[@"schemaVersion"] isEqual:@1] &&
                  [record[@"state"] isEqual:@"setter_in_flight"] &&
@@ -261,6 +269,7 @@ static BOOL CCNMValidateRestoreInFlightMarkerHeader(NSDictionary *record, NSStri
         @"same_value_automatic_restore",
         @"cold_band_removal_automatic_restore",
         @"nr78_only_automatic_restore",
+        @"lte_b1_only_automatic_restore",
         @"manual_restore"
     ];
     BOOL valid = [record isKindOfClass:[NSDictionary class]] &&
@@ -283,6 +292,54 @@ static BOOL CCNMValidateRestoreInFlightMarkerHeader(NSDictionary *record, NSStri
                  [record[@"snapshotCreatedAt"] longLongValue] > 0;
     if (!valid && failure) {
         *failure = @"The restore-in-flight record is invalid; preserving recovery evidence.";
+    }
+    return valid;
+}
+
+static BOOL CCNMValidateRecoveryCleanupMarker(NSDictionary *record, NSString **failure) {
+    NSArray<NSString *> *allowedKinds = @[
+        @"pre_setter",
+        @"verified_restore",
+        @"verified_live_match",
+        @"verified_legacy_nr78_live_match"
+    ];
+    NSDictionary *snapshot = record[@"snapshot"];
+    NSDictionary *writeIntent = record[@"writeIntent"];
+    NSDictionary *setterInFlight = record[@"setterInFlight"];
+    BOOL verifiedRestoreCleanup = [record[@"cleanupKind"] isEqual:@"verified_restore"];
+    BOOL verifiedLiveMatchCleanup = [record[@"cleanupKind"] isEqual:@"verified_live_match"];
+    BOOL verifiedLegacyNR78Cleanup = [record[@"cleanupKind"] isEqual:@"verified_legacy_nr78_live_match"];
+    BOOL restoreReadBackEqual = [record[@"restoreReadBackEqual"] boolValue];
+    BOOL cleanupProofValid = verifiedRestoreCleanup
+        ? (restoreReadBackEqual && snapshot && writeIntent && setterInFlight)
+        : (verifiedLiveMatchCleanup
+            ? (restoreReadBackEqual && snapshot && writeIntent && setterInFlight)
+            : (verifiedLegacyNR78Cleanup
+                ? (restoreReadBackEqual && snapshot && writeIntent && !setterInFlight)
+                : !restoreReadBackEqual));
+    BOOL valid = [record isKindOfClass:[NSDictionary class]] &&
+                 [record[@"schemaVersion"] isEqual:@1] &&
+                 [record[@"state"] isEqual:@"recovery_cleanup_in_flight"] &&
+                 [allowedKinds containsObject:record[@"cleanupKind"]] &&
+                 [record[@"sourceOperation"] isKindOfClass:[NSString class]] &&
+                 [record[@"createdAt"] isKindOfClass:[NSNumber class]] &&
+                 [record[@"createdAt"] longLongValue] > 0 &&
+                 [record[@"processID"] isKindOfClass:[NSNumber class]] &&
+                 [record[@"processID"] intValue] > 0 &&
+                 CCNMCanonicalUUIDString(record[@"bootSessionUUID"]) != nil &&
+                 [record[@"bootTimeSeconds"] isKindOfClass:[NSNumber class]] &&
+                 [record[@"bootTimeSeconds"] longLongValue] > 0 &&
+                 [record[@"operationGeneration"] isKindOfClass:[NSNumber class]] &&
+                 [record[@"operationGeneration"] unsignedIntegerValue] > 0 &&
+                 [record[@"slotID"] isEqual:@1] &&
+                 [record[@"restoreReadBackEqual"] isKindOfClass:[NSNumber class]] &&
+                 cleanupProofValid &&
+                 (!snapshot || [snapshot isKindOfClass:[NSDictionary class]]) &&
+                 (!writeIntent || [writeIntent isKindOfClass:[NSDictionary class]]) &&
+                 (!setterInFlight || [setterInFlight isKindOfClass:[NSDictionary class]]) &&
+                 (snapshot || writeIntent || setterInFlight);
+    if (!valid && failure) {
+        *failure = @"The recovery-cleanup marker is invalid; preserving all recovery evidence.";
     }
     return valid;
 }
@@ -311,9 +368,12 @@ static BOOL CCNMCurrentBootSetterMayBeOutstanding(NSDictionary *returnedSetterRe
 
         BOOL setterMarker = [path isEqualToString:CCNMBandSetterInFlightPath()];
         NSString *headerFailure = nil;
-        BOOL validHeader = setterMarker
-            ? CCNMValidateSetterInFlightMarkerHeader(marker, &headerFailure)
-            : CCNMValidateRestoreInFlightMarkerHeader(marker, &headerFailure);
+        BOOL cleanupMarker = setterMarker && [marker[@"state"] isEqual:@"recovery_cleanup_in_flight"];
+        BOOL validHeader = cleanupMarker
+            ? CCNMValidateRecoveryCleanupMarker(marker, &headerFailure)
+            : (setterMarker
+                ? CCNMValidateSetterInFlightMarkerHeader(marker, &headerFailure)
+                : CCNMValidateRestoreInFlightMarkerHeader(marker, &headerFailure));
         if (!validHeader) {
             if (detail) {
                 *detail = headerFailure ?: @"An in-flight record is invalid, so an outstanding setter cannot be ruled out.";
@@ -321,7 +381,7 @@ static BOOL CCNMCurrentBootSetterMayBeOutstanding(NSDictionary *returnedSetterRe
             return YES;
         }
 
-        if (setterMarker &&
+        if (setterMarker && !cleanupMarker &&
             [returnedSetterRecord isKindOfClass:[NSDictionary class]] &&
             [marker isEqualToDictionary:returnedSetterRecord]) {
             continue;
@@ -642,6 +702,15 @@ static NSDictionary *CCNMDeepCopyDictionary(NSDictionary *dictionary, NSString *
     return copiedObject;
 }
 
+static BOOL CCNMNSNumberIsExactInteger(id value) {
+    if (![value isKindOfClass:[NSNumber class]] ||
+        CFGetTypeID((__bridge CFTypeRef)value) == CFBooleanGetTypeID()) {
+        return NO;
+    }
+    const char *type = [(NSNumber *)value objCType];
+    return type && type[0] && type[1] == '\0' && strchr("cCsSiIlLqQ", type[0]) != NULL;
+}
+
 static BOOL CCNMValidateBandDictionary(NSDictionary *bands, NSString **failure) {
     if (![bands isKindOfClass:[NSDictionary class]] || bands.count == 0) {
         if (failure) {
@@ -673,7 +742,7 @@ static BOOL CCNMValidateBandDictionary(NSDictionary *bands, NSString **failure) 
 
         NSMutableSet *seen = [NSMutableSet set];
         for (id band in (NSArray *)values) {
-            if (![band isKindOfClass:[NSNumber class]] || [band longLongValue] <= 0 || [band longLongValue] > CCNMMaximumExpectedBandIdentifier || [seen containsObject:band]) {
+            if (!CCNMNSNumberIsExactInteger(band) || [band longLongValue] <= 0 || [band longLongValue] > CCNMMaximumExpectedBandIdentifier || [seen containsObject:band]) {
                 if (failure) {
                     *failure = @"The active-band dictionary contains an invalid or duplicate Band value.";
                 }
@@ -910,6 +979,133 @@ static NSDictionary *CCNMBuildNR78OnlyBands(NSDictionary *originalBands,
     return modified;
 }
 
+static NSNumber *CCNMLTEB1Band(void) {
+    return @1;
+}
+
+static NSNumber *CCNMLTEB3Band(void) {
+    return @3;
+}
+
+static BOOL CCNMValidateLTEB1OnlyBands(NSDictionary *originalBands,
+                                       NSDictionary *requestedBands,
+                                       NSString **failure) {
+    if (!CCNMValidateBandDictionary(originalBands, failure) ||
+        !CCNMValidateBandDictionary(requestedBands, failure)) {
+        return NO;
+    }
+    if (![[NSSet setWithArray:originalBands.allKeys] isEqualToSet:[NSSet setWithArray:requestedBands.allKeys]]) {
+        if (failure) {
+            *failure = @"The LTE B1-only request changed the radio-technology key set.";
+        }
+        return NO;
+    }
+
+    NSArray *requestedLTEBands = requestedBands[CCNMLTERATKey];
+    if (![requestedLTEBands isEqualToArray:@[CCNMLTEB1Band()]]) {
+        if (failure) {
+            *failure = @"The requested LTE array is not exactly [1].";
+        }
+        return NO;
+    }
+    if ([originalBands[CCNMLTERATKey] isEqualToArray:requestedLTEBands]) {
+        if (failure) {
+            *failure = @"The original LTE array is already exactly [1], so this is not a changed-value experiment.";
+        }
+        return NO;
+    }
+    for (NSString *key in CCNMRequiredRATKeys()) {
+        if ([key isEqualToString:CCNMLTERATKey]) {
+            continue;
+        }
+        if (![originalBands[key] isEqual:requestedBands[key]]) {
+            if (failure) {
+                *failure = [NSString stringWithFormat:@"The LTE B1-only request changed the non-LTE array %@.", key];
+            }
+            return NO;
+        }
+    }
+    return YES;
+}
+
+static NSDictionary *CCNMBuildLTEB1OnlyBands(NSDictionary *activeBands,
+                                              NSDictionary *supportedBands,
+                                              NSString **failure) {
+    if (!CCNMValidateBandDictionary(activeBands, failure) ||
+        !CCNMValidateBandDictionary(supportedBands, failure)) {
+        return nil;
+    }
+    NSArray *activeLTEBands = activeBands[CCNMLTERATKey];
+    NSArray *supportedLTEBands = supportedBands[CCNMLTERATKey];
+    if (![activeLTEBands containsObject:CCNMLTEB1Band()] ||
+        ![supportedLTEBands containsObject:CCNMLTEB1Band()]) {
+        if (failure) {
+            *failure = @"LTE B1 is not present in both the fresh active and supported LTE arrays.";
+        }
+        return nil;
+    }
+    NSDictionary *copiedBands = CCNMDeepCopyDictionary(activeBands, failure);
+    if (!copiedBands) {
+        return nil;
+    }
+    NSMutableDictionary *requested = [copiedBands mutableCopy];
+    requested[CCNMLTERATKey] = @[CCNMLTEB1Band()];
+    return CCNMValidateLTEB1OnlyBands(activeBands, requested, failure) ? requested : nil;
+}
+
+static NSUInteger CCNMTrailingConsecutiveExactServingBandSamples(NSDictionary *report,
+                                                                  NSString *targetRAT,
+                                                                  NSNumber *targetBand) {
+    if (![report isKindOfClass:[NSDictionary class]] ||
+        ![report[@"cellMonitorSucceeded"] boolValue] ||
+        ![report[@"cellMonitorSamplingStatus"] isEqual:@"complete"] ||
+        ![targetRAT isKindOfClass:[NSString class]] ||
+        ![targetBand isKindOfClass:[NSNumber class]]) {
+        return 0;
+    }
+    NSArray *samples = [report[@"cellMonitorSamples"] isKindOfClass:[NSArray class]]
+        ? report[@"cellMonitorSamples"] : nil;
+    if (samples.count == 0) {
+        return 0;
+    }
+
+    NSUInteger trailingCount = 0;
+    for (NSDictionary *sample in [samples reverseObjectEnumerator]) {
+        if (![sample isKindOfClass:[NSDictionary class]] ||
+            ![sample[@"cellMonitorCopyStatus"] isEqual:@"parsed"] ||
+            ![sample[@"servingCells"] isKindOfClass:[NSArray class]]) {
+            break;
+        }
+        BOOL sawTargetRAT = NO;
+        BOOL cellsStructurallyValid = YES;
+        for (id cellObject in sample[@"servingCells"]) {
+            if (![cellObject isKindOfClass:[NSDictionary class]]) {
+                cellsStructurallyValid = NO;
+                break;
+            }
+            NSDictionary *cell = cellObject;
+            NSString *rat = [cell[@"rat"] isKindOfClass:[NSString class]] ? cell[@"rat"] : nil;
+            if (!rat) {
+                cellsStructurallyValid = NO;
+                break;
+            }
+            if ([rat isEqualToString:targetRAT]) {
+                sawTargetRAT = YES;
+                NSNumber *band = CCNMNSNumberIsExactInteger(cell[@"band"]) ? cell[@"band"] : nil;
+                if (![band isEqualToNumber:targetBand]) {
+                    cellsStructurallyValid = NO;
+                    break;
+                }
+            }
+        }
+        if (!cellsStructurallyValid || !sawTargetRAT) {
+            break;
+        }
+        trailingCount += 1;
+    }
+    return trailingCount;
+}
+
 static NSDictionary *CCNMBandDictionaryDifference(NSDictionary *left, NSDictionary *right) {
     NSMutableDictionary *difference = [NSMutableDictionary dictionary];
     if (![left isKindOfClass:[NSDictionary class]] || ![right isKindOfClass:[NSDictionary class]]) {
@@ -973,7 +1169,7 @@ static BOOL CCNMValidateWriteIntent(NSDictionary *intent, NSDictionary *snapshot
 
     NSDictionary *snapshotBands = [snapshot[@"activeBands"] isKindOfClass:[NSDictionary class]] ? snapshot[@"activeBands"] : nil;
     NSDictionary *intentBands = [intent[@"snapshotActiveBands"] isKindOfClass:[NSDictionary class]] ? intent[@"snapshotActiveBands"] : nil;
-    NSArray *allowedOperations = @[@"same_value_write_intent", @"cold_band_removal_intent", @"nr78_only_intent"];
+    NSArray *allowedOperations = @[@"same_value_write_intent", @"cold_band_removal_intent", @"nr78_only_intent", @"lte_b1_only_intent"];
     BOOL valid = [intent[@"schemaVersion"] isEqual:@1] &&
                  [intent[@"operation"] isKindOfClass:[NSString class]] &&
                  [allowedOperations containsObject:intent[@"operation"]] &&
@@ -1021,6 +1217,22 @@ static BOOL CCNMValidateWriteIntent(NSDictionary *intent, NSDictionary *snapshot
                 CCNMDictionariesEqual(expectedRequestedBands, requestedBands) &&
                 CCNMValidateNR78OnlyBands(snapshotBands, requestedBands, failure);
     }
+    if (valid && [intent[@"operation"] isEqual:@"lte_b1_only_intent"]) {
+        NSDictionary *snapshotSupportedBands = [snapshot[@"supportedBands"] isKindOfClass:[NSDictionary class]] ? snapshot[@"supportedBands"] : nil;
+        NSDictionary *intentSupportedBands = [intent[@"snapshotSupportedBands"] isKindOfClass:[NSDictionary class]] ? intent[@"snapshotSupportedBands"] : nil;
+        NSDictionary *requestedBands = [intent[@"requestedActiveBands"] isKindOfClass:[NSDictionary class]] ? intent[@"requestedActiveBands"] : nil;
+        NSDictionary *expectedRequestedBands = CCNMBuildLTEB1OnlyBands(snapshotBands,
+                                                                       snapshotSupportedBands,
+                                                                       failure);
+        valid = [intent[@"targetRATKey"] isEqual:CCNMLTERATKey] &&
+                [intent[@"targetBand"] isEqual:CCNMLTEB1Band()] &&
+                [intent[@"preWriteServingBand"] isEqual:CCNMLTEB3Band()] &&
+                [intent[@"requiredConsecutiveServingSamples"] isEqual:@(CCNMLTEServingConfirmationSamples)] &&
+                CCNMValidateBandDictionary(intentSupportedBands, failure) &&
+                CCNMDictionariesEqual(snapshotSupportedBands, intentSupportedBands) &&
+                CCNMDictionariesEqual(expectedRequestedBands, requestedBands) &&
+                CCNMValidateLTEB1OnlyBands(snapshotBands, requestedBands, failure);
+    }
     if (!valid) {
         if (failure && !*failure) {
             *failure = @"The write-intent record does not match the unique recovery snapshot.";
@@ -1028,6 +1240,227 @@ static BOOL CCNMValidateWriteIntent(NSDictionary *intent, NSDictionary *snapshot
         return NO;
     }
     return YES;
+}
+
+static BOOL CCNMValidateLegacyNR78CompletedResult(NSDictionary *result,
+                                                   NSDictionary *snapshot,
+                                                   NSDictionary *writeIntent,
+                                                   NSString **failure) {
+    if (![result isKindOfClass:[NSDictionary class]] ||
+        ![snapshot isKindOfClass:[NSDictionary class]] ||
+        ![writeIntent isKindOfClass:[NSDictionary class]]) {
+        if (failure) {
+            *failure = @"The markerless legacy n78 evidence is missing or unreadable; preserving all recovery evidence.";
+        }
+        return NO;
+    }
+
+    NSString *recordFailure = nil;
+    NSDictionary *snapshotBands = nil;
+    BOOL recoveryRecordsValid = CCNMValidateSnapshot(snapshot, &snapshotBands, &recordFailure) &&
+                                CCNMValidateWriteIntent(writeIntent, snapshot, &recordFailure) &&
+                                [writeIntent[@"operation"] isEqual:@"nr78_only_intent"];
+    NSDictionary *snapshotSupportedBands = [snapshot[@"supportedBands"] isKindOfClass:[NSDictionary class]]
+        ? snapshot[@"supportedBands"] : nil;
+    NSDictionary *requestedBands = [writeIntent[@"requestedActiveBands"] isKindOfClass:[NSDictionary class]]
+        ? writeIntent[@"requestedActiveBands"] : nil;
+    NSDictionary *expectedRequestedBands = recoveryRecordsValid
+        ? CCNMBuildNR78OnlyBands(snapshotBands, snapshotSupportedBands, &recordFailure)
+        : nil;
+
+    BOOL matchedRequest = [result[@"readBackMatchedRequest"] boolValue];
+    BOOL matchedOriginal = [result[@"readBackMatchedOriginal"] boolValue];
+    BOOL effectApplied = [result[@"effectApplied"] boolValue];
+    NSDictionary *readBackBands = [result[@"readBackActiveBands"] isKindOfClass:[NSDictionary class]]
+        ? result[@"readBackActiveBands"] : nil;
+    NSDictionary *readBackPhase = [result[@"readBackPhase"] isKindOfClass:[NSDictionary class]]
+        ? result[@"readBackPhase"] : nil;
+    NSDictionary *phaseReadBackBands = [readBackPhase[@"readBackActiveBands"] isKindOfClass:[NSDictionary class]]
+        ? readBackPhase[@"readBackActiveBands"] : nil;
+    NSDictionary *expectedReadBackBands = matchedRequest ? requestedBands : (matchedOriginal ? snapshotBands : nil);
+    NSString *readBackError = [readBackPhase[@"readBackError"] isKindOfClass:[NSString class]]
+        ? readBackPhase[@"readBackError"] : nil;
+    NSString *readBackException = [readBackPhase[@"readBackException"] isKindOfClass:[NSString class]]
+        ? readBackPhase[@"readBackException"] : nil;
+    BOOL readBackExpectedObserved = [readBackPhase[@"readBackExpectedObserved"] boolValue];
+    BOOL readBackTimedOut = [readBackPhase[@"readBackTimedOut"] boolValue];
+    BOOL readBackEvidenceValid = matchedRequest != matchedOriginal &&
+                                 effectApplied == matchedRequest &&
+                                 expectedReadBackBands &&
+                                 CCNMDictionariesEqual(readBackBands, expectedReadBackBands) &&
+                                 CCNMDictionariesEqual(phaseReadBackBands, expectedReadBackBands) &&
+                                 [readBackPhase[@"readBackPollAttempts"] isKindOfClass:[NSNumber class]] &&
+                                 [readBackPhase[@"readBackPollAttempts"] unsignedIntegerValue] > 0 &&
+                                 [readBackPhase[@"readBackPollElapsedMilliseconds"] isKindOfClass:[NSNumber class]] &&
+                                 [readBackPhase[@"readBackPollElapsedMilliseconds"] longLongValue] >= 0 &&
+                                 readBackError && readBackError.length == 0 &&
+                                 readBackException && readBackException.length == 0 &&
+                                 (matchedRequest
+                                     ? (readBackExpectedObserved && !readBackTimedOut)
+                                     : (!readBackExpectedObserved && readBackTimedOut));
+
+    NSDictionary *observationPhase = [result[@"observationPhase"] isKindOfClass:[NSDictionary class]]
+        ? result[@"observationPhase"] : nil;
+    NSString *observationError = [result[@"observationError"] isKindOfClass:[NSString class]]
+        ? result[@"observationError"] : nil;
+    NSString *observationReadError = [observationPhase[@"readError"] isKindOfClass:[NSString class]]
+        ? observationPhase[@"readError"] : nil;
+    NSNumber *observationStartedAt = [observationPhase[@"startedAt"] isKindOfClass:[NSNumber class]]
+        ? observationPhase[@"startedAt"] : nil;
+    NSNumber *observationCompletedAt = [observationPhase[@"completedAt"] isKindOfClass:[NSNumber class]]
+        ? observationPhase[@"completedAt"] : nil;
+    NSNumber *observationElapsed = [observationPhase[@"elapsedSeconds"] isKindOfClass:[NSNumber class]]
+        ? observationPhase[@"elapsedSeconds"] : nil;
+    NSDictionary *observationBands = [observationPhase[@"activeBands"] isKindOfClass:[NSDictionary class]]
+        ? observationPhase[@"activeBands"] : nil;
+    NSString *observationSkippedReason = [result[@"observationSkippedReason"] isKindOfClass:[NSString class]]
+        ? result[@"observationSkippedReason"] : nil;
+    BOOL observationEvidenceValid = matchedRequest
+        ? ([result[@"observationStarted"] boolValue] &&
+           [result[@"observationCompleted"] boolValue] &&
+           [result[@"observationEndMatchedRequest"] boolValue] &&
+           observationError && observationError.length == 0 &&
+           observationReadError && observationReadError.length == 0 &&
+           observationStartedAt && observationCompletedAt && observationElapsed &&
+           isfinite([observationStartedAt doubleValue]) &&
+           isfinite([observationCompletedAt doubleValue]) &&
+           isfinite([observationElapsed doubleValue]) &&
+           [observationStartedAt doubleValue] > 0 &&
+           [observationCompletedAt doubleValue] >= [observationStartedAt doubleValue] &&
+           [observationElapsed doubleValue] >= CCNMNR78ObservationSeconds &&
+           CCNMDictionariesEqual(observationBands, requestedBands))
+        : (![result[@"observationStarted"] boolValue] &&
+           ![result[@"observationCompleted"] boolValue] &&
+           ![result[@"observationEndMatchedRequest"] boolValue] &&
+           !observationPhase && !observationError &&
+           [observationSkippedReason isEqual:@"setter_not_applied"]);
+
+    NSDictionary *restorePhase = [result[@"restorePhase"] isKindOfClass:[NSDictionary class]]
+        ? result[@"restorePhase"] : nil;
+    NSDictionary *restoreReadBackBands = [restorePhase[@"readBackActiveBands"] isKindOfClass:[NSDictionary class]]
+        ? restorePhase[@"readBackActiveBands"] : nil;
+    NSString *restoreSetterError = [restorePhase[@"setterError"] isKindOfClass:[NSString class]]
+        ? restorePhase[@"setterError"] : nil;
+    NSString *restoreReadBackError = [restorePhase[@"readBackError"] isKindOfClass:[NSString class]]
+        ? restorePhase[@"readBackError"] : nil;
+    NSString *restoreReadBackException = [restorePhase[@"readBackException"] isKindOfClass:[NSString class]]
+        ? restorePhase[@"readBackException"] : nil;
+    BOOL restorePhaseValid = [restorePhase[@"setterAttempted"] boolValue] &&
+                             [restorePhase[@"payloadEqualBeforeWrite"] boolValue] &&
+                             [restorePhase[@"exemptedOwnSetterMarker"] boolValue] &&
+                             [restorePhase[@"restoreInFlightSaved"] boolValue] &&
+                             ![restorePhase[@"restoreStateUncertain"] boolValue] &&
+                             ![restorePhase[@"restoreDeadlineExceeded"] boolValue] &&
+                             restoreSetterError && restoreSetterError.length == 0 &&
+                             [restorePhase[@"readBackExpectedObserved"] boolValue] &&
+                             ![restorePhase[@"readBackTimedOut"] boolValue] &&
+                             restoreReadBackError && restoreReadBackError.length == 0 &&
+                             restoreReadBackException && restoreReadBackException.length == 0 &&
+                             [restorePhase[@"readBackPollAttempts"] isKindOfClass:[NSNumber class]] &&
+                             [restorePhase[@"readBackPollAttempts"] unsignedIntegerValue] > 0 &&
+                             [restorePhase[@"readBackPollElapsedMilliseconds"] isKindOfClass:[NSNumber class]] &&
+                             [restorePhase[@"readBackPollElapsedMilliseconds"] longLongValue] >= 0 &&
+                             CCNMDictionariesEqual(restoreReadBackBands, snapshotBands) &&
+                             [restorePhase[@"readBackEqual"] boolValue] &&
+                             [restorePhase[@"restoreInFlightRemoved"] boolValue];
+
+    NSNumber *snapshotCreatedAt = [snapshot[@"createdAt"] isKindOfClass:[NSNumber class]]
+        ? snapshot[@"createdAt"] : nil;
+    NSNumber *intentCreatedAt = [writeIntent[@"createdAt"] isKindOfClass:[NSNumber class]]
+        ? writeIntent[@"createdAt"] : nil;
+    NSNumber *resultStartedAt = [result[@"startedAt"] isKindOfClass:[NSNumber class]]
+        ? result[@"startedAt"] : nil;
+    NSNumber *setterStartedAt = [result[@"setterStartedAt"] isKindOfClass:[NSNumber class]]
+        ? result[@"setterStartedAt"] : nil;
+    NSNumber *setterFinishedAt = [result[@"setterFinishedAt"] isKindOfClass:[NSNumber class]]
+        ? result[@"setterFinishedAt"] : nil;
+    NSNumber *resultCompletedAt = [result[@"completedAt"] isKindOfClass:[NSNumber class]]
+        ? result[@"completedAt"] : nil;
+    NSTimeInterval snapshotCreatedSeconds = [snapshotCreatedAt doubleValue] / 1000.0;
+    NSTimeInterval intentCreatedSeconds = [intentCreatedAt doubleValue] / 1000.0;
+    const NSTimeInterval timestampTolerance = 0.01;
+    BOOL timestampsStrictlyOrdered = snapshotCreatedAt && intentCreatedAt &&
+                                     resultStartedAt && setterStartedAt &&
+                                     setterFinishedAt && resultCompletedAt &&
+                                     isfinite(snapshotCreatedSeconds) &&
+                                     isfinite(intentCreatedSeconds) &&
+                                     isfinite([resultStartedAt doubleValue]) &&
+                                     isfinite([setterStartedAt doubleValue]) &&
+                                     isfinite([setterFinishedAt doubleValue]) &&
+                                     isfinite([resultCompletedAt doubleValue]) &&
+                                     [resultStartedAt doubleValue] > 0 &&
+                                     snapshotCreatedSeconds > 0 &&
+                                     intentCreatedSeconds > 0 &&
+                                     [setterStartedAt doubleValue] > 0 &&
+                                     [setterFinishedAt doubleValue] > 0 &&
+                                     [resultCompletedAt doubleValue] > 0 &&
+                                     [resultStartedAt doubleValue] <= snapshotCreatedSeconds + timestampTolerance &&
+                                     snapshotCreatedSeconds <= intentCreatedSeconds + timestampTolerance &&
+                                     intentCreatedSeconds <= [setterStartedAt doubleValue] + timestampTolerance &&
+                                     [setterStartedAt doubleValue] <= [setterFinishedAt doubleValue] + timestampTolerance &&
+                                     [setterFinishedAt doubleValue] <= [resultCompletedAt doubleValue] + timestampTolerance;
+    if (matchedRequest) {
+        timestampsStrictlyOrdered = timestampsStrictlyOrdered &&
+            [setterFinishedAt doubleValue] <= [observationStartedAt doubleValue] + timestampTolerance &&
+            [observationStartedAt doubleValue] <= [observationCompletedAt doubleValue] + timestampTolerance &&
+            [observationCompletedAt doubleValue] <= [resultCompletedAt doubleValue] + timestampTolerance;
+    }
+
+    NSString *snapshotUUID = CCNMCanonicalUUIDString(snapshot[@"subscriptionUUID"]);
+    NSString *resultUUID = CCNMCanonicalUUIDString(result[@"targetSubscriptionUUID"]);
+    NSString *initialReadError = [result[@"initialReadError"] isKindOfClass:[NSString class]]
+        ? result[@"initialReadError"] : nil;
+    NSString *preWriteReadError = [result[@"preWriteReadError"] isKindOfClass:[NSString class]]
+        ? result[@"preWriteReadError"] : nil;
+    NSString *setterError = [result[@"setterError"] isKindOfClass:[NSString class]]
+        ? result[@"setterError"] : nil;
+    NSString *restoreError = [result[@"restoreError"] isKindOfClass:[NSString class]]
+        ? result[@"restoreError"] : nil;
+    NSString *resultError = [result[@"error"] isKindOfClass:[NSString class]]
+        ? result[@"error"] : nil;
+    BOOL valid = recoveryRecordsValid &&
+                 [result[@"schemaVersion"] isEqual:@1] &&
+                 [result[@"operation"] isEqual:@"nr78_only"] &&
+                 [result[@"operationGeneration"] isEqual:writeIntent[@"operationGeneration"]] &&
+                 [result[@"slotID"] isEqual:@1] &&
+                 [result[@"targetRATKey"] isEqual:CCNMNRRATKey] &&
+                 [result[@"targetBand"] isEqual:CCNMNR78Band()] &&
+                 [result[@"observationSeconds"] isKindOfClass:[NSNumber class]] &&
+                 [result[@"observationSeconds"] doubleValue] == CCNMNR78ObservationSeconds &&
+                 snapshotUUID && [resultUUID isEqualToString:snapshotUUID] &&
+                 CCNMDictionariesEqual(result[@"originalActiveBands"], snapshotBands) &&
+                 CCNMDictionariesEqual(result[@"supportedBandsAtSelection"], snapshotSupportedBands) &&
+                 CCNMDictionariesEqual(result[@"requestedActiveBands"], requestedBands) &&
+                 CCNMDictionariesEqual(expectedRequestedBands, requestedBands) &&
+                 [result[@"snapshotSaved"] boolValue] &&
+                 [result[@"writeIntentSaved"] boolValue] &&
+                 [result[@"setterInFlightSaved"] boolValue] &&
+                 [result[@"payloadEqualBeforeWrite"] boolValue] &&
+                 initialReadError && initialReadError.length == 0 &&
+                 [result[@"preWriteActiveBandsEqual"] boolValue] &&
+                 [result[@"preWriteSupportedBandsEqual"] boolValue] &&
+                 preWriteReadError && preWriteReadError.length == 0 &&
+                 [result[@"watchdogArmed"] boolValue] &&
+                 [result[@"setterAttempted"] boolValue] &&
+                 ![result[@"setterDeadlineExceeded"] boolValue] &&
+                 ![result[@"setterStateUncertain"] boolValue] &&
+                 !result[@"setterException"] && !result[@"operationException"] &&
+                 setterError && setterError.length == 0 &&
+                 readBackEvidenceValid && observationEvidenceValid &&
+                 [result[@"restoreAttempted"] boolValue] &&
+                 [result[@"restoreReadBackEqual"] boolValue] &&
+                 restoreError && restoreError.length == 0 &&
+                 restorePhaseValid &&
+                 [result[@"setterInFlightRemoved"] boolValue] &&
+                 ![result[@"setterInFlightPreserved"] boolValue] &&
+                 ![result[@"recoveryPending"] boolValue] &&
+                 [result[@"passed"] boolValue] &&
+                 resultError && resultError.length == 0 &&
+                 timestampsStrictlyOrdered;
+    if (!valid && failure) {
+        *failure = recordFailure ?: @"The markerless legacy n78 result does not prove a completed, restored transaction; preserving all recovery evidence.";
+    }
+    return valid;
 }
 
 static BOOL CCNMSyncParentDirectory(NSString *path, NSString **failure) {
@@ -1255,6 +1688,57 @@ static NSDictionary *CCNMBuildRestoreMarkerRecord(NSString *sourceOperation,
     };
 }
 
+static NSDictionary *CCNMBuildRecoveryCleanupMarker(NSString *cleanupKind,
+                                                       NSString *sourceOperation,
+                                                       NSDictionary *snapshot,
+                                                       NSDictionary *writeIntent,
+                                                       NSDictionary *setterInFlight,
+                                                       NSUInteger operationGeneration,
+                                                       BOOL restoreReadBackEqual,
+                                                       NSString **failure) {
+    BOOL validCleanupKind = [cleanupKind isEqual:@"pre_setter"] ||
+                            [cleanupKind isEqual:@"verified_restore"] ||
+                            [cleanupKind isEqual:@"verified_live_match"] ||
+                            [cleanupKind isEqual:@"verified_legacy_nr78_live_match"];
+    if (operationGeneration == 0 || !validCleanupKind) {
+        if (failure) {
+            *failure = @"A recovery cleanup requires a valid cleanup kind and operation generation.";
+        }
+        return nil;
+    }
+    NSString *bootSession = CCNMBootSessionIdentity();
+    NSNumber *bootSeconds = CCNMBootTimeSeconds();
+    if (!bootSession || !bootSeconds) {
+        if (failure) {
+            *failure = @"The current boot session identity could not be read for recovery cleanup.";
+        }
+        return nil;
+    }
+    NSMutableDictionary *marker = [@{
+        @"schemaVersion": @1,
+        @"state": @"recovery_cleanup_in_flight",
+        @"cleanupKind": cleanupKind,
+        @"sourceOperation": sourceOperation ?: @"unknown",
+        @"createdAt": @((long long)([[NSDate date] timeIntervalSince1970] * 1000.0)),
+        @"processID": @(getpid()),
+        @"bootSessionUUID": bootSession,
+        @"bootTimeSeconds": bootSeconds,
+        @"operationGeneration": @(operationGeneration),
+        @"slotID": @1,
+        @"restoreReadBackEqual": @(restoreReadBackEqual)
+    } mutableCopy];
+    if (snapshot) {
+        marker[@"snapshot"] = snapshot;
+    }
+    if (writeIntent) {
+        marker[@"writeIntent"] = writeIntent;
+    }
+    if (setterInFlight) {
+        marker[@"setterInFlight"] = setterInFlight;
+    }
+    return marker;
+}
+
 static BOOL CCNMValidateSetterInFlightRecord(NSDictionary *record,
                                              NSDictionary *snapshot,
                                              NSDictionary *writeIntent,
@@ -1267,6 +1751,8 @@ static BOOL CCNMValidateSetterInFlightRecord(NSDictionary *record,
         expectedOperation = @"cold_band_removal";
     } else if ([intentOperation isEqualToString:@"nr78_only_intent"]) {
         expectedOperation = @"nr78_only";
+    } else if ([intentOperation isEqualToString:@"lte_b1_only_intent"]) {
+        expectedOperation = @"lte_b1_only";
     }
     BOOL valid = CCNMValidateSetterInFlightMarkerHeader(record, failure) &&
                  expectedOperation &&
@@ -1330,18 +1816,6 @@ static void CCNMReleaseRecoveryFileLock(int fileDescriptor) {
     close(fileDescriptor);
 }
 
-static BOOL CCNMRemoveSetterInFlightRecord(NSDictionary *expectedRecord, NSString **failure) {
-    NSDictionary *liveRecord = [NSDictionary dictionaryWithContentsOfFile:CCNMBandSetterInFlightPath()];
-    if (![liveRecord isEqualToDictionary:expectedRecord]) {
-        if (failure) {
-            *failure = @"The setter-in-flight record changed unexpectedly; preserving it for recovery.";
-        }
-        return NO;
-    }
-    BOOL removed = NO;
-    return CCNMUnlinkIfPresent(CCNMBandSetterInFlightPath(), &removed, failure) && removed;
-}
-
 static BOOL CCNMRemoveRestoreInFlightRecord(NSDictionary *expectedRecord, NSString **failure) {
     NSDictionary *liveRecord = [NSDictionary dictionaryWithContentsOfFile:CCNMBandRestoreInFlightPath()];
     if (![liveRecord isEqualToDictionary:expectedRecord]) {
@@ -1352,6 +1826,313 @@ static BOOL CCNMRemoveRestoreInFlightRecord(NSDictionary *expectedRecord, NSStri
     }
     BOOL removed = NO;
     return CCNMUnlinkIfPresent(CCNMBandRestoreInFlightPath(), &removed, failure) && removed;
+}
+
+static BOOL CCNMTestSetterDefinitelyNotCalled(NSUInteger operationGeneration) {
+    @synchronized([CCNMRootListController class]) {
+        return operationGeneration > 0 &&
+               CCNMBandOperationInProgress &&
+               CCNMCurrentBandOperationGeneration == operationGeneration &&
+               !CCNMTestSetterCallStarted &&
+               !CCNMSetterTimeoutUncertain &&
+               CCNMTestSetterReturnedGeneration != operationGeneration;
+    }
+}
+
+static BOOL CCNMRecoveryRecordMatchesExpected(NSDictionary *expectedRecord,
+                                               NSString *path,
+                                               NSString *label,
+                                               NSString **failure) {
+    if (!expectedRecord) {
+        if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
+            if (failure) {
+                *failure = [NSString stringWithFormat:@"An unexpected %@ exists; preserving all recovery state.", label];
+            }
+            return NO;
+        }
+        return YES;
+    }
+    NSDictionary *liveRecord = [NSDictionary dictionaryWithContentsOfFile:path];
+    if (![liveRecord isEqualToDictionary:expectedRecord]) {
+        if (failure) {
+            *failure = [NSString stringWithFormat:@"The %@ changed unexpectedly; preserving all remaining recovery state.", label];
+        }
+        return NO;
+    }
+    return YES;
+}
+
+static BOOL CCNMRemoveExpectedRecoveryRecord(NSDictionary *expectedRecord,
+                                              NSString *path,
+                                              NSString *label,
+                                              BOOL *removed,
+                                              NSString **failure) {
+    if (removed) {
+        *removed = NO;
+    }
+    if (!expectedRecord) {
+        return YES;
+    }
+    if (!CCNMRecoveryRecordMatchesExpected(expectedRecord, path, label, failure)) {
+        return NO;
+    }
+    BOOL didRemove = NO;
+    BOOL success = CCNMUnlinkIfPresent(path, &didRemove, failure) && didRemove;
+    if (removed) {
+        *removed = success;
+    }
+    return success;
+}
+
+static BOOL CCNMRemoveExpectedRecoveryRecordDuringCleanup(NSDictionary *expectedRecord,
+                                                               NSString *path,
+                                                               NSString *label,
+                                                               BOOL *removed,
+                                                               NSString **failure) {
+    if (removed) {
+        *removed = NO;
+    }
+    if (!expectedRecord) {
+        if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
+            if (failure) {
+                *failure = [NSString stringWithFormat:@"An unexpected %@ exists during recovery cleanup; preserving it.", label];
+            }
+            return NO;
+        }
+        if (removed) {
+            *removed = YES;
+        }
+        return YES;
+    }
+    if (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
+        if (removed) {
+            *removed = YES;
+        }
+        return YES;
+    }
+    NSDictionary *liveRecord = [NSDictionary dictionaryWithContentsOfFile:path];
+    if (![liveRecord isEqualToDictionary:expectedRecord]) {
+        if (failure) {
+            *failure = [NSString stringWithFormat:@"The %@ changed during recovery cleanup; preserving it.", label];
+        }
+        return NO;
+    }
+    BOOL didRemove = NO;
+    if (!CCNMUnlinkIfPresent(path, &didRemove, failure) || !didRemove) {
+        return NO;
+    }
+    if (removed) {
+        *removed = YES;
+    }
+    return YES;
+}
+
+static BOOL CCNMInstallRecoveryCleanupMarker(NSString *cleanupKind,
+                                              NSString *sourceOperation,
+                                              NSDictionary *snapshot,
+                                              NSDictionary *writeIntent,
+                                              NSDictionary *setterInFlightRecord,
+                                              NSUInteger operationGeneration,
+                                              BOOL restoreReadBackEqual,
+                                              NSString **failure) {
+    if (!CCNMRecoveryRecordMatchesExpected(snapshot,
+                                            CCNMBandSnapshotPath(),
+                                            @"snapshot",
+                                            failure) ||
+        !CCNMRecoveryRecordMatchesExpected(writeIntent,
+                                            CCNMBandWriteIntentPath(),
+                                            @"write intent",
+                                            failure) ||
+        !CCNMRecoveryRecordMatchesExpected(setterInFlightRecord,
+                                            CCNMBandSetterInFlightPath(),
+                                            @"setter-in-flight record",
+                                            failure) ||
+        [[NSFileManager defaultManager] fileExistsAtPath:CCNMBandRestoreInFlightPath()]) {
+        if (failure && !*failure) {
+            *failure = @"The recovery records changed before cleanup handoff; preserving all recovery evidence.";
+        }
+        return NO;
+    }
+
+    NSDictionary *cleanupMarker = CCNMBuildRecoveryCleanupMarker(cleanupKind,
+                                                                   sourceOperation,
+                                                                   snapshot,
+                                                                   writeIntent,
+                                                                   setterInFlightRecord,
+                                                                   operationGeneration,
+                                                                   restoreReadBackEqual,
+                                                                   failure);
+    if (!cleanupMarker) {
+        return NO;
+    }
+    if (setterInFlightRecord) {
+        return CCNMReplaceDurablePlistExact(setterInFlightRecord,
+                                            cleanupMarker,
+                                            CCNMBandSetterInFlightPath(),
+                                            failure);
+    }
+    return CCNMCreateDurablePlistExclusively(cleanupMarker,
+                                             CCNMBandSetterInFlightPath(),
+                                             failure);
+}
+
+static BOOL CCNMResumeRecoveryCleanupMarker(NSDictionary *cleanupMarker,
+                                             NSMutableDictionary *phase,
+                                             NSString **failure) {
+    NSString *markerFailure = nil;
+    if (!CCNMValidateRecoveryCleanupMarker(cleanupMarker, &markerFailure)) {
+        if (failure) {
+            *failure = markerFailure ?: @"The recovery-cleanup marker is invalid; preserving all recovery evidence.";
+        }
+        return NO;
+    }
+    NSDictionary *snapshot = cleanupMarker[@"snapshot"];
+    NSDictionary *writeIntent = cleanupMarker[@"writeIntent"];
+    NSDictionary *setterInFlight = cleanupMarker[@"setterInFlight"];
+    BOOL legacyNR78Cleanup = [cleanupMarker[@"cleanupKind"] isEqual:@"verified_legacy_nr78_live_match"];
+    NSString *embeddedFailure = nil;
+    BOOL embeddedRecordsValid = CCNMValidateSnapshot(snapshot, NULL, &embeddedFailure) &&
+                                (!writeIntent || CCNMValidateWriteIntent(writeIntent, snapshot, &embeddedFailure)) &&
+                                (legacyNR78Cleanup
+                                    ? (writeIntent &&
+                                       [writeIntent[@"operation"] isEqual:@"nr78_only_intent"] &&
+                                       !setterInFlight)
+                                    : (!setterInFlight ||
+                                       (writeIntent && CCNMValidateSetterInFlightRecord(setterInFlight,
+                                                                                        snapshot,
+                                                                                        writeIntent,
+                                                                                        &embeddedFailure))));
+    if (!embeddedRecordsValid) {
+        if (failure) {
+            *failure = embeddedFailure ?: @"The cleanup marker's embedded records are invalid; preserving all recovery evidence.";
+        }
+        return NO;
+    }
+    NSDictionary *liveMarker = [NSDictionary dictionaryWithContentsOfFile:CCNMBandSetterInFlightPath()];
+    if (![liveMarker isEqualToDictionary:cleanupMarker]) {
+        if (failure) {
+            *failure = @"The recovery-cleanup marker changed unexpectedly; preserving all recovery evidence.";
+        }
+        return NO;
+    }
+    if ([[NSFileManager defaultManager] fileExistsAtPath:CCNMBandRestoreInFlightPath()]) {
+        if (failure) {
+            *failure = @"A restore-in-flight marker exists during cleanup; preserving all recovery evidence.";
+        }
+        return NO;
+    }
+
+    BOOL snapshotRemoved = NO;
+    BOOL writeIntentRemoved = NO;
+    NSString *snapshotFailure = nil;
+    NSString *intentFailure = nil;
+    if (!CCNMRemoveExpectedRecoveryRecordDuringCleanup(cleanupMarker[@"snapshot"],
+                                                        CCNMBandSnapshotPath(),
+                                                        @"snapshot",
+                                                        &snapshotRemoved,
+                                                        &snapshotFailure) ||
+        !CCNMRemoveExpectedRecoveryRecordDuringCleanup(cleanupMarker[@"writeIntent"],
+                                                        CCNMBandWriteIntentPath(),
+                                                        @"write intent",
+                                                        &writeIntentRemoved,
+                                                        &intentFailure)) {
+        if (failure) {
+            *failure = snapshotFailure ?: intentFailure ?: @"Recovery payload cleanup failed; preserving the cleanup marker.";
+        }
+        return NO;
+    }
+
+    BOOL markerRemoved = NO;
+    NSString *markerRemovalFailure = nil;
+    if (!CCNMRemoveExpectedRecoveryRecord(cleanupMarker,
+                                           CCNMBandSetterInFlightPath(),
+                                           @"recovery-cleanup marker",
+                                           &markerRemoved,
+                                           &markerRemovalFailure)) {
+        if (failure) {
+            *failure = markerRemovalFailure ?: @"The recovery-cleanup marker could not be removed; preserving it for retry.";
+        }
+        return NO;
+    }
+    if (phase) {
+        phase[@"recoveryCleanupMarkerInstalled"] = @YES;
+        phase[@"snapshotRemoved"] = @(snapshotRemoved);
+        phase[@"writeIntentRemoved"] = @(writeIntentRemoved);
+        phase[@"setterInFlightRemoved"] = @(markerRemoved);
+        phase[@"recoveryCleanupResumed"] = @YES;
+    }
+    return snapshotRemoved && writeIntentRemoved && markerRemoved;
+}
+
+static BOOL CCNMRemoveUnattemptedBandRecoveryRecords(NSDictionary *snapshot,
+                                                       NSDictionary *writeIntent,
+                                                       NSDictionary *setterInFlightRecord,
+                                                       BOOL setterWasInvoked,
+                                                       NSUInteger operationGeneration,
+                                                       NSMutableDictionary *phase,
+                                                       NSString **failure) {
+    if (setterWasInvoked || !CCNMTestSetterDefinitelyNotCalled(operationGeneration)) {
+        if (failure) {
+            *failure = @"The test setter cannot be proven uncalled; preserving all recovery state.";
+        }
+        return NO;
+    }
+
+    NSString *sourceOperation = [setterInFlightRecord[@"operation"] isKindOfClass:[NSString class]]
+        ? setterInFlightRecord[@"operation"]
+        : ([writeIntent[@"operation"] isKindOfClass:[NSString class]] ? writeIntent[@"operation"] : @"unknown");
+    if (!CCNMInstallRecoveryCleanupMarker(@"pre_setter",
+                                           sourceOperation,
+                                           snapshot,
+                                           writeIntent,
+                                           setterInFlightRecord,
+                                           operationGeneration,
+                                           NO,
+                                           failure)) {
+        return NO;
+    }
+    BOOL resumed = CCNMResumeRecoveryCleanupMarker(
+        [NSDictionary dictionaryWithContentsOfFile:CCNMBandSetterInFlightPath()],
+        phase,
+        failure);
+    return resumed;
+}
+
+static BOOL CCNMRemoveVerifiedBandRecoveryRecords(NSDictionary *snapshot,
+                                                   NSDictionary *writeIntent,
+                                                   NSDictionary *setterInFlightRecord,
+                                                   BOOL restoreReadBackEqual,
+                                                   NSMutableDictionary *phase,
+                                                   NSString **failure) {
+    if (!restoreReadBackEqual || !snapshot || !writeIntent || !setterInFlightRecord) {
+        if (failure) {
+            *failure = @"Complete recovery records may be removed only after an exact verified restore.";
+        }
+        return NO;
+    }
+    if ([[NSFileManager defaultManager] fileExistsAtPath:CCNMBandRestoreInFlightPath()]) {
+        if (failure) {
+            *failure = @"The restore-in-flight marker still exists; preserving all recovery state.";
+        }
+        return NO;
+    }
+
+    if (!CCNMInstallRecoveryCleanupMarker(@"verified_restore",
+                                           [setterInFlightRecord[@"operation"] isKindOfClass:[NSString class]]
+                                               ? setterInFlightRecord[@"operation"]
+                                               : @"unknown",
+                                           snapshot,
+                                           writeIntent,
+                                           setterInFlightRecord,
+                                           [setterInFlightRecord[@"operationGeneration"] unsignedIntegerValue],
+                                           restoreReadBackEqual,
+                                           failure)) {
+        return NO;
+    }
+    return CCNMResumeRecoveryCleanupMarker(
+        [NSDictionary dictionaryWithContentsOfFile:CCNMBandSetterInFlightPath()],
+        phase,
+        failure);
 }
 
 static const char *CCNMSkipTypeQualifiers(const char *type) {
@@ -1679,39 +2460,6 @@ static NSDictionary *CCNMWaitForExpectedBandReadBack(id<CCNMCoreTelephonyClient>
         *failure = lastReadException ?: lastReadError ?: @"No valid Band read-back was returned.";
     }
     return lastBands;
-}
-
-static BOOL CCNMWaitForObservationInterval(NSTimeInterval seconds,
-                                            NSMutableDictionary *phase,
-                                            NSString **failure) {
-    NSTimeInterval started = CCNMMonotonicNow();
-    if (seconds <= 0 || started <= 0) {
-        if (failure) {
-            *failure = @"The monotonic observation timer could not be started.";
-        }
-        return NO;
-    }
-
-    phase[@"startedAt"] = @([[NSDate date] timeIntervalSince1970]);
-    while (YES) {
-        NSTimeInterval now = CCNMMonotonicNow();
-        if (now <= 0 || now < started) {
-            if (failure) {
-                *failure = @"The monotonic observation timer became invalid.";
-            }
-            return NO;
-        }
-        NSTimeInterval elapsed = now - started;
-        if (elapsed >= seconds) {
-            phase[@"elapsedSeconds"] = @(elapsed);
-            phase[@"completedAt"] = @([[NSDate date] timeIntervalSince1970]);
-            return YES;
-        }
-
-        NSTimeInterval remaining = seconds - elapsed;
-        useconds_t sleepMicroseconds = (useconds_t)(MIN(remaining, 1.0) * 1000000.0);
-        usleep(MAX(sleepMicroseconds, (useconds_t)1));
-    }
 }
 
 static BOOL CCNMMarkRestoreSetterCallStarted(NSUInteger operationGeneration,
@@ -2511,6 +3259,22 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
     NSDictionary *inFlight = [NSDictionary dictionaryWithContentsOfFile:CCNMBandSetterInFlightPath()];
     BOOL restoreInFlightExists = [[NSFileManager defaultManager] fileExistsAtPath:CCNMBandRestoreInFlightPath()];
     NSDictionary *restoreInFlight = [NSDictionary dictionaryWithContentsOfFile:CCNMBandRestoreInFlightPath()];
+    if ([inFlight[@"state"] isEqual:@"recovery_cleanup_in_flight"]) {
+        NSString *cleanupFailure = nil;
+        BOOL cleanupValid = CCNMValidateRecoveryCleanupMarker(inFlight, &cleanupFailure) && !restoreInFlightExists;
+        NSString *message = cleanupValid
+            ? @"A previously authorized recovery cleanup was interrupted. Finish removing only the exact records embedded in its durable cleanup marker? No modem setter will be called."
+            : (cleanupFailure ?: @"The cleanup marker conflicts with a restore-in-flight record. Recovery state is preserved.");
+        UIAlertController *cleanupAlert = [UIAlertController alertControllerWithTitle:@"Finish interrupted recovery cleanup" message:message preferredStyle:UIAlertControllerStyleAlert];
+        [cleanupAlert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+        if (cleanupValid) {
+            [cleanupAlert addAction:[UIAlertAction actionWithTitle:@"Finish Cleanup" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+                [self resumeRecoveryCleanup];
+            }]];
+        }
+        [self presentViewController:cleanupAlert animated:YES completion:nil];
+        return;
+    }
     NSString *snapshotFailure = nil;
     NSString *intentFailure = nil;
     NSString *inFlightFailure = nil;
@@ -2566,7 +3330,7 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
     [self presentViewController:alertController animated:YES completion:nil];
 }
 
-- (void)confirmNR78BandWrite:(PSSpecifier *)specifier {
+- (void)confirmLTEB1BandWrite:(PSSpecifier *)specifier {
     BOOL snapshotExists = [[NSFileManager defaultManager] fileExistsAtPath:CCNMBandSnapshotPath()];
     BOOL intentExists = [[NSFileManager defaultManager] fileExistsAtPath:CCNMBandWriteIntentPath()];
     BOOL setterInFlightExists = [[NSFileManager defaultManager] fileExistsAtPath:CCNMBandSetterInFlightPath()];
@@ -2580,12 +3344,12 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
         return;
     }
 
-    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"Temporarily allow only NR band n78?"
-        message:@"This changes slot 1's NR allowed-band array to exactly [78] for 60 seconds. LTE, GSM, UTRAN, and every other RAT array remain byte-identical, so an NSA LTE anchor remains allowed. The phone may fall back to LTE or temporarily lose cellular service if n78 is unavailable. Keep Preferences open until the original complete Band snapshot is restored and verified. If automatic restore does not verify, reboot, reopen Preferences, then run Restore Saved Band Snapshot. Do not run this while the phone is your only emergency-communication device."
+    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"Try switching LTE B3 to B1?"
+        message:@"First select LTE in Control Center and wait for service. This target-only experiment refuses to write unless Cell Monitor ends with two consecutive LTE B3 serving samples. It then changes only the LTE allowed-band array to exactly [1], checks whether Cell Monitor actually ends on LTE B1, and restores the complete original six-RAT snapshot.\n\nYou may temporarily lose cellular service. Keep Preferences open until restoration is verified. If a setter or Cell Monitor call becomes uncertain, no same-boot recovery write is issued: reboot, reopen Preferences, then run Restore Saved Band Snapshot. Do not run this while the phone is your only emergency-communication device."
         preferredStyle:UIAlertControllerStyleAlert];
     [alertController addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    [alertController addAction:[UIAlertAction actionWithTitle:@"Run 60-Second Experiment" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
-        [self runNR78BandWrite];
+    [alertController addAction:[UIAlertAction actionWithTitle:@"Run B1 Experiment" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+        [self runLTEB1BandWrite];
     }]];
     [self presentViewController:alertController animated:YES completion:nil];
 }
@@ -2606,10 +3370,37 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
     NSDictionary *writeIntent = [NSDictionary dictionaryWithContentsOfFile:CCNMBandWriteIntentPath()];
     NSDictionary *inFlight = [NSDictionary dictionaryWithContentsOfFile:CCNMBandSetterInFlightPath()];
     NSDictionary *restoreInFlight = [NSDictionary dictionaryWithContentsOfFile:CCNMBandRestoreInFlightPath()];
+    NSDictionary *legacyNR78Result = [NSDictionary dictionaryWithContentsOfFile:CCNMLegacyNR78ResultPath()];
+    if ([inFlight[@"state"] isEqual:@"recovery_cleanup_in_flight"]) {
+        NSString *cleanupFailure = nil;
+        BOOL cleanupValid = CCNMValidateRecoveryCleanupMarker(inFlight, &cleanupFailure) && !restoreInFlightExists;
+        NSString *cleanupMessage = cleanupValid
+            ? @"A durable cleanup handoff is present. Finish removing only its exact embedded records? No modem setter will be called."
+            : (cleanupFailure ?: @"The cleanup marker conflicts with a restore-in-flight record. Recovery state is preserved.");
+        UIAlertController *cleanupAlert = [UIAlertController alertControllerWithTitle:@"Finish recovery cleanup?" message:cleanupMessage preferredStyle:UIAlertControllerStyleAlert];
+        [cleanupAlert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+        if (cleanupValid) {
+            [cleanupAlert addAction:[UIAlertAction actionWithTitle:@"Finish Cleanup" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+                [self resumeRecoveryCleanup];
+            }]];
+        }
+        [self presentViewController:cleanupAlert animated:YES completion:nil];
+        return;
+    }
     NSString *validationFailure = nil;
     BOOL clearAllowed = CCNMValidateSnapshot(snapshot, NULL, &validationFailure) &&
                         CCNMValidateWriteIntent(writeIntent, snapshot, &validationFailure);
-    if (clearAllowed && setterInFlightExists) {
+    BOOL legacyNR78MarkerlessMigration = NO;
+    if (clearAllowed && !setterInFlightExists) {
+        legacyNR78MarkerlessMigration = CCNMValidateLegacyNR78CompletedResult(legacyNR78Result,
+                                                                              snapshot,
+                                                                              writeIntent,
+                                                                              &validationFailure);
+        clearAllowed = legacyNR78MarkerlessMigration;
+        if (!clearAllowed && !validationFailure) {
+            validationFailure = @"The setter-in-flight record is missing, so the setter cannot be proven uncalled and recovery evidence must be preserved.";
+        }
+    } else if (clearAllowed) {
         clearAllowed = inFlight && CCNMValidateSetterInFlightRecord(inFlight, snapshot, writeIntent, &validationFailure);
     }
     if (clearAllowed && restoreInFlightExists) {
@@ -2622,7 +3413,9 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
     }
 
     NSString *message = clearAllowed
-        ? @"This deletes the recovery snapshot, write-intent record, and verified prior-boot setter markers. It is refused unless live slot-1 active bands already match the snapshot exactly."
+        ? (legacyNR78MarkerlessMigration
+            ? @"A completed legacy n78 result proves that its setter returned, the original bands were restored, and the old setter marker was retired. Clear its matching snapshot and intent only if a fresh slot-1 read still equals the snapshot exactly?"
+            : @"This deletes the recovery snapshot, write-intent record, and verified prior-boot setter markers. It is refused unless live slot-1 active bands already match the snapshot exactly.")
         : validationFailure ?: @"The saved recovery records are incomplete or invalid, so they cannot be cleared here.";
     UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"Clear saved probe state?" message:message preferredStyle:UIAlertControllerStyleAlert];
     [alertController addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
@@ -2667,6 +3460,8 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
         BOOL restoreInFlightExists = [[NSFileManager defaultManager] fileExistsAtPath:CCNMBandRestoreInFlightPath()];
         NSDictionary *inFlight = [NSDictionary dictionaryWithContentsOfFile:CCNMBandSetterInFlightPath()];
         NSDictionary *restoreInFlight = [NSDictionary dictionaryWithContentsOfFile:CCNMBandRestoreInFlightPath()];
+        NSDictionary *legacyNR78Result = [NSDictionary dictionaryWithContentsOfFile:CCNMLegacyNR78ResultPath()];
+        BOOL legacyNR78MarkerlessMigration = NO;
         NSDictionary *snapshotBands = nil;
         if (!failure) {
             CCNMValidateSnapshot(snapshot, &snapshotBands, &failure);
@@ -2674,10 +3469,19 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
         if (!failure) {
             CCNMValidateWriteIntent(writeIntent, snapshot, &failure);
         }
-        if (!failure && inFlightExists && !inFlight) {
+        if (!failure && !inFlightExists) {
+            legacyNR78MarkerlessMigration = CCNMValidateLegacyNR78CompletedResult(legacyNR78Result,
+                                                                                  snapshot,
+                                                                                  writeIntent,
+                                                                                  &failure);
+            result[@"legacyNR78MarkerlessMigration"] = @(legacyNR78MarkerlessMigration);
+            if (!legacyNR78MarkerlessMigration && !failure) {
+                failure = @"The setter-in-flight record is missing, so the setter cannot be proven uncalled. Recovery evidence was preserved.";
+            }
+        } else if (!failure && !inFlight) {
             failure = @"The setter-in-flight record exists but is unreadable. Recovery evidence was preserved.";
         }
-        if (!failure && inFlight) {
+        if (!failure && !legacyNR78MarkerlessMigration) {
             CCNMValidateSetterInFlightRecord(inFlight, snapshot, writeIntent, &failure);
         }
         if (!failure && restoreInFlightExists && !restoreInFlight) {
@@ -2726,34 +3530,35 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
             }
         }
         if (!failure) {
-            BOOL snapshotRemoved = NO;
-            BOOL intentRemoved = NO;
             BOOL restoreMarkerRemoved = !restoreInFlightExists;
-            BOOL markerRemoved = !inFlightExists;
-            NSString *snapshotRemovalFailure = nil;
-            NSString *intentRemovalFailure = nil;
-            NSString *restoreMarkerRemovalFailure = nil;
-            NSString *markerRemovalFailure = nil;
-
-            // Remove payload and intent before either marker. If cleanup stops, a
-            // remaining marker still blocks a new write and preserves the evidence.
-            CCNMUnlinkIfPresent(CCNMBandSnapshotPath(), &snapshotRemoved, &snapshotRemovalFailure);
-            if (snapshotRemoved) {
-                CCNMUnlinkIfPresent(CCNMBandWriteIntentPath(), &intentRemoved, &intentRemovalFailure);
+            if (restoreInFlight) {
+                restoreMarkerRemoved = CCNMRemoveRestoreInFlightRecord(restoreInFlight, &failure);
             }
-            if (snapshotRemoved && intentRemoved && restoreInFlight) {
-                restoreMarkerRemoved = CCNMRemoveRestoreInFlightRecord(restoreInFlight, &restoreMarkerRemovalFailure);
-            }
-            if (snapshotRemoved && intentRemoved && restoreMarkerRemoved && inFlight) {
-                markerRemoved = CCNMRemoveSetterInFlightRecord(inFlight, &markerRemovalFailure);
-            }
-            result[@"snapshotRemoved"] = @(snapshotRemoved);
-            result[@"writeIntentRemoved"] = @(intentRemoved);
             result[@"restoreInFlightRemoved"] = @(restoreMarkerRemoved);
-            result[@"setterInFlightRemoved"] = @(markerRemoved);
-            if (snapshotRemovalFailure || intentRemovalFailure || restoreMarkerRemovalFailure || markerRemovalFailure ||
-                !snapshotRemoved || !intentRemoved || !restoreMarkerRemoved || !markerRemoved) {
-                failure = snapshotRemovalFailure ?: intentRemovalFailure ?: restoreMarkerRemovalFailure ?: markerRemovalFailure ?: @"The probe state files could not be fully removed.";
+            NSString *sourceOperation = [inFlight[@"operation"] isKindOfClass:[NSString class]]
+                ? inFlight[@"operation"]
+                : ([writeIntent[@"operation"] isKindOfClass:[NSString class]] ? writeIntent[@"operation"] : @"unknown");
+            NSString *cleanupKind = legacyNR78MarkerlessMigration
+                ? @"verified_legacy_nr78_live_match"
+                : @"verified_live_match";
+            BOOL cleanupMarkerInstalled = restoreMarkerRemoved &&
+                CCNMInstallRecoveryCleanupMarker(cleanupKind,
+                                                  sourceOperation,
+                                                  snapshot,
+                                                  writeIntent,
+                                                  inFlight,
+                                                  operationGeneration,
+                                                  YES,
+                                                  &failure);
+            result[@"recoveryCleanupMarkerInstalled"] = @(cleanupMarkerInstalled);
+            BOOL recoveryRecordsRemoved = cleanupMarkerInstalled &&
+                CCNMResumeRecoveryCleanupMarker(
+                    [NSDictionary dictionaryWithContentsOfFile:CCNMBandSetterInFlightPath()],
+                    result,
+                    &failure);
+            result[@"recoveryRecordsRemoved"] = @(recoveryRecordsRemoved);
+            if (!recoveryRecordsRemoved && !failure) {
+                failure = @"The probe state files could not be fully removed; the durable cleanup marker was preserved for retry.";
             }
         }
         } @catch (NSException *exception) {
@@ -2804,6 +3609,12 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
             @"snapshotSaved": @NO,
             @"writeIntentSaved": @NO,
             @"setterInFlightSaved": @NO,
+            @"snapshotRemoved": @NO,
+            @"writeIntentRemoved": @NO,
+            @"setterInFlightRemoved": @NO,
+            @"recoveryRecordsRemoved": @NO,
+            @"preSetterRecoveryCleanupAttempted": @NO,
+            @"preSetterRecoveryCleanupCompleted": @NO,
             @"setterAttempted": @NO,
             @"setterStateUncertain": @NO,
             @"writeReadBackEqual": @NO,
@@ -2816,6 +3627,10 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
         BOOL setterWasInvoked = NO;
         BOOL setterStateUncertain = NO;
         int recoveryLockDescriptor = -1;
+        NSDictionary *snapshot = nil;
+        BOOL snapshotWasCreated = NO;
+        NSDictionary *writeIntent = nil;
+        BOOL writeIntentWasCreated = NO;
         NSDictionary *setterInFlightRecord = nil;
         BOOL markerWasCreated = NO;
         BOOL automaticRestoreVerified = NO;
@@ -2864,7 +3679,6 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
             failure = @"Saved Band probe state already exists. Refusing to overwrite recovery records.";
         }
 
-        NSDictionary *snapshot = nil;
         if (!failure) {
             snapshot = @{
                 @"schemaVersion": @1,
@@ -2873,7 +3687,13 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
                 @"subscriptionUUID": result[@"targetSubscriptionUUID"],
                 @"activeBands": originalBands
             };
-            if (!CCNMCreateDurablePlistExclusively(snapshot, CCNMBandSnapshotPath(), &failure)) {
+            BOOL snapshotSaved = CCNMCreateDurablePlistExclusively(snapshot, CCNMBandSnapshotPath(), &failure);
+            snapshotWasCreated = snapshotSaved ||
+                CCNMRecoveryRecordMatchesExpected(snapshot,
+                                                  CCNMBandSnapshotPath(),
+                                                  @"snapshot",
+                                                  NULL);
+            if (!snapshotSaved) {
                 result[@"snapshotSaved"] = @NO;
             } else {
                 result[@"snapshotSaved"] = @YES;
@@ -2904,7 +3724,6 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
         }
 
         id<CCNMBandInfo> sameValueInfo = nil;
-        NSDictionary *writeIntent = nil;
         if (!failure) {
             Class bandInfoClass = NSClassFromString(@"CTBandInfo");
             if (!bandInfoClass || ![bandInfoClass instancesRespondToSelector:@selector(initWithActiveBands:)]) {
@@ -2936,8 +3755,16 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
                 @"snapshotCreatedAt": snapshot[@"createdAt"],
                 @"snapshotActiveBands": snapshot[@"activeBands"]
             };
-            if (!CCNMValidateWriteIntent(writeIntent, snapshot, &failure) ||
-                !CCNMCreateDurablePlistExclusively(writeIntent, CCNMBandWriteIntentPath(), &failure)) {
+            BOOL writeIntentValid = CCNMValidateWriteIntent(writeIntent, snapshot, &failure);
+            BOOL writeIntentSaved = writeIntentValid &&
+                CCNMCreateDurablePlistExclusively(writeIntent, CCNMBandWriteIntentPath(), &failure);
+            writeIntentWasCreated = writeIntentSaved ||
+                (writeIntentValid &&
+                 CCNMRecoveryRecordMatchesExpected(writeIntent,
+                                                   CCNMBandWriteIntentPath(),
+                                                   @"write intent",
+                                                   NULL));
+            if (!writeIntentSaved) {
                 result[@"writeIntentSaved"] = @NO;
             } else {
                 result[@"writeIntentSaved"] = @YES;
@@ -2969,16 +3796,25 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
                 @"snapshotCreatedAt": snapshot[@"createdAt"],
                 @"writeIntentCreatedAt": writeIntent[@"createdAt"]
             };
-            if (![setterInFlightRecord[@"bootSessionUUID"] length] ||
-                ![setterInFlightRecord[@"bootTimeSeconds"] longLongValue] ||
-                !CCNMCreateDurablePlistExclusively(setterInFlightRecord, CCNMBandSetterInFlightPath(), &failure)) {
+            BOOL markerIdentityValid = [setterInFlightRecord[@"bootSessionUUID"] length] > 0 &&
+                [setterInFlightRecord[@"bootTimeSeconds"] longLongValue] != 0;
+            BOOL markerSaved = markerIdentityValid &&
+                CCNMCreateDurablePlistExclusively(setterInFlightRecord,
+                                                  CCNMBandSetterInFlightPath(),
+                                                  &failure);
+            markerWasCreated = markerSaved ||
+                (markerIdentityValid &&
+                 CCNMRecoveryRecordMatchesExpected(setterInFlightRecord,
+                                                   CCNMBandSetterInFlightPath(),
+                                                   @"setter-in-flight record",
+                                                   NULL));
+            if (!markerSaved) {
                 if (!failure) {
                     failure = @"The current boot identity could not be read; setter was not called.";
                 }
                 result[@"setterInFlightSaved"] = @NO;
                 CCNMFinishTestSetterOperation(operationGeneration, NO, CCNMMonotonicNow(), NULL);
             } else {
-                markerWasCreated = YES;
                 result[@"setterInFlightSaved"] = @YES;
                 result[@"setterInFlightPath"] = CCNMBandSetterInFlightPath();
             }
@@ -3078,14 +3914,23 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
             }
 
             if (automaticRestoreVerified) {
-                NSString *markerRemovalFailure = nil;
-                BOOL markerRemoved = CCNMRemoveSetterInFlightRecord(setterInFlightRecord, &markerRemovalFailure);
-                result[@"setterInFlightRemoved"] = @(markerRemoved);
-                result[@"setterInFlightPreserved"] = @(!markerRemoved);
-                if (!markerRemoved && !failure) {
-                    failure = markerRemovalFailure ?: @"Could not clear the setter-in-flight record after verified automatic recovery.";
+                NSString *recordRemovalFailure = nil;
+                BOOL recordsRemoved = CCNMRemoveVerifiedBandRecoveryRecords(snapshot,
+                                                                             writeIntent,
+                                                                             setterInFlightRecord,
+                                                                             automaticRestoreVerified,
+                                                                             result,
+                                                                             &recordRemovalFailure);
+                result[@"recoveryRecordsRemoved"] = @(recordsRemoved);
+                result[@"setterInFlightPreserved"] = @(![result[@"setterInFlightRemoved"] boolValue]);
+                if (!recordsRemoved) {
+                    NSString *cleanupDetail = recordRemovalFailure ?: @"Could not clear every recovery record after verified automatic recovery.";
+                    failure = failure.length
+                        ? [NSString stringWithFormat:@"%@\n%@", failure, cleanupDetail]
+                        : cleanupDetail;
                 }
             } else {
+                result[@"recoveryRecordsRemoved"] = @NO;
                 result[@"setterInFlightRemoved"] = @NO;
                 result[@"setterInFlightPreserved"] = @YES;
                 if (!failure) {
@@ -3097,25 +3942,56 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
             result[@"operationException"] = exception.reason ?: exception.name;
             failure = [NSString stringWithFormat:@"Band operation raised %@: %@", exception.name, exception.reason ?: @"(no reason)"];
         } @finally {
+            if (!setterWasInvoked && recoveryLockDescriptor >= 0 &&
+                (snapshotWasCreated || writeIntentWasCreated || markerWasCreated)) {
+                result[@"preSetterRecoveryCleanupAttempted"] = @YES;
+                NSString *preSetterCleanupFailure = nil;
+                BOOL cleanupCompleted = CCNMRemoveUnattemptedBandRecoveryRecords(
+                    snapshotWasCreated ? snapshot : nil,
+                    writeIntentWasCreated ? writeIntent : nil,
+                    markerWasCreated ? setterInFlightRecord : nil,
+                    setterWasInvoked,
+                    operationGeneration,
+                    result,
+                    &preSetterCleanupFailure);
+                result[@"preSetterRecoveryCleanupCompleted"] = @(cleanupCompleted);
+                result[@"recoveryRecordsRemoved"] = @(cleanupCompleted);
+                result[@"setterInFlightPreserved"] = @(markerWasCreated &&
+                    ![result[@"setterInFlightRemoved"] boolValue]);
+                if (!cleanupCompleted) {
+                    NSString *cleanupDetail = preSetterCleanupFailure ?: @"Temporary recovery records could not be cleared before releasing the lock.";
+                    failure = failure.length
+                        ? [NSString stringWithFormat:@"%@\n%@", failure, cleanupDetail]
+                        : cleanupDetail;
+                }
+            }
             if (recoveryLockDescriptor >= 0) {
                 CCNMReleaseRecoveryFileLock(recoveryLockDescriptor);
             }
             CCNMEndBandOperation();
         }
 
-        BOOL requiredPhasesCompleted = [result[@"setterAttempted"] boolValue] &&
+        BOOL setterAttempted = [result[@"setterAttempted"] boolValue];
+        BOOL recoveryRecordsCreated = snapshotWasCreated || writeIntentWasCreated || markerWasCreated;
+        BOOL recoveryRecordsRemoved = [result[@"recoveryRecordsRemoved"] boolValue];
+        BOOL recovered = [result[@"restoreAttempted"] boolValue] && [result[@"restoreReadBackEqual"] boolValue];
+        BOOL restorePending = setterAttempted && !recovered;
+        BOOL cleanupPending = recoveryRecordsCreated && !recoveryRecordsRemoved;
+        BOOL recoveryPending = restorePending || cleanupPending;
+        BOOL requiredPhasesCompleted = setterAttempted &&
                                        ![result[@"setterStateUncertain"] boolValue] &&
                                        [result[@"writeReadBackEqual"] boolValue] &&
-                                       [result[@"restoreAttempted"] boolValue] &&
-                                       [result[@"restoreReadBackEqual"] boolValue];
-        BOOL recoveryPending = [result[@"setterAttempted"] boolValue] &&
-                               !([result[@"restoreAttempted"] boolValue] && [result[@"restoreReadBackEqual"] boolValue]);
+                                       recovered && recoveryRecordsRemoved && !recoveryPending;
+        result[@"recoveryRecordsCreated"] = @(recoveryRecordsCreated);
+        result[@"recoveryStateCleanupPending"] = @(cleanupPending);
         result[@"recoveryPending"] = @(recoveryPending);
         if (!failure && !requiredPhasesCompleted) {
-            failure = @"The probe did not complete every required write, read-back, and restore phase.";
+            failure = @"The probe did not complete every required write, read-back, restore, and recovery-state cleanup phase.";
         }
-        if (recoveryPending) {
+        if (restorePending) {
             failure = [NSString stringWithFormat:@"%@\n\nThe write was issued and the original set was not verified as restored. Reboot the device, reopen Preferences, then run Restore Saved Band Snapshot. Recovery records were preserved.", failure ?: @"Recovery was not verified."];
+        } else if (cleanupPending) {
+            failure = [NSString stringWithFormat:@"%@\n\nThe original set was restored, but recovery records were not fully removed. Do not run another Band operation until the saved state is inspected.", failure ?: @"Recovery-state cleanup was not verified."];
         }
         result[@"passed"] = @(!failure && requiredPhasesCompleted);
         result[@"completedAt"] = @([[NSDate date] timeIntervalSince1970]);
@@ -3170,6 +4046,12 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
             @"snapshotSaved": @NO,
             @"writeIntentSaved": @NO,
             @"setterInFlightSaved": @NO,
+            @"snapshotRemoved": @NO,
+            @"writeIntentRemoved": @NO,
+            @"setterInFlightRemoved": @NO,
+            @"recoveryRecordsRemoved": @NO,
+            @"preSetterRecoveryCleanupAttempted": @NO,
+            @"preSetterRecoveryCleanupCompleted": @NO,
             @"setterAttempted": @NO,
             @"setterStateUncertain": @NO,
             @"readBackMatchedRequest": @NO,
@@ -3182,6 +4064,15 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
         } mutableCopy];
         NSString *failure = nil;
         int recoveryLockDescriptor = -1;
+        NSDictionary *snapshot = nil;
+        BOOL snapshotWasCreated = NO;
+        BOOL setterWasInvoked = NO;
+        BOOL setterStateUncertain = NO;
+        BOOL markerWasCreated = NO;
+        BOOL automaticRestoreVerified = NO;
+        NSDictionary *setterInFlightRecord = nil;
+        NSDictionary *writeIntent = nil;
+        BOOL writeIntentWasCreated = NO;
         @try {
         recoveryLockDescriptor = CCNMAcquireRecoveryFileLock(YES, &failure);
         result[@"recoveryLockAcquired"] = @(recoveryLockDescriptor >= 0);
@@ -3246,7 +4137,6 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
             failure = @"Saved Band probe state already exists. Refusing to overwrite recovery records.";
         }
 
-        __block NSDictionary *snapshot = nil;
         if (!failure) {
             snapshot = @{
                 @"schemaVersion": @1,
@@ -3256,7 +4146,13 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
                 @"activeBands": originalBands,
                 @"supportedBands": supportedBands
             };
-            if (!CCNMCreateDurablePlistExclusively(snapshot, CCNMBandSnapshotPath(), &failure)) {
+            BOOL snapshotSaved = CCNMCreateDurablePlistExclusively(snapshot, CCNMBandSnapshotPath(), &failure);
+            snapshotWasCreated = snapshotSaved ||
+                CCNMRecoveryRecordMatchesExpected(snapshot,
+                                                  CCNMBandSnapshotPath(),
+                                                  @"snapshot",
+                                                  NULL);
+            if (!snapshotSaved) {
                 result[@"snapshotSaved"] = @NO;
             } else {
                 result[@"snapshotSaved"] = @YES;
@@ -3265,12 +4161,6 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
             }
         }
 
-        BOOL setterWasInvoked = NO;
-        BOOL setterStateUncertain = NO;
-        BOOL markerWasCreated = NO;
-        BOOL automaticRestoreVerified = NO;
-        NSDictionary *setterInFlightRecord = nil;
-        NSDictionary *writeIntent = nil;
         id<CCNMBandInfo> removalInfo = nil;
         if (!failure) {
             context = CCNMSafeSlotOneContext(client, result, snapshot[@"subscriptionUUID"], &failure);
@@ -3329,8 +4219,16 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
                         @"removedBand": removedBand,
                         @"requestedActiveBands": removalBands
                     };
-                    if (!CCNMValidateWriteIntent(writeIntent, snapshot, &failure) ||
-                        !CCNMCreateDurablePlistExclusively(writeIntent, CCNMBandWriteIntentPath(), &failure)) {
+                    BOOL writeIntentValid = CCNMValidateWriteIntent(writeIntent, snapshot, &failure);
+                    BOOL writeIntentSaved = writeIntentValid &&
+                        CCNMCreateDurablePlistExclusively(writeIntent, CCNMBandWriteIntentPath(), &failure);
+                    writeIntentWasCreated = writeIntentSaved ||
+                        (writeIntentValid &&
+                         CCNMRecoveryRecordMatchesExpected(writeIntent,
+                                                           CCNMBandWriteIntentPath(),
+                                                           @"write intent",
+                                                           NULL));
+                    if (!writeIntentSaved) {
                         result[@"writeIntentSaved"] = @NO;
                     } else {
                         result[@"writeIntentSaved"] = @YES;
@@ -3362,16 +4260,25 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
                         @"snapshotCreatedAt": snapshot[@"createdAt"],
                         @"writeIntentCreatedAt": writeIntent[@"createdAt"]
                     };
-                    if (![setterInFlightRecord[@"bootSessionUUID"] length] ||
-                        ![setterInFlightRecord[@"bootTimeSeconds"] longLongValue] ||
-                        !CCNMCreateDurablePlistExclusively(setterInFlightRecord, CCNMBandSetterInFlightPath(), &failure)) {
+                    BOOL markerIdentityValid = [setterInFlightRecord[@"bootSessionUUID"] length] > 0 &&
+                        [setterInFlightRecord[@"bootTimeSeconds"] longLongValue] != 0;
+                    BOOL markerSaved = markerIdentityValid &&
+                        CCNMCreateDurablePlistExclusively(setterInFlightRecord,
+                                                          CCNMBandSetterInFlightPath(),
+                                                          &failure);
+                    markerWasCreated = markerSaved ||
+                        (markerIdentityValid &&
+                         CCNMRecoveryRecordMatchesExpected(setterInFlightRecord,
+                                                           CCNMBandSetterInFlightPath(),
+                                                           @"setter-in-flight record",
+                                                           NULL));
+                    if (!markerSaved) {
                         if (!failure) {
                             failure = @"The current boot identity could not be read; setter was not called.";
                         }
                         result[@"setterInFlightSaved"] = @NO;
                         CCNMFinishTestSetterOperation(operationGeneration, NO, CCNMMonotonicNow(), NULL);
                     } else {
-                        markerWasCreated = YES;
                         result[@"setterInFlightSaved"] = @YES;
                         result[@"setterInFlightPath"] = CCNMBandSetterInFlightPath();
                     }
@@ -3477,14 +4384,23 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
                 }
 
                 if (automaticRestoreVerified) {
-                    NSString *markerRemovalFailure = nil;
-                    BOOL markerRemoved = CCNMRemoveSetterInFlightRecord(setterInFlightRecord, &markerRemovalFailure);
-                    result[@"setterInFlightRemoved"] = @(markerRemoved);
-                    result[@"setterInFlightPreserved"] = @(!markerRemoved);
-                    if (!markerRemoved && !failure) {
-                        failure = markerRemovalFailure ?: @"Could not clear the setter-in-flight record after verified automatic recovery.";
+                    NSString *recordRemovalFailure = nil;
+                    BOOL recordsRemoved = CCNMRemoveVerifiedBandRecoveryRecords(snapshot,
+                                                                                 writeIntent,
+                                                                                 setterInFlightRecord,
+                                                                                 automaticRestoreVerified,
+                                                                                 result,
+                                                                                 &recordRemovalFailure);
+                    result[@"recoveryRecordsRemoved"] = @(recordsRemoved);
+                    result[@"setterInFlightPreserved"] = @(![result[@"setterInFlightRemoved"] boolValue]);
+                    if (!recordsRemoved) {
+                        NSString *cleanupDetail = recordRemovalFailure ?: @"Could not clear every recovery record after verified automatic recovery.";
+                        failure = failure.length
+                            ? [NSString stringWithFormat:@"%@\n%@", failure, cleanupDetail]
+                            : cleanupDetail;
                     }
                 } else {
+                    result[@"recoveryRecordsRemoved"] = @NO;
                     result[@"setterInFlightRemoved"] = @NO;
                     result[@"setterInFlightPreserved"] = @YES;
                     if (!failure) {
@@ -3498,31 +4414,65 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
             result[@"operationException"] = exception.reason ?: exception.name;
             failure = [NSString stringWithFormat:@"Band removal operation raised %@: %@", exception.name, exception.reason ?: @"(no reason)"];
         } @finally {
+            if (!setterWasInvoked && recoveryLockDescriptor >= 0 &&
+                (snapshotWasCreated || writeIntentWasCreated || markerWasCreated)) {
+                result[@"preSetterRecoveryCleanupAttempted"] = @YES;
+                NSString *preSetterCleanupFailure = nil;
+                BOOL cleanupCompleted = CCNMRemoveUnattemptedBandRecoveryRecords(
+                    snapshotWasCreated ? snapshot : nil,
+                    writeIntentWasCreated ? writeIntent : nil,
+                    markerWasCreated ? setterInFlightRecord : nil,
+                    setterWasInvoked,
+                    operationGeneration,
+                    result,
+                    &preSetterCleanupFailure);
+                result[@"preSetterRecoveryCleanupCompleted"] = @(cleanupCompleted);
+                result[@"recoveryRecordsRemoved"] = @(cleanupCompleted);
+                result[@"setterInFlightPreserved"] = @(markerWasCreated &&
+                    ![result[@"setterInFlightRemoved"] boolValue]);
+                if (!cleanupCompleted) {
+                    NSString *cleanupDetail = preSetterCleanupFailure ?: @"Temporary recovery records could not be cleared before releasing the lock.";
+                    failure = failure.length
+                        ? [NSString stringWithFormat:@"%@\n%@", failure, cleanupDetail]
+                        : cleanupDetail;
+                }
+            }
             if (recoveryLockDescriptor >= 0) {
                 CCNMReleaseRecoveryFileLock(recoveryLockDescriptor);
             }
             CCNMEndBandOperation();
         }
 
-        BOOL determinate = [result[@"setterAttempted"] boolValue] &&
+        BOOL setterAttempted = [result[@"setterAttempted"] boolValue];
+        BOOL recoveryRecordsCreated = snapshotWasCreated || writeIntentWasCreated || markerWasCreated;
+        BOOL recoveryRecordsRemoved = [result[@"recoveryRecordsRemoved"] boolValue];
+        BOOL determinate = setterAttempted &&
                            ![result[@"setterStateUncertain"] boolValue] &&
                            ([result[@"readBackMatchedRequest"] boolValue] || [result[@"readBackMatchedOriginal"] boolValue]);
         BOOL recovered = [result[@"restoreAttempted"] boolValue] && [result[@"restoreReadBackEqual"] boolValue];
+        BOOL restorePending = setterAttempted && !recovered;
+        BOOL cleanupPending = recoveryRecordsCreated && !recoveryRecordsRemoved;
         // Any outcome where the write was issued but recovery is unverified must say
         // so first, because the modem may still be holding the modified set.
-        BOOL recoveryPending = [result[@"setterAttempted"] boolValue] && !recovered;
+        BOOL recoveryPending = restorePending || cleanupPending;
+        BOOL transactionCompletedSafely = determinate && recovered &&
+                                          recoveryRecordsRemoved && !recoveryPending;
+        result[@"recoveryRecordsCreated"] = @(recoveryRecordsCreated);
+        result[@"recoveryStateCleanupPending"] = @(cleanupPending);
         result[@"recoveryPending"] = @(recoveryPending);
-        if (!failure && !(determinate && recovered)) {
-            failure = @"The removal experiment did not complete every required write, read-back, and restore phase.";
+        if (!failure && !transactionCompletedSafely) {
+            failure = @"The removal experiment did not complete every required write, read-back, restore, and recovery-state cleanup phase.";
         }
-        if (recoveryPending) {
+        if (restorePending) {
             failure = [NSString stringWithFormat:@"%@\n\nThe removal write was issued and the original set was not verified as restored. Reboot the device, reopen Preferences, then run Restore Saved Band Snapshot. Recovery records were preserved.", failure ?: @"Recovery was not verified."];
+        } else if (cleanupPending) {
+            failure = [NSString stringWithFormat:@"%@\n\nThe original set was restored, but recovery records were not fully removed. Do not run another Band operation until the saved state is inspected.", failure ?: @"Recovery-state cleanup was not verified."];
         }
-        result[@"passed"] = @(!failure && determinate && recovered);
+        result[@"passed"] = @(!failure && transactionCompletedSafely);
         result[@"completedAt"] = @([[NSDate date] timeIntervalSince1970]);
         result[@"error"] = failure ?: @"";
         BOOL resultSaved = [result writeToFile:CCNMBandRemovalResultPath() atomically:YES];
-        BOOL passed = resultSaved && !failure && determinate && recovered;
+        BOOL passed = resultSaved && !failure && transactionCompletedSafely;
         BOOL effectApplied = [result[@"effectApplied"] boolValue];
         NSString *message = nil;
         if (!resultSaved) {
@@ -3553,7 +4503,7 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
     });
 }
 
-- (void)runNR78BandWrite {
+- (void)runLTEB1BandWrite {
     NSUInteger operationGeneration = 0;
     NSUInteger manualRecoveryGeneration = 0;
     if (!CCNMBeginBandOperation(&operationGeneration, &manualRecoveryGeneration)) {
@@ -3565,26 +4515,42 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
 
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        static void *coreTelephonyHandle = NULL;
+        static dispatch_once_t onceToken;
+        dispatch_once(&onceToken, ^{
+            coreTelephonyHandle = dlopen("/System/Library/Frameworks/CoreTelephony.framework/CoreTelephony", RTLD_LAZY | RTLD_LOCAL);
+        });
+
         NSMutableDictionary *result = [@{
             @"schemaVersion": @1,
-            @"operation": @"nr78_only",
+            @"operation": @"lte_b1_only",
             @"operationGeneration": @(operationGeneration),
             @"startedAt": @([[NSDate date] timeIntervalSince1970]),
             @"slotID": @1,
-            @"targetRATKey": CCNMNRRATKey,
-            @"targetBand": CCNMNR78Band(),
-            @"observationSeconds": @(CCNMNR78ObservationSeconds),
+            @"targetRATKey": CCNMLTERATKey,
+            @"targetBand": CCNMLTEB1Band(),
+            @"preWriteServingBand": CCNMLTEB3Band(),
+            @"requiredConsecutiveServingSamples": @(CCNMLTEServingConfirmationSamples),
             @"snapshotSaved": @NO,
             @"writeIntentSaved": @NO,
             @"setterInFlightSaved": @NO,
+            @"snapshotRemoved": @NO,
+            @"writeIntentRemoved": @NO,
+            @"setterInFlightRemoved": @NO,
+            @"recoveryRecordsRemoved": @NO,
+            @"preSetterRecoveryCleanupAttempted": @NO,
+            @"preSetterRecoveryCleanupCompleted": @NO,
             @"setterAttempted": @NO,
+            @"setterReturnedWithoutError": @NO,
             @"setterStateUncertain": @NO,
+            @"preWriteServingB3Confirmed": @NO,
             @"readBackMatchedRequest": @NO,
             @"readBackMatchedOriginal": @NO,
             @"effectApplied": @NO,
-            @"observationStarted": @NO,
-            @"observationCompleted": @NO,
-            @"observationEndMatchedRequest": @NO,
+            @"postWriteObservationStarted": @NO,
+            @"postWriteObservationCompleted": @NO,
+            @"postWriteB1Observed": @NO,
+            @"b1ServingConfirmed": @NO,
             @"restoreAttempted": @NO,
             @"restoreReadBackEqual": @NO,
             @"watchdogArmed": @NO,
@@ -3592,6 +4558,16 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
         } mutableCopy];
         NSString *failure = nil;
         int recoveryLockDescriptor = -1;
+        __block NSDictionary *snapshot = nil;
+        BOOL snapshotWasCreated = NO;
+        BOOL writeIntentWasCreated = NO;
+        BOOL setterWasInvoked = NO;
+        BOOL setterStateUncertain = NO;
+        BOOL markerWasCreated = NO;
+        BOOL automaticRestoreVerified = NO;
+        NSDictionary *setterInFlightRecord = nil;
+        NSDictionary *writeIntent = nil;
+        id<CCNMBandInfo> lteB1Info = nil;
         @try {
         recoveryLockDescriptor = CCNMAcquireRecoveryFileLock(YES, &failure);
         result[@"recoveryLockAcquired"] = @(recoveryLockDescriptor >= 0);
@@ -3606,7 +4582,7 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
         id<CCNMSubscriptionContext> context = nil;
         NSDictionary *originalBands = nil;
         NSDictionary *supportedBands = nil;
-        NSDictionary *nr78Bands = nil;
+        NSDictionary *lteB1Bands = nil;
         if (!failure) {
             CCNMValidateTargetDevice(result, &failure);
         }
@@ -3640,9 +4616,9 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
         }
 
         if (!failure) {
-            nr78Bands = CCNMBuildNR78OnlyBands(originalBands, supportedBands, &failure);
-            if (nr78Bands) {
-                result[@"requestedActiveBands"] = nr78Bands;
+            lteB1Bands = CCNMBuildLTEB1OnlyBands(originalBands, supportedBands, &failure);
+            if (lteB1Bands) {
+                result[@"requestedActiveBands"] = lteB1Bands;
                 result[@"supportedBandsAtSelection"] = supportedBands;
             }
         }
@@ -3654,7 +4630,28 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
             failure = @"Saved Band probe state already exists. Refusing to overwrite recovery records.";
         }
 
-        __block NSDictionary *snapshot = nil;
+        if (!failure && !coreTelephonyHandle) {
+            failure = @"CoreTelephony could not be loaded for the mandatory serving-cell precondition.";
+        }
+        if (!failure) {
+            NSDictionary *preWriteServingReport = CCNMRunFullWindowServingCellSampler(client,
+                                                                                         context,
+                                                                                         coreTelephonyHandle);
+            result[@"preWriteServingCell"] = preWriteServingReport ?: @{};
+            NSUInteger trailingB3Samples = CCNMTrailingConsecutiveExactServingBandSamples(
+                preWriteServingReport, CCNMCellMonitorLTERAT, CCNMLTEB3Band());
+            BOOL preWriteB3Confirmed = trailingB3Samples >= CCNMLTEServingConfirmationSamples;
+            result[@"preWriteTrailingB3Samples"] = @(trailingB3Samples);
+            result[@"preWriteServingB3Confirmed"] = @(preWriteB3Confirmed);
+            BOOL asyncOutstanding = CCNMServingCellSamplerHasUnsafeOutstandingAttempt();
+            result[@"preWriteCellMonitorAsyncOutstanding"] = @(asyncOutstanding);
+            if (asyncOutstanding) {
+                failure = @"The pre-write Cell Monitor call may still be outstanding. No Band write was issued. Close and reopen Settings before retrying.";
+            } else if (!preWriteB3Confirmed) {
+                failure = @"The write precondition failed: the complete Cell Monitor window did not end with two consecutive exact LTE B3 serving samples. Select LTE in Control Center, wait for service, and retry.";
+            }
+        }
+
         if (!failure) {
             snapshot = @{
                 @"schemaVersion": @1,
@@ -3664,7 +4661,13 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
                 @"activeBands": originalBands,
                 @"supportedBands": supportedBands
             };
-            if (!CCNMCreateDurablePlistExclusively(snapshot, CCNMBandSnapshotPath(), &failure)) {
+            BOOL snapshotSaved = CCNMCreateDurablePlistExclusively(snapshot, CCNMBandSnapshotPath(), &failure);
+            snapshotWasCreated = snapshotSaved ||
+                CCNMRecoveryRecordMatchesExpected(snapshot,
+                                                  CCNMBandSnapshotPath(),
+                                                  @"snapshot",
+                                                  NULL);
+            if (!snapshotSaved) {
                 result[@"snapshotSaved"] = @NO;
             } else {
                 result[@"snapshotSaved"] = @YES;
@@ -3673,13 +4676,6 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
             }
         }
 
-        BOOL setterWasInvoked = NO;
-        BOOL setterStateUncertain = NO;
-        BOOL markerWasCreated = NO;
-        BOOL automaticRestoreVerified = NO;
-        NSDictionary *setterInFlightRecord = nil;
-        NSDictionary *writeIntent = nil;
-        id<CCNMBandInfo> nr78Info = nil;
         if (!failure) {
             context = CCNMSafeSlotOneContext(client, result, snapshot[@"subscriptionUUID"], &failure);
         }
@@ -3709,23 +4705,23 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
                 failure = @"CTBandInfo initWithActiveBands: is unavailable.";
             } else {
                 @try {
-                    nr78Info = [[(id)bandInfoClass alloc] initWithActiveBands:[nr78Bands mutableCopy]];
+                    lteB1Info = [[(id)bandInfoClass alloc] initWithActiveBands:[lteB1Bands mutableCopy]];
                 } @catch (NSException *exception) {
                     result[@"constructorException"] = exception.reason ?: exception.name;
                     failure = [NSString stringWithFormat:@"CTBandInfo construction raised %@: %@", exception.name, exception.reason ?: @"(no reason)"];
                 }
-                NSDictionary *payloadBands = [nr78Info respondsToSelector:@selector(activeBands)] ? [nr78Info activeBands] : nil;
-                BOOL payloadEqual = CCNMDictionariesEqual(nr78Bands, payloadBands) &&
-                                    CCNMValidateNR78OnlyBands(originalBands, payloadBands, &failure);
+                NSDictionary *payloadBands = [lteB1Info respondsToSelector:@selector(activeBands)] ? [lteB1Info activeBands] : nil;
+                BOOL payloadEqual = CCNMDictionariesEqual(lteB1Bands, payloadBands) &&
+                                    CCNMValidateLTEB1OnlyBands(originalBands, payloadBands, &failure);
                 result[@"payloadEqualBeforeWrite"] = @(payloadEqual);
                 if (!payloadEqual && !failure) {
-                    failure = @"CTBandInfo changed the n78-only payload before the write; setter was not called.";
+                    failure = @"CTBandInfo changed the LTE B1-only payload before the write; setter was not called.";
                 }
 
                 if (!failure) {
                     writeIntent = @{
                         @"schemaVersion": @1,
-                        @"operation": @"nr78_only_intent",
+                        @"operation": @"lte_b1_only_intent",
                         @"createdAt": @((long long)([[NSDate date] timeIntervalSince1970] * 1000.0)),
                         @"operationGeneration": @(operationGeneration),
                         @"slotID": @1,
@@ -3733,13 +4729,22 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
                         @"snapshotCreatedAt": snapshot[@"createdAt"],
                         @"snapshotActiveBands": snapshot[@"activeBands"],
                         @"snapshotSupportedBands": snapshot[@"supportedBands"],
-                        @"targetRATKey": CCNMNRRATKey,
-                        @"targetBand": CCNMNR78Band(),
-                        @"observationSeconds": @(CCNMNR78ObservationSeconds),
-                        @"requestedActiveBands": nr78Bands
+                        @"targetRATKey": CCNMLTERATKey,
+                        @"targetBand": CCNMLTEB1Band(),
+                        @"preWriteServingBand": CCNMLTEB3Band(),
+                        @"requiredConsecutiveServingSamples": @(CCNMLTEServingConfirmationSamples),
+                        @"requestedActiveBands": lteB1Bands
                     };
-                    if (!CCNMValidateWriteIntent(writeIntent, snapshot, &failure) ||
-                        !CCNMCreateDurablePlistExclusively(writeIntent, CCNMBandWriteIntentPath(), &failure)) {
+                    BOOL writeIntentValid = CCNMValidateWriteIntent(writeIntent, snapshot, &failure);
+                    BOOL writeIntentSaved = writeIntentValid &&
+                        CCNMCreateDurablePlistExclusively(writeIntent, CCNMBandWriteIntentPath(), &failure);
+                    writeIntentWasCreated = writeIntentSaved ||
+                        (writeIntentValid &&
+                         CCNMRecoveryRecordMatchesExpected(writeIntent,
+                                                           CCNMBandWriteIntentPath(),
+                                                           @"write intent",
+                                                           NULL));
+                    if (!writeIntentSaved) {
                         result[@"writeIntentSaved"] = @NO;
                     } else {
                         result[@"writeIntentSaved"] = @YES;
@@ -3760,7 +4765,7 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
                     setterInFlightRecord = @{
                         @"schemaVersion": @1,
                         @"state": @"setter_in_flight",
-                        @"operation": @"nr78_only",
+                        @"operation": @"lte_b1_only",
                         @"createdAt": @((long long)([[NSDate date] timeIntervalSince1970] * 1000.0)),
                         @"processID": @(getpid()),
                         @"bootSessionUUID": CCNMBootSessionIdentity() ?: @"",
@@ -3771,16 +4776,25 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
                         @"snapshotCreatedAt": snapshot[@"createdAt"],
                         @"writeIntentCreatedAt": writeIntent[@"createdAt"]
                     };
-                    if (![setterInFlightRecord[@"bootSessionUUID"] length] ||
-                        ![setterInFlightRecord[@"bootTimeSeconds"] longLongValue] ||
-                        !CCNMCreateDurablePlistExclusively(setterInFlightRecord, CCNMBandSetterInFlightPath(), &failure)) {
+                    BOOL markerIdentityValid = [setterInFlightRecord[@"bootSessionUUID"] length] > 0 &&
+                        [setterInFlightRecord[@"bootTimeSeconds"] longLongValue] != 0;
+                    BOOL markerSaved = markerIdentityValid &&
+                        CCNMCreateDurablePlistExclusively(setterInFlightRecord,
+                                                          CCNMBandSetterInFlightPath(),
+                                                          &failure);
+                    markerWasCreated = markerSaved ||
+                        (markerIdentityValid &&
+                         CCNMRecoveryRecordMatchesExpected(setterInFlightRecord,
+                                                           CCNMBandSetterInFlightPath(),
+                                                           @"setter-in-flight record",
+                                                           NULL));
+                    if (!markerSaved) {
                         if (!failure) {
                             failure = @"The current boot identity could not be read; setter was not called.";
                         }
                         result[@"setterInFlightSaved"] = @NO;
                         CCNMFinishTestSetterOperation(operationGeneration, NO, CCNMMonotonicNow(), NULL);
                     } else {
-                        markerWasCreated = YES;
                         result[@"setterInFlightSaved"] = @YES;
                         result[@"setterInFlightPath"] = CCNMBandSetterInFlightPath();
                     }
@@ -3792,7 +4806,7 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
                     } else {
                         result[@"watchdogArmed"] = @YES;
                         result[@"watchdogDelaySeconds"] = @(CCNMSameValueWriteWatchdogSeconds);
-                        CCNMArmSetterTimeoutWatchdog(operationGeneration, @"nr78_only");
+                        CCNMArmSetterTimeoutWatchdog(operationGeneration, @"lte_b1_only");
                         result[@"setterAttempted"] = @YES;
                         result[@"setterStartedAt"] = @([[NSDate date] timeIntervalSince1970]);
                         setterWasInvoked = YES;
@@ -3800,12 +4814,12 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
                         BOOL setterReturnedNormally = NO;
                         NSException *setterException = nil;
                         @try {
-                            [client setActiveBandInfo:context bands:nr78Info error:&setterError];
+                            [client setActiveBandInfo:context bands:lteB1Info error:&setterError];
                             setterReturnedNormally = YES;
                         } @catch (NSException *exception) {
                             setterException = exception;
                             result[@"setterException"] = exception.reason ?: exception.name;
-                            failure = [NSString stringWithFormat:@"n78-only setter raised %@: %@", exception.name, exception.reason ?: @"(no reason)"];
+                            failure = [NSString stringWithFormat:@"LTE B1-only setter raised %@: %@", exception.name, exception.reason ?: @"(no reason)"];
                         }
                         BOOL setterDeadlineExceeded = NO;
                         setterStateUncertain = CCNMFinishTestSetterOperation(operationGeneration,
@@ -3814,14 +4828,16 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
                                                                                &setterDeadlineExceeded);
                         result[@"setterDeadlineExceeded"] = @(setterDeadlineExceeded);
                         result[@"setterFinishedAt"] = @([[NSDate date] timeIntervalSince1970]);
+                        BOOL setterReturnedWithoutError = setterReturnedNormally && !setterError;
                         result[@"setterError"] = setterError.localizedDescription ?: @"";
+                        result[@"setterReturnedWithoutError"] = @(setterReturnedWithoutError);
                         result[@"setterStateUncertain"] = @(setterStateUncertain);
                         if (setterStateUncertain) {
                             failure = setterException
-                                ? [NSString stringWithFormat:@"n78-only setter raised %@; the exception left its server-side outcome uncertain. Reboot the device, then run the saved-snapshot restore again.", setterException.name]
+                                ? [NSString stringWithFormat:@"LTE B1-only setter raised %@; the exception left its server-side outcome uncertain. Reboot the device, then run the saved-snapshot restore again.", setterException.name]
                                 : @"The setter exceeded 20 seconds. Its outcome is uncertain; no restore was issued. Do not restore in this boot session. Reboot the device, reopen Preferences, then run the saved-snapshot restore.";
                         } else if (setterError) {
-                            failure = [NSString stringWithFormat:@"n78-only setter failed: %@", setterError.localizedDescription];
+                            failure = [NSString stringWithFormat:@"LTE B1-only setter failed: %@", setterError.localizedDescription];
                         }
                     }
                 }
@@ -3830,70 +4846,62 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
                 NSString *readBackFailure = nil;
                 NSDictionary *readBackBands = CCNMWaitForExpectedBandReadBack(client,
                                                                                context,
-                                                                               nr78Bands,
+                                                                               lteB1Bands,
                                                                                readBackPhase,
                                                                                &readBackFailure);
                 result[@"readBackPhase"] = readBackPhase;
                 if (readBackBands) {
                     result[@"readBackActiveBands"] = readBackBands;
                     result[@"readBackDifferenceFromOriginal"] = CCNMBandDictionaryDifference(originalBands, readBackBands);
-                    result[@"readBackDifferenceFromRequest"] = CCNMBandDictionaryDifference(nr78Bands, readBackBands);
+                    result[@"readBackDifferenceFromRequest"] = CCNMBandDictionaryDifference(lteB1Bands, readBackBands);
                 }
-                BOOL matchedRequest = CCNMDictionariesEqual(nr78Bands, readBackBands);
+                BOOL matchedRequest = CCNMDictionariesEqual(lteB1Bands, readBackBands);
                 BOOL matchedOriginal = CCNMDictionariesEqual(originalBands, readBackBands);
                 result[@"readBackMatchedRequest"] = @(matchedRequest);
                 result[@"readBackMatchedOriginal"] = @(matchedOriginal);
                 result[@"effectApplied"] = @(matchedRequest);
                 if (!failure && !matchedRequest && !matchedOriginal) {
-                    failure = readBackFailure ?: @"Read-back matched neither the requested n78-only set nor the original snapshot within two minutes.";
+                    failure = readBackFailure ?: @"Read-back matched neither the requested LTE B1-only set nor the original snapshot within two minutes.";
                 }
 
+                BOOL postWriteAsyncOutstanding = NO;
+                BOOL postWriteObservationComplete = !matchedRequest;
                 if (matchedRequest) {
-                    NSMutableDictionary *observationPhase = [NSMutableDictionary dictionary];
-                    NSString *observationFailure = nil;
-                    result[@"observationStarted"] = @YES;
-                    BOOL intervalCompleted = CCNMWaitForObservationInterval(CCNMNR78ObservationSeconds,
-                                                                            observationPhase,
-                                                                            &observationFailure);
-                    if (intervalCompleted) {
-                        NSError *observationReadError = nil;
-                        id<CCNMBandInfo> observationInfo = nil;
-                        @try {
-                            observationInfo = [client getBandInfo:context error:&observationReadError];
-                        } @catch (NSException *exception) {
-                            observationPhase[@"readException"] = exception.reason ?: exception.name;
-                            observationFailure = [NSString stringWithFormat:@"Observation-end Band read raised %@: %@", exception.name, exception.reason ?: @"(no reason)"];
-                        }
-                        NSDictionary *observationEndBands = [observationInfo respondsToSelector:@selector(activeBands)] ? [observationInfo activeBands] : nil;
-                        observationPhase[@"readError"] = observationReadError.localizedDescription ?: @"";
-                        if (!observationFailure && observationReadError) {
-                            observationFailure = observationReadError.localizedDescription;
-                        }
-                        if (!observationFailure && !CCNMValidateBandDictionary(observationEndBands, &observationFailure)) {
-                            observationEndBands = nil;
-                        }
-                        if (observationEndBands) {
-                            observationPhase[@"activeBands"] = observationEndBands;
-                            observationPhase[@"differenceFromRequest"] = CCNMBandDictionaryDifference(nr78Bands, observationEndBands);
-                        }
-                        BOOL observationEndMatchedRequest = CCNMDictionariesEqual(nr78Bands, observationEndBands);
-                        result[@"observationEndMatchedRequest"] = @(observationEndMatchedRequest);
-                        if (observationEndMatchedRequest) {
-                            result[@"observationCompleted"] = @YES;
-                        } else if (!observationFailure) {
-                            observationFailure = @"The active bands no longer matched the n78-only request at the end of the 60-second observation.";
-                        }
-                    }
-                    result[@"observationPhase"] = observationPhase;
-                    result[@"observationError"] = observationFailure ?: @"";
-                    if (observationFailure && !failure) {
-                        failure = observationFailure;
+                    result[@"postWriteObservationStarted"] = @YES;
+                    NSDictionary *postWriteServingReport = CCNMRunFullWindowServingCellSampler(client,
+                                                                                                  context,
+                                                                                                  coreTelephonyHandle);
+                    result[@"postWriteServingCell"] = postWriteServingReport ?: @{};
+                    NSUInteger trailingB1Samples = CCNMTrailingConsecutiveExactServingBandSamples(
+                        postWriteServingReport, CCNMCellMonitorLTERAT, CCNMLTEB1Band());
+                    BOOL observationCompleted = [postWriteServingReport[@"cellMonitorSucceeded"] boolValue] &&
+                                                [postWriteServingReport[@"cellMonitorSamplingStatus"] isEqual:@"complete"];
+                    BOOL postWriteB1Observed = observationCompleted &&
+                                               trailingB1Samples >= CCNMLTEServingConfirmationSamples;
+                    postWriteObservationComplete = observationCompleted;
+                    postWriteAsyncOutstanding = CCNMServingCellSamplerHasUnsafeOutstandingAttempt();
+                    result[@"postWriteTrailingB1Samples"] = @(trailingB1Samples);
+                    result[@"postWriteObservationCompleted"] = @(observationCompleted);
+                    result[@"postWriteB1Observed"] = @(postWriteB1Observed);
+                    result[@"postWriteCellMonitorAsyncOutstanding"] = @(postWriteAsyncOutstanding);
+                    if (postWriteAsyncOutstanding && !failure) {
+                        failure = @"The post-write Cell Monitor call may still be outstanding. No same-boot automatic restore was issued. Reboot, reopen Preferences, then run Restore Saved Band Snapshot.";
+                    } else if (!observationCompleted && !failure) {
+                        failure = postWriteServingReport[@"cellMonitorSamplingFailure"] ?:
+                            @"Post-write serving-cell sampling did not complete, so LTE B1 serving state is indeterminate.";
                     }
                 } else {
-                    result[@"observationSkippedReason"] = matchedOriginal ? @"setter_not_applied" : @"indeterminate_readback";
+                    result[@"postWriteObservationSkippedReason"] = matchedOriginal ? @"setter_not_applied" : @"indeterminate_readback";
                 }
 
-                if (CCNMBeginAutomaticRestoreOperation(operationGeneration)) {
+                if (postWriteAsyncOutstanding) {
+                    result[@"automaticRestoreSkippedReason"] = @"cell_monitor_async_outstanding";
+                } else if (!postWriteObservationComplete) {
+                    result[@"automaticRestoreSkippedReason"] = @"cell_monitor_observation_incomplete";
+                    if (!failure) {
+                        failure = @"The post-write Cell Monitor observation did not complete, so no same-boot automatic restore was issued. Reboot, reopen Preferences, then run Restore Saved Band Snapshot.";
+                    }
+                } else if (CCNMBeginAutomaticRestoreOperation(operationGeneration)) {
                     NSMutableDictionary *restorePhase = nil;
                     NSString *restoreFailure = nil;
                     BOOL restored = NO;
@@ -3903,7 +4911,7 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
                             id<CCNMSubscriptionContext> restoreContext = CCNMSafeSlotOneContext(client, result, snapshot[@"subscriptionUUID"], &restoreFailure);
                             NSDictionary *restoreMarker = nil;
                             if (!restoreFailure) {
-                                restoreMarker = CCNMBuildRestoreMarkerRecord(@"nr78_only_automatic_restore", snapshot, operationGeneration, &restoreFailure);
+                                restoreMarker = CCNMBuildRestoreMarkerRecord(@"lte_b1_only_automatic_restore", snapshot, operationGeneration, &restoreFailure);
                             }
                             if (!restoreFailure) {
                                 result[@"restoreAttempted"] = @YES;
@@ -3927,14 +4935,23 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
                 }
 
                 if (automaticRestoreVerified) {
-                    NSString *markerRemovalFailure = nil;
-                    BOOL markerRemoved = CCNMRemoveSetterInFlightRecord(setterInFlightRecord, &markerRemovalFailure);
-                    result[@"setterInFlightRemoved"] = @(markerRemoved);
-                    result[@"setterInFlightPreserved"] = @(!markerRemoved);
-                    if (!markerRemoved && !failure) {
-                        failure = markerRemovalFailure ?: @"Could not clear the setter-in-flight record after verified automatic recovery.";
+                    NSString *recordRemovalFailure = nil;
+                    BOOL recordsRemoved = CCNMRemoveVerifiedBandRecoveryRecords(snapshot,
+                                                                                 writeIntent,
+                                                                                 setterInFlightRecord,
+                                                                                 automaticRestoreVerified,
+                                                                                 result,
+                                                                                 &recordRemovalFailure);
+                    result[@"recoveryRecordsRemoved"] = @(recordsRemoved);
+                    result[@"setterInFlightPreserved"] = @(![result[@"setterInFlightRemoved"] boolValue]);
+                    if (!recordsRemoved) {
+                        NSString *cleanupDetail = recordRemovalFailure ?: @"Could not clear every recovery record after verified automatic recovery.";
+                        failure = failure.length
+                            ? [NSString stringWithFormat:@"%@\n%@", failure, cleanupDetail]
+                            : cleanupDetail;
                     }
                 } else {
+                    result[@"recoveryRecordsRemoved"] = @NO;
                     result[@"setterInFlightRemoved"] = @NO;
                     result[@"setterInFlightPreserved"] = @YES;
                     if (!failure) {
@@ -3946,44 +4963,95 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
         }
         } @catch (NSException *exception) {
             result[@"operationException"] = exception.reason ?: exception.name;
-            failure = [NSString stringWithFormat:@"n78-only Band operation raised %@: %@", exception.name, exception.reason ?: @"(no reason)"];
+            failure = [NSString stringWithFormat:@"LTE B1-only Band operation raised %@: %@", exception.name, exception.reason ?: @"(no reason)"];
         } @finally {
+            if (!setterWasInvoked && recoveryLockDescriptor >= 0 &&
+                (snapshotWasCreated || writeIntentWasCreated || markerWasCreated)) {
+                result[@"preSetterRecoveryCleanupAttempted"] = @YES;
+                NSString *preSetterCleanupFailure = nil;
+                BOOL cleanupCompleted = CCNMRemoveUnattemptedBandRecoveryRecords(
+                    snapshotWasCreated ? snapshot : nil,
+                    writeIntentWasCreated ? writeIntent : nil,
+                    markerWasCreated ? setterInFlightRecord : nil,
+                    setterWasInvoked,
+                    operationGeneration,
+                    result,
+                    &preSetterCleanupFailure);
+                result[@"preSetterRecoveryCleanupCompleted"] = @(cleanupCompleted);
+                result[@"recoveryRecordsRemoved"] = @(cleanupCompleted);
+                result[@"setterInFlightPreserved"] = @(markerWasCreated &&
+                    ![result[@"setterInFlightRemoved"] boolValue]);
+                if (!cleanupCompleted) {
+                    NSString *cleanupDetail = preSetterCleanupFailure ?: @"Temporary recovery records could not be cleared before releasing the lock.";
+                    failure = failure.length
+                        ? [NSString stringWithFormat:@"%@\n%@", failure, cleanupDetail]
+                        : cleanupDetail;
+                }
+            }
             if (recoveryLockDescriptor >= 0) {
                 CCNMReleaseRecoveryFileLock(recoveryLockDescriptor);
             }
             CCNMEndBandOperation();
         }
 
-        BOOL determinate = [result[@"setterAttempted"] boolValue] &&
+        BOOL setterAttempted = [result[@"setterAttempted"] boolValue];
+        BOOL recoveryRecordsCreated = snapshotWasCreated || writeIntentWasCreated || markerWasCreated;
+        BOOL recoveryRecordsRemoved = [result[@"recoveryRecordsRemoved"] boolValue];
+        BOOL determinate = setterAttempted &&
+                           recoveryRecordsCreated &&
                            ![result[@"setterStateUncertain"] boolValue] &&
                            ([result[@"readBackMatchedRequest"] boolValue] || [result[@"readBackMatchedOriginal"] boolValue]);
         BOOL recovered = [result[@"restoreAttempted"] boolValue] && [result[@"restoreReadBackEqual"] boolValue];
+        BOOL restorePending = setterAttempted && !recovered;
+        BOOL cleanupPending = recoveryRecordsCreated && !recoveryRecordsRemoved;
+        BOOL recoveryPending = restorePending || cleanupPending;
         BOOL effectApplied = [result[@"effectApplied"] boolValue];
-        BOOL observationSatisfied = !effectApplied || [result[@"observationCompleted"] boolValue];
-        BOOL recoveryPending = [result[@"setterAttempted"] boolValue] && !recovered;
+        BOOL postWriteB1Observed = [result[@"postWriteB1Observed"] boolValue];
+        BOOL observationCompleted = !effectApplied || [result[@"postWriteObservationCompleted"] boolValue];
+        BOOL transactionCompletedSafely = determinate &&
+                                          [result[@"setterReturnedWithoutError"] boolValue] &&
+                                          observationCompleted && recovered &&
+                                          recoveryRecordsRemoved && !recoveryPending;
+        BOOL b1ServingConfirmed = transactionCompletedSafely && effectApplied && postWriteB1Observed;
+        result[@"b1ServingConfirmed"] = @(b1ServingConfirmed);
+        result[@"recoveryRecordsCreated"] = @(recoveryRecordsCreated);
+        result[@"transactionCompletedSafely"] = @(transactionCompletedSafely);
+        result[@"hypothesisConfirmed"] = @(b1ServingConfirmed);
+        result[@"recoveryStateCleanupPending"] = @(cleanupPending);
         result[@"recoveryPending"] = @(recoveryPending);
-        if (!failure && !(determinate && observationSatisfied && recovered)) {
-            failure = @"The n78-only experiment did not complete every required write, read-back, observation, and restore phase.";
+        if (!failure && !transactionCompletedSafely) {
+            failure = @"The LTE B1 experiment did not complete every required write, read-back, serving observation, restore, and recovery-state cleanup phase.";
         }
-        if (recoveryPending) {
-            failure = [NSString stringWithFormat:@"%@\n\nThe n78-only write was issued and the original set was not verified as restored. Reboot the device, reopen Preferences, then run Restore Saved Band Snapshot. Recovery records were preserved.", failure ?: @"Recovery was not verified."];
+        if (restorePending) {
+            failure = [NSString stringWithFormat:@"%@\n\nThe LTE B1-only write was issued and the original set was not verified as restored. Reboot the device, reopen Preferences, then run Restore Saved Band Snapshot. Recovery records were preserved.", failure ?: @"Recovery was not verified."];
+        } else if (cleanupPending) {
+            NSString *cleanupState = setterAttempted
+                ? @"The original set was restored, but this attempt's recovery records were not fully removed. Do not run another Band operation until the saved state is inspected."
+                : @"No Band setter was issued, but this attempt's temporary recovery records were not fully removed. Do not run another Band operation until the saved state is inspected.";
+            failure = [NSString stringWithFormat:@"%@\n\n%@", failure ?: @"Recovery-state cleanup was not verified.", cleanupState];
         }
-        result[@"passed"] = @(!failure && determinate && observationSatisfied && recovered);
+        BOOL passed = !failure && transactionCompletedSafely && effectApplied && b1ServingConfirmed;
+        result[@"passed"] = @(passed);
         result[@"completedAt"] = @([[NSDate date] timeIntervalSince1970]);
         result[@"error"] = failure ?: @"";
-        BOOL resultSaved = [result writeToFile:CCNMBandNR78ResultPath() atomically:YES];
-        BOOL passed = resultSaved && !failure && determinate && observationSatisfied && recovered;
+        BOOL resultSaved = [result writeToFile:CCNMBandLTEB1ResultPath() atomically:YES];
+        BOOL diagnosticCompleted = resultSaved && !failure && transactionCompletedSafely;
+        passed = diagnosticCompleted && effectApplied && b1ServingConfirmed;
         NSString *message = nil;
         if (!resultSaved) {
             message = @"The experiment finished, but its result plist could not be saved.";
         } else if ([result[@"setterStateUncertain"] boolValue]) {
-            message = [NSString stringWithFormat:@"SETTER STATE UNCERTAIN\nNo concurrent restore was issued. Do not restore in this boot session. Reboot the device, reopen Preferences, then use Restore Saved Band Snapshot.\n\nSnapshot: %@\nResult: %@", CCNMBandSnapshotPath(), CCNMBandNR78ResultPath()];
-        } else if (!passed) {
-            message = [NSString stringWithFormat:@"FAILED\n%@\n\nSnapshot: %@\nResult: %@", failure ?: @"Required phases did not all complete.", CCNMBandSnapshotPath(), CCNMBandNR78ResultPath()];
+            message = [NSString stringWithFormat:@"SETTER STATE UNCERTAIN\nNo concurrent restore was issued. Do not restore in this boot session. Reboot the device, reopen Preferences, then use Restore Saved Band Snapshot.\n\nSnapshot: %@\nResult: %@", CCNMBandSnapshotPath(), CCNMBandLTEB1ResultPath()];
+        } else if ([result[@"postWriteCellMonitorAsyncOutstanding"] boolValue]) {
+            message = [NSString stringWithFormat:@"CELL MONITOR STATE UNCERTAIN\nA private async call may still be outstanding, so no same-boot restore was issued. Reboot the device, reopen Preferences, then use Restore Saved Band Snapshot.\n\nSnapshot: %@\nResult: %@", CCNMBandSnapshotPath(), CCNMBandLTEB1ResultPath()];
+        } else if (!diagnosticCompleted) {
+            message = [NSString stringWithFormat:@"FAILED\n%@\n\nSnapshot: %@\nResult: %@", failure ?: @"Required phases did not all complete.", CCNMBandSnapshotPath(), CCNMBandLTEB1ResultPath()];
+        } else if (passed) {
+            message = [NSString stringWithFormat:@"B1 SERVING CONFIRMED\nThe LTE allowed-band array read back as exactly [1], Cell Monitor ended with at least two consecutive exact LTE B1 serving samples, and the complete original set was restored and verified.\n\nResult: %@", CCNMBandLTEB1ResultPath()];
         } else if (effectApplied) {
-            message = [NSString stringWithFormat:@"WRITE TOOK EFFECT\nThe NR allowed-band array read back as exactly [78], matched the same complete request again after 60 seconds, and the complete original set was restored and verified.\n\nResult: %@", CCNMBandNR78ResultPath()];
+            message = [NSString stringWithFormat:@"B1 NOT OBSERVED\nThe LTE allowed-band array read back as exactly [1], but the complete Cell Monitor window did not end with two consecutive LTE B1 serving samples. The complete original set was restored and verified.\n\nResult: %@", CCNMBandLTEB1ResultPath()];
         } else {
-            message = [NSString stringWithFormat:@"WRITE IGNORED\nThe setter returned no error, but the read-back still equals the original complete set, so the NR array was not changed to [78]. The original set was restored and verified.\n\nResult: %@", CCNMBandNR78ResultPath()];
+            message = [NSString stringWithFormat:@"WRITE IGNORED\nThe setter returned no error, but read-back still equals the original complete set, so LTE was not changed to exact [1]. The original set was restored and verified.\n\nResult: %@", CCNMBandLTEB1ResultPath()];
         }
 
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -3991,7 +5059,10 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
             if (!strongSelf.view.window) {
                 return;
             }
-            NSString *title = passed ? (effectApplied ? @"NR n78-only write took effect" : @"NR n78-only write was ignored") : @"NR n78-only experiment failed";
+            NSString *title = !diagnosticCompleted ? @"LTE B1 experiment failed"
+                : !effectApplied ? @"LTE B1 write was ignored"
+                : passed ? @"LTE B1 serving confirmed"
+                : @"LTE B1 was not observed";
             UIAlertController *alertController = [UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleAlert];
             [alertController addAction:[UIAlertAction actionWithTitle:@"Copy" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
                 [UIPasteboard generalPasteboard].string = CCNMReadableObject(result);
@@ -4117,12 +5188,24 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
                     result[@"restoreWasNeeded"] = @(restoreWasNeeded);
                     result[@"liveDifferenceFromSnapshot"] = CCNMBandDictionaryDifference(snapshotBands, liveBands);
                     if (!restoreWasNeeded) {
-                        restored = YES;
-                        result[@"restorePhase"] = @{
-                            @"setterAttempted": @NO,
-                            @"readBackEqual": @YES,
-                            @"liveAlreadyMatchedSnapshot": @YES
-                        };
+                        NSString *staleRestoreMarkerFailure = nil;
+                        BOOL staleRestoreMarkerRemoved = !restoreInFlightExists;
+                        if (restoreInFlight) {
+                            staleRestoreMarkerRemoved = CCNMRemoveRestoreInFlightRecord(restoreInFlight,
+                                                                                        &staleRestoreMarkerFailure);
+                        }
+                        result[@"restoreInFlightRemoved"] = @(staleRestoreMarkerRemoved);
+                        if (!staleRestoreMarkerRemoved) {
+                            failure = staleRestoreMarkerFailure ?: @"The earlier-boot restore marker could not be retired after exact live read-back.";
+                        } else {
+                            restored = YES;
+                            result[@"restorePhase"] = @{
+                                @"setterAttempted": @NO,
+                                @"readBackEqual": @YES,
+                                @"liveAlreadyMatchedSnapshot": @YES,
+                                @"staleRestoreMarkerRemoved": @YES
+                            };
+                        }
                     } else {
                         CCNMValidateSetterABI(client, &failure);
                         if (!failure) {
@@ -4138,36 +5221,18 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
                 result[@"restoreReadBackEqual"] = @(restored);
             }
             if (restored) {
-                BOOL snapshotRemoved = NO;
-                BOOL intentRemoved = NO;
                 BOOL restoreMarkerRemoved = ![[NSFileManager defaultManager] fileExistsAtPath:CCNMBandRestoreInFlightPath()];
-                BOOL markerRemoved = NO;
-                NSString *snapshotRemovalFailure = nil;
-                NSString *intentRemovalFailure = nil;
-                NSString *restoreMarkerRemovalFailure = nil;
-                NSString *markerRemovalFailure = nil;
-
-                CCNMUnlinkIfPresent(CCNMBandSnapshotPath(), &snapshotRemoved, &snapshotRemovalFailure);
-                if (snapshotRemoved) {
-                    CCNMUnlinkIfPresent(CCNMBandWriteIntentPath(), &intentRemoved, &intentRemovalFailure);
-                }
-                if (snapshotRemoved && intentRemoved && !restoreMarkerRemoved) {
-                    if (restoreInFlight) {
-                        restoreMarkerRemoved = CCNMRemoveRestoreInFlightRecord(restoreInFlight, &restoreMarkerRemovalFailure);
-                    } else {
-                        restoreMarkerRemovalFailure = @"A restore-in-flight record appeared unexpectedly; preserving it for recovery.";
-                    }
-                }
-                if (snapshotRemoved && intentRemoved && restoreMarkerRemoved) {
-                    markerRemoved = CCNMRemoveSetterInFlightRecord(inFlight, &markerRemovalFailure);
-                }
-                result[@"snapshotRemoved"] = @(snapshotRemoved);
-                result[@"writeIntentRemoved"] = @(intentRemoved);
                 result[@"restoreInFlightRemoved"] = @(restoreMarkerRemoved);
-                result[@"setterInFlightRemoved"] = @(markerRemoved);
-                if (snapshotRemovalFailure || intentRemovalFailure || restoreMarkerRemovalFailure || markerRemovalFailure ||
-                    !snapshotRemoved || !intentRemoved || !restoreMarkerRemoved || !markerRemoved) {
-                    failure = snapshotRemovalFailure ?: intentRemovalFailure ?: restoreMarkerRemovalFailure ?: markerRemovalFailure ?: @"Restore matched, but recovery records could not be cleared completely.";
+                BOOL recoveryRecordsRemoved = restoreMarkerRemoved &&
+                    CCNMRemoveVerifiedBandRecoveryRecords(snapshot,
+                                                          writeIntent,
+                                                          inFlight,
+                                                          YES,
+                                                          result,
+                                                          &failure);
+                result[@"recoveryRecordsRemoved"] = @(recoveryRecordsRemoved);
+                if (!recoveryRecordsRemoved && !failure) {
+                    failure = @"Restore matched, but recovery records could not be cleared completely.";
                 }
             }
         } @catch (NSException *exception) {
@@ -4196,6 +5261,71 @@ static void CCNMArmRestoreTimeoutWatchdog(NSUInteger operationGeneration,
         });
     });
 }
+
+- (void)resumeRecoveryCleanup {
+    NSUInteger operationGeneration = 0;
+    NSUInteger manualRecoveryGeneration = 0;
+    if (!CCNMBeginBandOperation(&operationGeneration, &manualRecoveryGeneration)) {
+        UIAlertController *busyAlert = [UIAlertController alertControllerWithTitle:@"Cleanup unavailable right now" message:@"Wait for the current query, write, or restore operation to finish." preferredStyle:UIAlertControllerStyleAlert];
+        [busyAlert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+        [self presentViewController:busyAlert animated:YES completion:nil];
+        return;
+    }
+
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSMutableDictionary *result = [@{
+            @"schemaVersion": @1,
+            @"operation": @"resume_recovery_cleanup",
+            @"operationGeneration": @(operationGeneration),
+            @"startedAt": @([[NSDate date] timeIntervalSince1970]),
+            @"recoveryLockAcquired": @NO,
+            @"cleanupCompleted": @NO,
+            @"error": @""
+        } mutableCopy];
+        NSString *failure = nil;
+        int recoveryLockDescriptor = -1;
+        @try {
+            recoveryLockDescriptor = CCNMAcquireRecoveryFileLock(YES, &failure);
+            result[@"recoveryLockAcquired"] = @(recoveryLockDescriptor >= 0);
+            NSDictionary *cleanupMarker = [NSDictionary dictionaryWithContentsOfFile:CCNMBandSetterInFlightPath()];
+            if (!failure && !cleanupMarker) {
+                failure = @"No readable recovery-cleanup marker exists; preserving all recovery state.";
+            }
+            if (!failure) {
+                BOOL cleanupCompleted = CCNMResumeRecoveryCleanupMarker(cleanupMarker, result, &failure);
+                result[@"cleanupCompleted"] = @(cleanupCompleted);
+                if (!cleanupCompleted && !failure) {
+                    failure = @"Recovery cleanup did not complete; the durable cleanup marker was preserved for retry.";
+                }
+            }
+        } @catch (NSException *exception) {
+            result[@"operationException"] = exception.reason ?: exception.name;
+            failure = [NSString stringWithFormat:@"Recovery cleanup raised %@: %@", exception.name, exception.reason ?: @"(no reason)"];
+        } @finally {
+            CCNMReleaseRecoveryFileLock(recoveryLockDescriptor);
+            CCNMEndBandOperation();
+        }
+
+        result[@"completedAt"] = @([[NSDate date] timeIntervalSince1970]);
+        result[@"error"] = failure ?: @"";
+        [result writeToFile:CCNMBandClearStateResultPath() atomically:YES];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            CCNMRootListController *strongSelf = weakSelf;
+            if (!strongSelf.view.window) {
+                return;
+            }
+            NSString *message = failure ?: @"The interrupted recovery cleanup completed. No modem setter was called.";
+            UIAlertController *alertController = [UIAlertController alertControllerWithTitle:failure ? @"Recovery cleanup failed" : @"Recovery cleanup complete" message:message preferredStyle:UIAlertControllerStyleAlert];
+            [alertController addAction:[UIAlertAction actionWithTitle:@"Copy" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+                [UIPasteboard generalPasteboard].string = CCNMReadableObject(result);
+            }]];
+            [alertController addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+            [strongSelf presentViewController:alertController animated:YES completion:nil];
+        });
+    });
+}
+
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     UIBarButtonItem *applyButton = [[UIBarButtonItem alloc] initWithTitle:@"Save" style:UIBarButtonItemStylePlain target:self action:@selector(save)];

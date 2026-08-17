@@ -158,14 +158,14 @@
 
 		<dict>
 			<key>cell</key> 					<string>PSGroupCell</string>
-			<key>label</key> 					<string>NR n78-Only Experiment</string>
-			<key>footerText</key> 				<string>Experimental. Slot 1 only. Sets only the NR allowed-band array to [78] for 60 seconds, leaving LTE and every other RAT array byte-identical, then restores and verifies the complete original snapshot.</string>
+			<key>label</key> 					<string>LTE B3 to B1 Experiment</string>
+			<key>footerText</key> 				<string>Target-only diagnostic. Select LTE first. The probe requires stable LTE B3 serving evidence, changes only the LTE allowed-band array to exact [1], checks Cell Monitor for actual B1 serving evidence, then restores and verifies the complete original snapshot.</string>
 		</dict>
 
 		<dict>
 			<key>cell</key> 					<string>PSButtonCell</string>
-			<key>label</key> 					<string>Test NR n78 Only for 60 Seconds</string>
-			<key>action</key> 					<string>confirmNR78BandWrite:</string>
+			<key>label</key> 					<string>Test LTE B3 to B1</string>
+			<key>action</key> 					<string>confirmLTEB1BandWrite:</string>
 		</dict>
 
 		<dict>

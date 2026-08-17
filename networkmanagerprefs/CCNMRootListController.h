@@ -13,13 +13,14 @@
 - (void)showServingCellProbe:(PSSpecifier *)specifier;
 - (void)confirmSameValueBandWrite:(PSSpecifier *)specifier;
 - (void)confirmColdBandRemovalWrite:(PSSpecifier *)specifier;
-- (void)confirmNR78BandWrite:(PSSpecifier *)specifier;
+- (void)confirmLTEB1BandWrite:(PSSpecifier *)specifier;
 - (void)confirmRestoreBandSnapshot:(PSSpecifier *)specifier;
 - (void)confirmClearProbeState:(PSSpecifier *)specifier;
 - (void)runSameValueBandWrite;
 - (void)runColdBandRemovalWrite;
-- (void)runNR78BandWrite;
+- (void)runLTEB1BandWrite;
 - (void)restoreSavedBandSnapshot;
+- (void)resumeRecoveryCleanup;
 - (void)clearSavedProbeState;
 @end
 

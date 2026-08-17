@@ -51,6 +51,127 @@ class DurableRecoveryState:
 
 
 @dataclass
+class DurableCreateAttempt:
+    path_exists: bool = False
+    exact_match: bool = False
+    parent_synced: bool = True
+
+    def create(self, *, parent_sync_succeeds: bool) -> bool:
+        if self.path_exists:
+            return False
+        self.path_exists = True
+        self.exact_match = True
+        self.parent_synced = parent_sync_succeeds
+        return parent_sync_succeeds
+
+    @property
+    def should_be_tracked_as_created(self) -> bool:
+        return self.path_exists and self.exact_match
+
+
+@dataclass(frozen=True)
+class RecoveryRecord:
+    identity: str
+
+
+@dataclass(frozen=True)
+class RecoveryCleanupMarker:
+    cleanup_kind: str
+    snapshot: RecoveryRecord
+    intent: RecoveryRecord | None
+    setter: RecoveryRecord | None
+    restore_read_back_equal: bool
+    valid: bool = True
+
+
+@dataclass
+class RecoveryCleanupProtocol:
+    snapshot: RecoveryRecord | None
+    intent: RecoveryRecord | None
+    setter: RecoveryRecord | RecoveryCleanupMarker | None
+    restore: RecoveryRecord | None = None
+    setter_calls: int = 0
+
+    def install(self, cleanup_kind: str, expected_snapshot: RecoveryRecord,
+                expected_intent: RecoveryRecord | None,
+                expected_setter: RecoveryRecord | None,
+                restore_read_back_equal: bool) -> bool:
+        if self.restore is not None:
+            return False
+        if self.snapshot != expected_snapshot or self.intent != expected_intent:
+            return False
+        if self.setter != expected_setter:
+            return False
+        if cleanup_kind in {"verified_restore", "verified_live_match"} and (
+            not restore_read_back_equal
+            or expected_intent is None
+            or expected_setter is None
+        ):
+            return False
+        if cleanup_kind == "verified_legacy_nr78_live_match" and (
+            not restore_read_back_equal
+            or expected_intent is None
+            or expected_setter is not None
+        ):
+            return False
+        if cleanup_kind == "pre_setter" and restore_read_back_equal:
+            return False
+        self.setter = RecoveryCleanupMarker(
+            cleanup_kind,
+            expected_snapshot,
+            expected_intent,
+            expected_setter,
+            restore_read_back_equal,
+        )
+        return True
+
+    def resume(self, crash_after: str | None = None) -> bool:
+        marker = self.setter
+        if not isinstance(marker, RecoveryCleanupMarker) or not marker.valid:
+            return False
+        verified_cleanup = marker.cleanup_kind in {"verified_restore", "verified_live_match"}
+        legacy_nr78_cleanup = marker.cleanup_kind == "verified_legacy_nr78_live_match"
+        if marker.cleanup_kind not in {
+            "pre_setter",
+            "verified_restore",
+            "verified_live_match",
+            "verified_legacy_nr78_live_match",
+        }:
+            return False
+        if verified_cleanup and (
+            not marker.restore_read_back_equal
+            or marker.intent is None
+            or marker.setter is None
+        ):
+            return False
+        if legacy_nr78_cleanup and (
+            not marker.restore_read_back_equal
+            or marker.intent is None
+            or marker.setter is not None
+        ):
+            return False
+        if marker.cleanup_kind == "pre_setter" and marker.restore_read_back_equal:
+            return False
+        if self.restore is not None:
+            return False
+        if self.snapshot not in {None, marker.snapshot}:
+            return False
+        if self.intent not in {None, marker.intent}:
+            return False
+
+        self.snapshot = None
+        if crash_after == "snapshot":
+            return False
+        self.intent = None
+        if crash_after == "intent":
+            return False
+        if self.setter != marker:
+            return False
+        self.setter = None
+        return True
+
+
+@dataclass
 class RecoveryProcess:
     process_id: str
     boot_id: int
@@ -199,13 +320,31 @@ class RecoveryProcess:
         restore_attempt_token: int | None = None,
         returned_normally: bool = True,
         finished_at: float = 1.0,
+        retire_all_records: bool = False,
     ):
         token = restore_attempt_token or self.active_restore_attempt_token
         uncertain = self._finish_restore_setter(token, returned_normally, finished_at)
         if readback_equal and not uncertain:
             self.durable.restore_marker = None
             self.durable.marker = None
+            if retire_all_records:
+                self.durable.intent = False
+                self.durable.snapshot = False
         self.automatic_restore_in_progress = False
+
+    def cleanup_unattempted_recovery_records(self, records_match: bool = True) -> bool:
+        if (
+            not self.band_in_progress
+            or self.setter_call_started
+            or self.setter_timeout_uncertain
+            or self.durable.lock_owner != self.process_id
+            or not records_match
+        ):
+            return False
+        self.durable.marker = None
+        self.durable.intent = False
+        self.durable.snapshot = False
+        return True
 
     def begin_manual_restore(self) -> bool:
         marker = self.durable.marker
@@ -272,10 +411,11 @@ class RecoveryProcess:
         restore_marker = self.durable.restore_marker
         if (
             not live_equals_snapshot
-            or (
-                marker is not None
-                and (not marker.valid or marker.boot_id is None or marker.boot_id == self.boot_id)
-            )
+            or marker is None
+            or not isinstance(marker, SetterMarker)
+            or not marker.valid
+            or marker.boot_id is None
+            or marker.boot_id == self.boot_id
             or (
                 restore_marker is not None
                 and (
@@ -391,6 +531,95 @@ class BandWriteProbeStateModelTests(unittest.TestCase):
         self.assertFalse(matched.intent)
         self.assertIsNone(matched.marker)
 
+    def test_after_reboot_clear_refuses_a_missing_setter_marker(self):
+        durable = DurableRecoveryState(marker=None)
+        process = RecoveryProcess("clearer", 200, durable)
+        self.assertFalse(process.clear_recovery_state(live_equals_snapshot=True))
+        self.assertTrue(durable.snapshot)
+        self.assertTrue(durable.intent)
+
+    def test_verified_legacy_n78_result_can_authorize_markerless_cleanup_handoff(self):
+        snapshot = RecoveryRecord("legacy-n78-snapshot")
+        intent = RecoveryRecord("legacy-n78-intent")
+        state = RecoveryCleanupProtocol(snapshot, intent, None)
+        self.assertTrue(state.install(
+            "verified_legacy_nr78_live_match",
+            snapshot,
+            intent,
+            None,
+            restore_read_back_equal=True,
+        ))
+        self.assertTrue(state.resume())
+        self.assertIsNone(state.snapshot)
+        self.assertIsNone(state.intent)
+        self.assertIsNone(state.setter)
+        self.assertEqual(state.setter_calls, 0)
+
+    def test_cleanup_handoff_survives_each_payload_removal_crash_point(self):
+        for crash_after in ("snapshot", "intent"):
+            with self.subTest(crash_after=crash_after):
+                snapshot = RecoveryRecord("snapshot-v1")
+                intent = RecoveryRecord("intent-v1")
+                setter = RecoveryRecord("setter-v1")
+                state = RecoveryCleanupProtocol(snapshot, intent, setter)
+                self.assertTrue(state.install(
+                    "verified_restore",
+                    snapshot,
+                    intent,
+                    setter,
+                    restore_read_back_equal=True,
+                ))
+                self.assertFalse(state.resume(crash_after=crash_after))
+                self.assertIsInstance(state.setter, RecoveryCleanupMarker)
+                self.assertTrue(state.resume())
+                self.assertIsNone(state.snapshot)
+                self.assertIsNone(state.intent)
+                self.assertIsNone(state.setter)
+                self.assertEqual(state.setter_calls, 0)
+
+    def test_cleanup_handoff_preserves_marker_on_conflict_or_record_change(self):
+        snapshot = RecoveryRecord("snapshot-v1")
+        intent = RecoveryRecord("intent-v1")
+        setter = RecoveryRecord("setter-v1")
+        state = RecoveryCleanupProtocol(snapshot, intent, setter)
+        self.assertTrue(state.install(
+            "verified_live_match",
+            snapshot,
+            intent,
+            setter,
+            restore_read_back_equal=True,
+        ))
+        marker = state.setter
+
+        state.intent = RecoveryRecord("foreign-intent")
+        self.assertFalse(state.resume())
+        self.assertIs(state.setter, marker)
+        self.assertEqual(state.intent, RecoveryRecord("foreign-intent"))
+
+        state.intent = intent
+        state.restore = RecoveryRecord("restore-in-flight")
+        self.assertFalse(state.resume())
+        self.assertIs(state.setter, marker)
+        self.assertTrue(state.snapshot and state.intent)
+        self.assertEqual(state.setter_calls, 0)
+
+    def test_cleanup_handoff_requires_exact_source_records(self):
+        snapshot = RecoveryRecord("snapshot-v1")
+        intent = RecoveryRecord("intent-v1")
+        setter = RecoveryRecord("setter-v1")
+        foreign_setter = RecoveryRecord("setter-v2")
+        state = RecoveryCleanupProtocol(snapshot, intent, setter)
+
+        self.assertFalse(state.install(
+            "verified_live_match",
+            snapshot,
+            intent,
+            foreign_setter,
+            restore_read_back_equal=True,
+        ))
+        self.assertEqual(state.setter, setter)
+        self.assertTrue(state.snapshot and state.intent)
+
     def test_invalid_marker_fails_closed_after_reboot(self):
         durable = DurableRecoveryState(marker=SetterMarker(100, 1, valid=False))
         process = RecoveryProcess("after-reboot", 200, durable)
@@ -444,6 +673,59 @@ class BandWriteProbeStateModelTests(unittest.TestCase):
         self.assertIsNone(durable.marker)
         self.assertIsNone(durable.restore_marker)
         self.assertEqual(writer.test_setter_returned_generation, operation)
+
+    def test_lte_b1_verified_automatic_restore_retires_all_recovery_records(self):
+        durable = DurableRecoveryState()
+        writer = RecoveryProcess("writer", 100, durable)
+        self.start_setter(writer)
+        self.assertFalse(writer.finish_test_setter())
+        self.assertTrue(writer.begin_automatic_restore())
+
+        writer.finish_automatic_restore(
+            readback_equal=True,
+            retire_all_records=True,
+        )
+
+        self.assertFalse(durable.snapshot)
+        self.assertFalse(durable.intent)
+        self.assertIsNone(durable.marker)
+        self.assertIsNone(durable.restore_marker)
+
+    def test_pre_setter_failure_removes_only_matching_unattempted_records(self):
+        durable = DurableRecoveryState(lock_owner="writer")
+        writer = RecoveryProcess("writer", 100, durable)
+        self.assertIsNotNone(writer.begin_band())
+
+        self.assertFalse(writer.cleanup_unattempted_recovery_records(records_match=False))
+        self.assertTrue(durable.snapshot and durable.intent)
+        self.assertTrue(writer.cleanup_unattempted_recovery_records(records_match=True))
+        self.assertFalse(durable.snapshot)
+        self.assertFalse(durable.intent)
+
+    def test_pre_setter_cleanup_is_forbidden_after_call_start(self):
+        durable = DurableRecoveryState()
+        writer = RecoveryProcess("writer", 100, durable)
+        self.start_setter(writer)
+
+        self.assertFalse(writer.cleanup_unattempted_recovery_records())
+        self.assertTrue(durable.snapshot and durable.intent)
+        self.assertIsNotNone(durable.marker)
+
+    def test_parent_directory_fsync_failure_tracks_exact_record_for_cleanup(self):
+        create = DurableCreateAttempt()
+        saved = create.create(parent_sync_succeeds=False)
+        self.assertFalse(saved)
+        self.assertTrue(create.path_exists)
+        self.assertTrue(create.exact_match)
+        self.assertFalse(create.parent_synced)
+        self.assertTrue(create.should_be_tracked_as_created)
+
+        durable = DurableRecoveryState(snapshot=False, intent=False, lock_owner="writer")
+        writer = RecoveryProcess("writer", 100, durable)
+        self.assertIsNotNone(writer.begin_band())
+        durable.snapshot = create.should_be_tracked_as_created
+        self.assertTrue(writer.cleanup_unattempted_recovery_records())
+        self.assertFalse(durable.snapshot)
 
     def test_generation_guard_rejects_stale_prewrite_path(self):
         durable = DurableRecoveryState()

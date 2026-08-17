@@ -196,6 +196,55 @@ int main(void) {
             run_result = subprocess.run([str(executable)], capture_output=True, text=True, check=False)
             self.assertEqual(run_result.returncode, 0, run_result.stderr)
 
+    def test_full_window_policy_does_not_stop_after_explicit_nr(self):
+        compiler = shutil.which("cc")
+        self.assertIsNotNone(compiler, "host C compiler is unavailable")
+
+        program = r'''
+#include "networkmanagerprefs/CCNMServingCellProbeSupport.h"
+
+int main(void) {
+    CCNMAdaptiveSamplerState full = CCNMAdaptiveSamplerStartWithPolicy(
+        10, 2, CCNMAdaptiveSamplerPolicyFullWindow);
+    if (!CCNMAdaptiveSamplerObserve(&full, 1, 1)) return 1;
+    if (!CCNMAdaptiveSamplerObserve(&full, 1, 1)) return 2;
+    if (full.stopReason != CCNMAdaptiveSamplerStopRunning) return 3;
+    if (!CCNMAdaptiveSamplerShouldContinue(&full)) return 4;
+    if (full.consumedSampleCount != 2 || full.consecutiveNRSampleCount != 2) return 5;
+    for (size_t index = 2; index < 10; index++) {
+        if (!CCNMAdaptiveSamplerObserve(&full, 1, 0)) return 6;
+    }
+    if (full.stopReason != CCNMAdaptiveSamplerStopWindowExhausted) return 7;
+    if (full.consumedSampleCount != 10) return 8;
+    return 0;
+}
+'''
+        with tempfile.TemporaryDirectory() as temp_dir:
+            executable = Path(temp_dir) / "full-window-adaptive-cell-monitor-test"
+            compile_result = subprocess.run(
+                [
+                    compiler,
+                    "-std=c11",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    "-I",
+                    str(ROOT),
+                    "-x",
+                    "c",
+                    "-",
+                    "-o",
+                    str(executable),
+                ],
+                input=program,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(compile_result.returncode, 0, compile_result.stderr)
+            run_result = subprocess.run([str(executable)], capture_output=True, text=True, check=False)
+            self.assertEqual(run_result.returncode, 0, run_result.stderr)
+
     def test_probe_records_raw_frequency_range_and_scope(self):
         body = source_method("- (void)showServingCellProbe:", "- (void)confirmSameValueBandWrite:")
         self.assertIn('#include "CCNMServingCellProbeSupport.h"', SOURCE)
@@ -478,7 +527,7 @@ int main(void) {
         footer = groups[0].get("footerText", "")
         self.assertIn("adaptive", footer.lower())
         self.assertIn("10", footer)
-        self.assertIn("Version: 1.4.3-2+cellmonprobe4", CONTROL.read_text())
+        self.assertIn("Version: 1.4.3-2+lteb1probe1", CONTROL.read_text())
 
     def test_raw_cell_monitor_evidence_preserves_runtime_types_and_unknown_entries(self):
         parser = sampler_method(
@@ -544,6 +593,26 @@ int main(void) {
         self.assertIn("CCNMRunAdaptiveServingCellSampler(client, context, ctHandle)", body)
         self.assertNotIn("\n                                dispatch_semaphore_wait(", body)
 
+    def test_unsafe_outstanding_tracker_counts_each_unresolved_attempt(self):
+        globals_block = SAMPLER_SOURCE[:SAMPLER_SOURCE.index("@interface CCNMCellMonitorAsyncState")]
+        mark = sampler_method(
+            "static void CCNMMarkCellMonitorUnsafeOutstanding",
+            "static void CCNMResolveCellMonitorUnsafeOutstanding",
+        )
+        resolve = sampler_method(
+            "static void CCNMResolveCellMonitorUnsafeOutstanding",
+            "@interface CCNMCellMonitorAsyncState",
+        )
+        query = SAMPLER_SOURCE[SAMPLER_SOURCE.index(
+            "BOOL CCNMServingCellSamplerHasUnsafeOutstandingAttempt"
+        ):]
+        self.assertIn("static NSUInteger CCNMCellMonitorUnsafeOutstandingCount = 0;", globals_block)
+        self.assertNotIn("static BOOL CCNMCellMonitorUnsafeOutstanding", globals_block)
+        self.assertIn("CCNMCellMonitorUnsafeOutstandingCount++", mark)
+        self.assertIn("CCNMCellMonitorUnsafeOutstandingCount > 0", resolve)
+        self.assertIn("CCNMCellMonitorUnsafeOutstandingCount--", resolve)
+        self.assertIn("return CCNMCellMonitorUnsafeOutstandingCount > 0", query)
+
     def test_private_async_selectors_are_sampler_abi_checked_before_invocation(self):
         body = source_method("- (void)showServingCellProbe:", "- (void)confirmSameValueBandWrite:")
         abi = sampler_method(
@@ -559,8 +628,8 @@ int main(void) {
             "static NSMutableDictionary *CCNMRunCellMonitorRefreshAttempt",
         )
         adaptive = sampler_method(
+            "static NSDictionary *CCNMRunServingCellSampler",
             "NSDictionary *CCNMRunAdaptiveServingCellSampler",
-            "BOOL CCNMServingCellSamplerHasUnsafeOutstandingAttempt",
         )
         self.assertIn("@selector(getRatSelection:completion:)", rat_wrapper)
         self.assertLess(

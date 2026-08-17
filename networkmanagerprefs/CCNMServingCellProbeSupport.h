@@ -43,18 +43,25 @@ typedef enum {
     CCNMAdaptiveSamplerStopInvalidConfiguration,
 } CCNMAdaptiveSamplerStopReason;
 
+typedef enum {
+    CCNMAdaptiveSamplerPolicyEarlyNR = 0,
+    CCNMAdaptiveSamplerPolicyFullWindow,
+} CCNMAdaptiveSamplerPolicy;
+
 typedef struct {
     size_t maximumSampleCount;
     size_t requiredConsecutiveNRSampleCount;
     size_t consumedSampleCount;
     size_t consecutiveNRSampleCount;
     size_t explicitNRSampleCount;
+    CCNMAdaptiveSamplerPolicy policy;
     CCNMAdaptiveSamplerStopReason stopReason;
 } CCNMAdaptiveSamplerState;
 
-static inline CCNMAdaptiveSamplerState CCNMAdaptiveSamplerStart(
+static inline CCNMAdaptiveSamplerState CCNMAdaptiveSamplerStartWithPolicy(
     size_t maximumSampleCount,
-    size_t requiredConsecutiveNRSampleCount
+    size_t requiredConsecutiveNRSampleCount,
+    CCNMAdaptiveSamplerPolicy policy
 ) {
     CCNMAdaptiveSamplerState state = {
         .maximumSampleCount = maximumSampleCount,
@@ -62,13 +69,26 @@ static inline CCNMAdaptiveSamplerState CCNMAdaptiveSamplerStart(
         .consumedSampleCount = 0,
         .consecutiveNRSampleCount = 0,
         .explicitNRSampleCount = 0,
+        .policy = policy,
         .stopReason = CCNMAdaptiveSamplerStopRunning,
     };
     if (maximumSampleCount == 0 || requiredConsecutiveNRSampleCount == 0 ||
-        requiredConsecutiveNRSampleCount > maximumSampleCount) {
+        requiredConsecutiveNRSampleCount > maximumSampleCount ||
+        (policy != CCNMAdaptiveSamplerPolicyEarlyNR &&
+         policy != CCNMAdaptiveSamplerPolicyFullWindow)) {
         state.stopReason = CCNMAdaptiveSamplerStopInvalidConfiguration;
     }
     return state;
+}
+
+static inline CCNMAdaptiveSamplerState CCNMAdaptiveSamplerStart(
+    size_t maximumSampleCount,
+    size_t requiredConsecutiveNRSampleCount
+) {
+    return CCNMAdaptiveSamplerStartWithPolicy(
+        maximumSampleCount,
+        requiredConsecutiveNRSampleCount,
+        CCNMAdaptiveSamplerPolicyEarlyNR);
 }
 
 static inline int CCNMAdaptiveSamplerShouldContinue(const CCNMAdaptiveSamplerState *state) {
@@ -90,7 +110,8 @@ static inline int CCNMAdaptiveSamplerObserve(
         state->consecutiveNRSampleCount = 0;
     }
 
-    if (state->consecutiveNRSampleCount >= state->requiredConsecutiveNRSampleCount) {
+    if (state->policy == CCNMAdaptiveSamplerPolicyEarlyNR &&
+        state->consecutiveNRSampleCount >= state->requiredConsecutiveNRSampleCount) {
         state->stopReason = CCNMAdaptiveSamplerStopExplicitNRConfirmed;
     } else if (state->consumedSampleCount >= state->maximumSampleCount) {
         state->stopReason = CCNMAdaptiveSamplerStopWindowExhausted;

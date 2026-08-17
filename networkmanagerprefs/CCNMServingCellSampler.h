@@ -8,5 +8,10 @@ FOUNDATION_EXPORT NSDictionary *CCNMRunAdaptiveServingCellSampler(
     id context,
     void *coreTelephonyHandle
 );
+FOUNDATION_EXPORT NSDictionary *CCNMRunFullWindowServingCellSampler(
+    id client,
+    id context,
+    void *coreTelephonyHandle
+);
 FOUNDATION_EXPORT BOOL CCNMServingCellSamplerHasUnsafeOutstandingAttempt(void);
 FOUNDATION_EXPORT id CCNMServingCellTypedPropertyListEvidence(id object);

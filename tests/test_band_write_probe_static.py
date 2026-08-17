@@ -65,6 +65,7 @@ class BandWriteProbeStaticTests(unittest.TestCase):
         self.assertIn('expectedOperation = @"same_value_write"', validator)
         self.assertIn('expectedOperation = @"cold_band_removal"', validator)
         self.assertIn('expectedOperation = @"nr78_only"', validator)
+        self.assertIn('expectedOperation = @"lte_b1_only"', validator)
 
     def test_only_test_and_restore_helpers_call_setter(self):
         calls = re.findall(r"\[client setActiveBandInfo:context bands:([A-Za-z0-9_]+) error:&([A-Za-z0-9_]+)\]", SOURCE)
@@ -74,7 +75,7 @@ class BandWriteProbeStaticTests(unittest.TestCase):
                 ("restoreInfo", "restoreError"),
                 ("sameValueInfo", "setterError"),
                 ("removalInfo", "setterError"),
-                ("nr78Info", "setterError"),
+                ("lteB1Info", "setterError"),
             ],
         )
         self.assertNotIn("addActiveBand", SOURCE)
@@ -82,13 +83,28 @@ class BandWriteProbeStaticTests(unittest.TestCase):
 
     def test_payload_is_identical_before_every_setter(self):
         self.assertEqual(SOURCE.count('phase[@"payloadEqualBeforeWrite"]'), 1)
-        self.assertEqual(SOURCE.count('result[@"payloadEqualBeforeWrite"]'), 3)
+        write_methods = (
+            method("- (void)runSameValueBandWrite", "- (void)runColdBandRemovalWrite"),
+            method("- (void)runColdBandRemovalWrite", "- (void)runLTEB1BandWrite"),
+            method("- (void)runLTEB1BandWrite", "- (void)restoreSavedBandSnapshot"),
+        )
+        self.assertEqual(sum(body.count('result[@"payloadEqualBeforeWrite"]') for body in write_methods), 3)
         self.assertIn("CCNMDictionariesEqual(snapshotBands, payloadBands)", SOURCE)
         self.assertIn("CCNMDictionariesEqual(originalBands, payloadBands)", SOURCE)
         self.assertIn("CCNMDictionariesEqual(removalBands, payloadBands) &&", SOURCE)
         self.assertIn("CCNMValidateSingleBandRemoval(originalBands, payloadBands, removedBand, &failure)", SOURCE)
-        self.assertIn("CCNMDictionariesEqual(nr78Bands, payloadBands) &&", SOURCE)
-        self.assertIn("CCNMValidateNR78OnlyBands(originalBands, payloadBands, &failure)", SOURCE)
+        self.assertIn("CCNMDictionariesEqual(lteB1Bands, payloadBands) &&", SOURCE)
+        self.assertIn("CCNMValidateLTEB1OnlyBands(originalBands, payloadBands, &failure)", SOURCE)
+
+    def test_lte_b1_success_requires_error_free_setter_and_finalized_evidence(self):
+        b1 = method("- (void)runLTEB1BandWrite", "- (void)restoreSavedBandSnapshot")
+        self.assertIn("BOOL setterReturnedWithoutError = setterReturnedNormally && !setterError;", b1)
+        self.assertIn('result[@"setterReturnedWithoutError"] = @(setterReturnedWithoutError);', b1)
+        self.assertIn('result[@"postWriteB1Observed"] = @(postWriteB1Observed);', b1)
+        self.assertIn("BOOL b1ServingConfirmed = transactionCompletedSafely && effectApplied && postWriteB1Observed;", b1)
+        self.assertIn("BOOL passed = !failure && transactionCompletedSafely && effectApplied && b1ServingConfirmed;", b1)
+        self.assertIn('result[@"passed"] = @(passed);', b1)
+        self.assertIn("BOOL diagnosticCompleted = resultSaved && !failure && transactionCompletedSafely;", b1)
 
     def test_runtime_abi_guard_exists_before_all_operation_setters(self):
         self.assertIn("signature.numberOfArguments == 5", SOURCE)
@@ -99,8 +115,8 @@ class BandWriteProbeStaticTests(unittest.TestCase):
     def test_test_setters_hold_lock_and_create_marker_before_call(self):
         for method_start, method_end, setter_call, operation_name in (
             ("- (void)runSameValueBandWrite", "- (void)runColdBandRemovalWrite", "bands:sameValueInfo", '@"same_value_write"'),
-            ("- (void)runColdBandRemovalWrite", "- (void)runNR78BandWrite", "bands:removalInfo", '@"cold_band_removal"'),
-            ("- (void)runNR78BandWrite", "- (void)restoreSavedBandSnapshot", "bands:nr78Info", '@"nr78_only"'),
+            ("- (void)runColdBandRemovalWrite", "- (void)runLTEB1BandWrite", "bands:removalInfo", '@"cold_band_removal"'),
+            ("- (void)runLTEB1BandWrite", "- (void)restoreSavedBandSnapshot", "bands:lteB1Info", '@"lte_b1_only"'),
         ):
             body = method(method_start, method_end)
             lock = body.index("CCNMAcquireRecoveryFileLock")
@@ -242,11 +258,13 @@ class BandWriteProbeStaticTests(unittest.TestCase):
             self.assertIn('@"bootTimeSeconds": bootSeconds', body)
         for body in (
             method("- (void)runSameValueBandWrite", "- (void)runColdBandRemovalWrite"),
-            method("- (void)runColdBandRemovalWrite", "- (void)runNR78BandWrite"),
-            method("- (void)runNR78BandWrite", "- (void)restoreSavedBandSnapshot"),
+            method("- (void)runColdBandRemovalWrite", "- (void)runLTEB1BandWrite"),
+            method("- (void)runLTEB1BandWrite", "- (void)restoreSavedBandSnapshot"),
         ):
             self.assertIn('@"bootSessionUUID": CCNMBootSessionIdentity() ?: @""', body)
-            self.assertIn('![setterInFlightRecord[@"bootSessionUUID"] length] ||', body)
+            self.assertIn("BOOL markerIdentityValid", body)
+            self.assertIn('setterInFlightRecord[@"bootSessionUUID"] length] > 0', body)
+            self.assertIn('setterInFlightRecord[@"bootTimeSeconds"] longLongValue] != 0', body)
 
     def test_uncertain_latch_blocks_every_path_that_can_reach_a_setter(self):
         # The reviewer-raised P0 is "a timeout leads to a concurrent restore".
@@ -301,8 +319,8 @@ class BandWriteProbeStaticTests(unittest.TestCase):
 
         for method_start, method_end, setter_call in (
             ("- (void)runSameValueBandWrite", "- (void)runColdBandRemovalWrite", "bands:sameValueInfo"),
-            ("- (void)runColdBandRemovalWrite", "- (void)runNR78BandWrite", "bands:removalInfo"),
-            ("- (void)runNR78BandWrite", "- (void)restoreSavedBandSnapshot", "bands:nr78Info"),
+            ("- (void)runColdBandRemovalWrite", "- (void)runLTEB1BandWrite", "bands:removalInfo"),
+            ("- (void)runLTEB1BandWrite", "- (void)restoreSavedBandSnapshot", "bands:lteB1Info"),
         ):
             body = method(method_start, method_end)
             setter = body.index(setter_call)
@@ -330,8 +348,8 @@ class BandWriteProbeStaticTests(unittest.TestCase):
     def test_automatic_restore_flag_is_always_released(self):
         for method_start, method_end in (
             ("- (void)runSameValueBandWrite", "- (void)runColdBandRemovalWrite"),
-            ("- (void)runColdBandRemovalWrite", "- (void)runNR78BandWrite"),
-            ("- (void)runNR78BandWrite", "- (void)restoreSavedBandSnapshot"),
+            ("- (void)runColdBandRemovalWrite", "- (void)runLTEB1BandWrite"),
+            ("- (void)runLTEB1BandWrite", "- (void)restoreSavedBandSnapshot"),
         ):
             body = method(method_start, method_end)
             begin = body.index("if (CCNMBeginAutomaticRestoreOperation(operationGeneration))")
@@ -346,16 +364,53 @@ class BandWriteProbeStaticTests(unittest.TestCase):
     def test_normal_marker_cleanup_requires_verified_restore(self):
         for method_start, method_end in (
             ("- (void)runSameValueBandWrite", "- (void)runColdBandRemovalWrite"),
-            ("- (void)runColdBandRemovalWrite", "- (void)runNR78BandWrite"),
-            ("- (void)runNR78BandWrite", "- (void)restoreSavedBandSnapshot"),
+            ("- (void)runColdBandRemovalWrite", "- (void)runLTEB1BandWrite"),
+            ("- (void)runLTEB1BandWrite", "- (void)restoreSavedBandSnapshot"),
         ):
             body = method(method_start, method_end)
             self.assertIn("BOOL automaticRestoreVerified = NO", body)
             self.assertIn("automaticRestoreVerified = restored", body)
             cleanup_guard = body.index("if (automaticRestoreVerified)")
-            marker_remove = body.index("CCNMRemoveSetterInFlightRecord", cleanup_guard)
-            self.assertLess(cleanup_guard, marker_remove)
+            record_cleanup = body.index("CCNMRemoveVerifiedBandRecoveryRecords", cleanup_guard)
+            self.assertLess(cleanup_guard, record_cleanup)
             self.assertIn('result[@"setterInFlightPreserved"] = @YES', body)
+
+    def test_every_exposed_write_retires_or_preserves_the_complete_recovery_set(self):
+        for method_start, method_end in (
+            ("- (void)runSameValueBandWrite", "- (void)runColdBandRemovalWrite"),
+            ("- (void)runColdBandRemovalWrite", "- (void)runLTEB1BandWrite"),
+            ("- (void)runLTEB1BandWrite", "- (void)restoreSavedBandSnapshot"),
+        ):
+            body = method(method_start, method_end)
+            cleanup_guard = body.index("if (automaticRestoreVerified)")
+            verified_cleanup = body.index("CCNMRemoveVerifiedBandRecoveryRecords", cleanup_guard)
+            self.assertLess(cleanup_guard, verified_cleanup)
+            self.assertIn("CCNMRemoveUnattemptedBandRecoveryRecords", body)
+            self.assertIn("BOOL recoveryPending = restorePending || cleanupPending;", body)
+            self.assertIn("recoveryRecordsRemoved && !recoveryPending", body)
+
+    def test_lte_b1_serving_evidence_uses_a_full_window_sampler(self):
+        b1_body = method("- (void)runLTEB1BandWrite", "- (void)restoreSavedBandSnapshot")
+        self.assertEqual(b1_body.count("CCNMRunFullWindowServingCellSampler"), 2)
+        self.assertNotIn("CCNMRunAdaptiveServingCellSampler", b1_body)
+
+    def test_incomplete_post_write_observation_blocks_same_boot_restore(self):
+        b1_body = method("- (void)runLTEB1BandWrite", "- (void)restoreSavedBandSnapshot")
+        observation_gate = b1_body.index("BOOL postWriteObservationComplete = !matchedRequest;")
+        observation_assignment = b1_body.index("postWriteObservationComplete = observationCompleted;", observation_gate)
+        restore_skip = b1_body.index("else if (!postWriteObservationComplete)", observation_assignment)
+        restore_begin = b1_body.index("CCNMBeginAutomaticRestoreOperation", restore_skip)
+        self.assertLess(observation_gate, observation_assignment)
+        self.assertLess(observation_assignment, restore_skip)
+        self.assertLess(restore_skip, restore_begin)
+        self.assertIn('@"automaticRestoreSkippedReason"] = @"cell_monitor_observation_incomplete"', b1_body[restore_skip:restore_begin])
+        self.assertIn("no same-boot automatic restore was issued", b1_body[restore_skip:restore_begin])
+
+    def test_untracked_recovery_paths_are_checked_before_pre_setter_cleanup(self):
+        helper = SOURCE[SOURCE.index("static BOOL CCNMRecoveryRecordMatchesExpected"): SOURCE.index("static BOOL CCNMRemoveExpectedRecoveryRecord")]
+        self.assertIn("if (!expectedRecord)", helper)
+        self.assertIn("fileExistsAtPath:path", helper)
+        self.assertIn("An unexpected %@ exists", helper)
 
     def test_manual_restore_requires_valid_marker_from_an_earlier_boot(self):
         confirm = method("- (void)confirmRestoreBandSnapshot", "- (void)confirmColdBandRemovalWrite")
@@ -365,7 +420,7 @@ class BandWriteProbeStaticTests(unittest.TestCase):
         self.assertIn("validIntent && validInFlight && validRestoreInFlight && !outstanding", confirm)
         self.assertIn("Reboot the device", confirm)
 
-        manual = method("- (void)restoreSavedBandSnapshot", "- (void)viewWillAppear:")
+        manual = method("- (void)restoreSavedBandSnapshot", "- (void)resumeRecoveryCleanup")
         self.assertIn("CCNMAcquireRecoveryFileLock", manual)
         self.assertIn("CCNMValidateWriteIntent(writeIntent, snapshot, &failure)", manual)
         self.assertIn("CCNMValidateSetterInFlightRecord", manual)
@@ -381,41 +436,48 @@ class BandWriteProbeStaticTests(unittest.TestCase):
         self.assertIn("CCNMBeginManualRestoreOperation(&manualRestoreGeneration)", manual)
 
     def test_unverified_recovery_always_states_the_reboot_procedure(self):
-        for method_start, method_end, pending_expression, phrase in (
+        for method_start, method_end, phrase in (
             (
                 "- (void)runSameValueBandWrite",
                 "- (void)runColdBandRemovalWrite",
-                'BOOL recoveryPending = [result[@"setterAttempted"] boolValue] &&\n'
-                '                               !([result[@"restoreAttempted"] boolValue] && [result[@"restoreReadBackEqual"] boolValue]);',
                 "The write was issued and the original set was not verified as restored.",
             ),
             (
                 "- (void)runColdBandRemovalWrite",
-                "- (void)runNR78BandWrite",
-                'BOOL recoveryPending = [result[@"setterAttempted"] boolValue] && !recovered;',
+                "- (void)runLTEB1BandWrite",
                 "The removal write was issued and the original set was not verified as restored.",
             ),
             (
-                "- (void)runNR78BandWrite",
+                "- (void)runLTEB1BandWrite",
                 "- (void)restoreSavedBandSnapshot",
-                'BOOL recoveryPending = [result[@"setterAttempted"] boolValue] && !recovered;',
-                "The n78-only write was issued and the original set was not verified as restored.",
+                "The LTE B1-only write was issued and the original set was not verified as restored.",
             ),
         ):
             body = method(method_start, method_end)
-            self.assertIn(pending_expression, body)
+            self.assertIn("BOOL recoveryRecordsCreated = snapshotWasCreated || writeIntentWasCreated || markerWasCreated;", body)
+            self.assertIn("BOOL recoveryPending = restorePending || cleanupPending;", body)
             self.assertIn('result[@"recoveryPending"] = @(recoveryPending)', body)
             self.assertIn(phrase, body)
             self.assertIn("Reboot the device, reopen Preferences, then run Restore Saved Band Snapshot.", body)
             self.assertIn("Recovery records were preserved.", body)
 
+        b1_body = method("- (void)runLTEB1BandWrite", "- (void)restoreSavedBandSnapshot")
+        self.assertIn("BOOL recoveryPending = restorePending || cleanupPending;", b1_body)
+        self.assertIn("[result[@\"setterReturnedWithoutError\"] boolValue]", b1_body)
+        self.assertIn("BOOL b1ServingConfirmed = transactionCompletedSafely && effectApplied && postWriteB1Observed;", b1_body)
+        self.assertIn("recoveryRecordsRemoved && !recoveryPending", b1_body)
+
     def test_manual_restore_avoids_an_unnecessary_setter(self):
-        manual = method("- (void)restoreSavedBandSnapshot", "- (void)viewWillAppear:")
+        manual = method("- (void)restoreSavedBandSnapshot", "- (void)resumeRecoveryCleanup")
         self.assertIn("CCNMDictionariesEqual(snapshotBands, liveBands)", manual)
         self.assertIn('result[@"restoreWasNeeded"]', manual)
         live_compare = manual.index("CCNMDictionariesEqual(snapshotBands, liveBands)")
+        stale_marker_cleanup = manual.index("CCNMRemoveRestoreInFlightRecord(restoreInFlight", live_compare)
+        restored_without_setter = manual.index("restored = YES", stale_marker_cleanup)
         restore_call = manual.index("CCNMRestoreActiveBands")
-        self.assertLess(live_compare, restore_call)
+        self.assertLess(live_compare, stale_marker_cleanup)
+        self.assertLess(stale_marker_cleanup, restored_without_setter)
+        self.assertLess(restored_without_setter, restore_call)
 
     def test_clear_is_boot_gated_and_requires_live_snapshot_equality(self):
         clear = method("- (void)clearSavedProbeState", "- (void)runSameValueBandWrite")
@@ -424,15 +486,16 @@ class BandWriteProbeStaticTests(unittest.TestCase):
         self.assertIn("CCNMCurrentBootSetterMayBeOutstanding(nil, &outstandingDetail)", clear)
         self.assertIn("CCNMDictionariesEqual(snapshotBands, liveBands)", clear)
         self.assertIn('result[@"liveMatchedSnapshot"] = @(matched)', clear)
+        self.assertIn("The setter-in-flight record is missing", clear)
         self.assertNotIn("setActiveBandInfo", clear)
 
         live_guard = clear.index("CCNMDictionariesEqual(snapshotBands, liveBands)")
-        snapshot_remove = clear.index("CCNMUnlinkIfPresent(CCNMBandSnapshotPath()")
-        intent_remove = clear.index("CCNMUnlinkIfPresent(CCNMBandWriteIntentPath()")
-        marker_remove = clear.index("CCNMRemoveSetterInFlightRecord")
-        self.assertLess(live_guard, snapshot_remove)
-        self.assertLess(snapshot_remove, intent_remove)
-        self.assertLess(intent_remove, marker_remove)
+        cleanup_kind = clear.index("NSString *cleanupKind = legacyNR78MarkerlessMigration", live_guard)
+        cleanup_handoff = clear.index("CCNMInstallRecoveryCleanupMarker(cleanupKind", cleanup_kind)
+        cleanup_resume = clear.index("CCNMResumeRecoveryCleanupMarker", cleanup_handoff)
+        self.assertLess(live_guard, cleanup_kind)
+        self.assertLess(cleanup_kind, cleanup_handoff)
+        self.assertLess(cleanup_handoff, cleanup_resume)
 
     def test_restore_marker_cannot_be_bypassed_by_new_writes_or_cleanup(self):
         # A restore marker represents a recovery setter, so no new test setter may
@@ -440,20 +503,20 @@ class BandWriteProbeStaticTests(unittest.TestCase):
         # recovery record after a known-good live read-back.
         for method_start, method_end in (
             ("- (void)confirmSameValueBandWrite", "- (void)confirmRestoreBandSnapshot"),
-            ("- (void)confirmColdBandRemovalWrite", "- (void)confirmNR78BandWrite"),
-            ("- (void)confirmNR78BandWrite", "- (void)confirmClearProbeState"),
+            ("- (void)confirmColdBandRemovalWrite", "- (void)confirmLTEB1BandWrite"),
+            ("- (void)confirmLTEB1BandWrite", "- (void)confirmClearProbeState"),
         ):
             confirm = method(method_start, method_end)
             self.assertIn("CCNMBandRestoreInFlightPath()", confirm)
 
         for method_start, method_end in (
             ("- (void)runSameValueBandWrite", "- (void)runColdBandRemovalWrite"),
-            ("- (void)runColdBandRemovalWrite", "- (void)runNR78BandWrite"),
-            ("- (void)runNR78BandWrite", "- (void)restoreSavedBandSnapshot"),
+            ("- (void)runColdBandRemovalWrite", "- (void)runLTEB1BandWrite"),
+            ("- (void)runLTEB1BandWrite", "- (void)restoreSavedBandSnapshot"),
         ):
             run = method(method_start, method_end)
             preflight_start = run.index("if (!failure && ([[NSFileManager defaultManager]")
-            preflight_end = run.index("NSDictionary *snapshot", preflight_start)
+            preflight_end = run.index('failure = @"Saved Band probe state already exists.', preflight_start)
             self.assertIn("CCNMBandRestoreInFlightPath()", run[preflight_start:preflight_end])
 
         clear_confirm = method("- (void)confirmClearProbeState", "- (void)clearSavedProbeState")
@@ -461,28 +524,45 @@ class BandWriteProbeStaticTests(unittest.TestCase):
         self.assertIn("CCNMValidateRestoreInFlightRecord", clear_confirm)
 
         clear = method("- (void)clearSavedProbeState", "- (void)runSameValueBandWrite")
-        manual = method("- (void)restoreSavedBandSnapshot", "- (void)viewWillAppear:")
-        for body in (clear, manual):
-            self.assertIn("NSDictionary *restoreInFlight", body)
-            self.assertIn("CCNMValidateRestoreInFlightRecord", body)
-            self.assertIn("CCNMRemoveRestoreInFlightRecord", body)
-            live_guard = body.index("CCNMDictionariesEqual(snapshotBands, liveBands)")
-            restore_remove = body.index("CCNMRemoveRestoreInFlightRecord")
-            self.assertLess(live_guard, restore_remove)
+        manual = method("- (void)restoreSavedBandSnapshot", "- (void)resumeRecoveryCleanup")
+        self.assertIn("NSDictionary *restoreInFlight", clear)
+        self.assertIn("CCNMValidateRestoreInFlightRecord", clear)
+        self.assertIn("CCNMRemoveRestoreInFlightRecord", clear)
+        live_guard = clear.index("CCNMDictionariesEqual(snapshotBands, liveBands)")
+        restore_remove = clear.index("CCNMRemoveRestoreInFlightRecord")
+        cleanup_handoff = clear.index("CCNMInstallRecoveryCleanupMarker(cleanupKind")
+        self.assertLess(live_guard, restore_remove)
+        self.assertLess(restore_remove, cleanup_handoff)
 
-        # Preserve the main setter marker if retiring the stale recovery marker fails.
-        clear_restore_remove = clear.index("CCNMRemoveRestoreInFlightRecord")
-        clear_setter_remove = clear.index("CCNMRemoveSetterInFlightRecord")
-        manual_restore_remove = manual.index("CCNMRemoveRestoreInFlightRecord")
-        manual_setter_remove = manual.index("CCNMRemoveSetterInFlightRecord")
-        self.assertLess(clear_restore_remove, clear_setter_remove)
-        self.assertLess(manual_restore_remove, manual_setter_remove)
+        self.assertIn("NSDictionary *restoreInFlight", manual)
+        self.assertIn("CCNMValidateRestoreInFlightRecord", manual)
+        self.assertIn("CCNMRestoreActiveBands", manual)
+        self.assertIn("CCNMRemoveVerifiedBandRecoveryRecords", manual)
+        verified_cleanup = SOURCE[
+            SOURCE.index("static BOOL CCNMRemoveVerifiedBandRecoveryRecords"):
+            SOURCE.index("static const char *CCNMSkipTypeQualifiers")
+        ]
+        self.assertIn("CCNMInstallRecoveryCleanupMarker", verified_cleanup)
+        self.assertIn("CCNMResumeRecoveryCleanupMarker", verified_cleanup)
 
-    def test_manual_cleanup_order_removes_payload_before_marker(self):
-        manual = method("- (void)restoreSavedBandSnapshot", "- (void)viewWillAppear:")
-        snapshot_remove = manual.index("CCNMUnlinkIfPresent(CCNMBandSnapshotPath()")
-        intent_remove = manual.index("CCNMUnlinkIfPresent(CCNMBandWriteIntentPath()")
-        marker_remove = manual.index("CCNMRemoveSetterInFlightRecord")
+    def test_manual_cleanup_uses_durable_handoff_before_payload_removal(self):
+        manual = method("- (void)restoreSavedBandSnapshot", "- (void)resumeRecoveryCleanup")
+        self.assertIn("CCNMRemoveVerifiedBandRecoveryRecords", manual)
+        verified_cleanup = SOURCE[
+            SOURCE.index("static BOOL CCNMRemoveVerifiedBandRecoveryRecords"):
+            SOURCE.index("static const char *CCNMSkipTypeQualifiers")
+        ]
+        install = verified_cleanup.index('CCNMInstallRecoveryCleanupMarker(@"verified_restore"')
+        resume = verified_cleanup.index("CCNMResumeRecoveryCleanupMarker", install)
+        self.assertLess(install, resume)
+
+        cleanup_resume = SOURCE[
+            SOURCE.index("static BOOL CCNMResumeRecoveryCleanupMarker"):
+            SOURCE.index("static BOOL CCNMRemoveUnattemptedBandRecoveryRecords")
+        ]
+        snapshot_remove = cleanup_resume.index('CCNMRemoveExpectedRecoveryRecordDuringCleanup(cleanupMarker[@"snapshot"]')
+        intent_remove = cleanup_resume.index('CCNMRemoveExpectedRecoveryRecordDuringCleanup(cleanupMarker[@"writeIntent"]')
+        marker_remove = cleanup_resume.index("CCNMRemoveExpectedRecoveryRecord(cleanupMarker")
         self.assertLess(snapshot_remove, intent_remove)
         self.assertLess(intent_remove, marker_remove)
 
@@ -491,7 +571,7 @@ class BandWriteProbeStaticTests(unittest.TestCase):
         self.assertIn("return @[@48, @46];", SOURCE)
         self.assertIn("CCNMValidateSingleBandRemoval", SOURCE)
         self.assertIn("CCNMBuildSingleRemovalBands(originalBands, supportedBands", SOURCE)
-        removal = method("- (void)runColdBandRemovalWrite", "- (void)runNR78BandWrite")
+        removal = method("- (void)runColdBandRemovalWrite", "- (void)runLTEB1BandWrite")
         for required in (
             "supportedBandsAtSelection",
             "preWriteSupportedBandsEqual",
@@ -504,7 +584,7 @@ class BandWriteProbeStaticTests(unittest.TestCase):
             self.assertIn(required, removal)
 
     def test_ui_does_not_promise_uninterrupted_service(self):
-        confirm = method("- (void)confirmColdBandRemovalWrite", "- (void)confirmNR78BandWrite")
+        confirm = method("- (void)confirmColdBandRemovalWrite", "- (void)confirmLTEB1BandWrite")
         # The build never reads the serving band, so it must not claim service is safe.
         for forbidden in (
             "so service should not drop",
@@ -523,7 +603,7 @@ class BandWriteProbeStaticTests(unittest.TestCase):
         actions = [item.get("action") for item in plist["items"] if item.get("action")]
         self.assertEqual(actions.count("confirmSameValueBandWrite:"), 1)
         self.assertEqual(actions.count("confirmColdBandRemovalWrite:"), 1)
-        self.assertEqual(actions.count("confirmNR78BandWrite:"), 1)
+        self.assertEqual(actions.count("confirmLTEB1BandWrite:"), 1)
         self.assertEqual(actions.count("confirmRestoreBandSnapshot:"), 1)
         self.assertEqual(actions.count("confirmClearProbeState:"), 1)
         self.assertIn("UIAlertActionStyleDestructive", SOURCE)

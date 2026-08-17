@@ -207,3 +207,59 @@ A/B implementation baseline: `8ccdd37654ea8746aa2e98167cae1159d8e16b9a`
 - `getPublicNrFrequencyRangeSync:` is guarded and called as `unsigned int(id *)`;
   its out object is archived as typed raw evidence rather than treated as an
   `NSError **`.
+
+## 2026-08-17 LTE B1 release-gate correction
+
+- Baseline remains `272b1ae56b919de53bad723ff81b62e1deb6b972` on
+  `diagnostic/lte-b1-lock-ios15`; the LTE B1 implementation is still uncommitted.
+- The pre-fix host suite passed 112 tests, but two independent read-only reviews did
+  not both return GO, so no commit, cloud build, or package delivery was started.
+- Review triage found the removed n78 write UI to be intentional scope, not a
+  regression: this single-purpose package exposes B1 instead, while legacy n78
+  helpers and recovery validators remain covered.
+- The sampler unsafe-outstanding flag is being strengthened to a counted latch so
+  overlapping future attempts cannot let one late callback clear another attempt's
+  fail-closed gate.
+- A real recovery-lifecycle gap remains: successful B1 automatic restore removes
+  only the setter marker, and a failure after snapshot creation but before the
+  setter can leave orphan recovery state. Release success now requires exact
+  cleanup of all B1 records after verified restore, plus exact cleanup of records
+  created by an attempt whose setter is provably never called.
+- Independent failure signals: no recovery record may be removed after a setter
+  call, timeout, exception, unresolved async callback, or unverified restore; a
+  changed/foreign record must fail cleanup and remain preserved.
+- Evidence plan: add red model/static tests for counted outstanding attempts and
+  both cleanup authorizations, apply the minimal implementation, run the full host
+  suite and diff checks, then repeat both release-gate reviews before any build.
+
+## 2026-08-17 LTE B1 current-tree closure
+
+- The counted Cell Monitor unsafe-outstanding latch, full-window LTE B3/B1 sampler,
+  exact LTE `[1]` payload, setter/restore interlocks, and complete recovery-record
+  cleanup are implemented in the uncommitted working tree.
+- All three exposed write flows now retire snapshot, intent, and setter records only
+  through the same durable verified-restore cleanup handoff. Failures before the
+  setter use that handoff only while the exact records still match and the setter is
+  provably uncalled; timeout, exception, changed-record, and incomplete-observation
+  paths preserve evidence and remain fail-closed.
+- Manual recovery now retires an exact validated earlier-boot restore marker when a
+  fresh live read already equals the snapshot, without issuing another modem setter.
+- Markerless legacy n78 snapshot+intent state is clearable only when the old n78
+  result binds the same generation and subscription; exact original, supported,
+  requested, immediate-read-back, observation-end, and restore-read-back
+  dictionaries; coherent request/original/effect flags; a complete nested restore
+  phase with both markers retired; strictly ordered timestamps; and final pass
+  state, followed by another exact live-snapshot read. All contradictory, stale,
+  malformed, or other markerless states remain blocked.
+- Fresh host verification is 132/132 tests passing, and `git diff --check` is clean.
+  Local rootless and roothide package builds both compile successfully as smoke
+  evidence. Both local arm64e links still emit `incompatible arm64e ABI compiler`,
+  so neither local package is deliverable.
+- A fresh independent safety/standards review of the final tree returned GO. A
+  subsequent spec review found that the first markerless-n78 migration validator
+  over-relied on booleans; the exact dictionary, nested restore-phase, and timestamp
+  bindings above were added, and a focused current-tree re-review then returned GO.
+  No independent review has a remaining P0/P1/P2.
+- No commit, push, cloud build, or package delivery has been performed. The next
+  release gate is an explicit commit/push followed by the pinned macOS 14 / Xcode
+  15.4 / iPhoneOS 17.5 cloud build and artifact inspection.

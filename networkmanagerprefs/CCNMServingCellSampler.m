@@ -20,7 +20,7 @@ static const int64_t CCNMServingCellAttemptTimeoutSeconds = 5;
 static const useconds_t CCNMServingCellRefreshSettleMicroseconds = 500000;
 static const useconds_t CCNMServingCellInterSampleDelayMicroseconds = 500000;
 
-static BOOL CCNMCellMonitorUnsafeOutstanding = NO;
+static NSUInteger CCNMCellMonitorUnsafeOutstandingCount = 0;
 
 static NSObject *CCNMCellMonitorUnsafeOutstandingLock(void) {
     static NSObject *lock = nil;
@@ -33,13 +33,15 @@ static NSObject *CCNMCellMonitorUnsafeOutstandingLock(void) {
 
 static void CCNMMarkCellMonitorUnsafeOutstanding(void) {
     @synchronized(CCNMCellMonitorUnsafeOutstandingLock()) {
-        CCNMCellMonitorUnsafeOutstanding = YES;
+        CCNMCellMonitorUnsafeOutstandingCount++;
     }
 }
 
 static void CCNMResolveCellMonitorUnsafeOutstanding(void) {
     @synchronized(CCNMCellMonitorUnsafeOutstandingLock()) {
-        CCNMCellMonitorUnsafeOutstanding = NO;
+        if (CCNMCellMonitorUnsafeOutstandingCount > 0) {
+            CCNMCellMonitorUnsafeOutstandingCount--;
+        }
     }
 }
 
@@ -904,13 +906,20 @@ static NSString *CCNMOmissionReasonForStop(CCNMAdaptiveSamplerStopReason stopRea
     }
 }
 
-NSDictionary *CCNMRunAdaptiveServingCellSampler(
+static NSDictionary *CCNMRunServingCellSampler(
     id client,
     id context,
-    void *coreTelephonyHandle
+    void *coreTelephonyHandle,
+    CCNMAdaptiveSamplerPolicy policy
 ) {
     id<CCNMServingCellClient> servingCellClient = (id<CCNMServingCellClient>)client;
     NSMutableDictionary *report = [CCNMServingCellSamplerEmptyReport() mutableCopy];
+    report[@"cellMonitorSamplingMode"] = policy == CCNMAdaptiveSamplerPolicyFullWindow
+        ? @"fullWindowRefreshBeforeEachCopy"
+        : @"adaptiveRefreshBeforeEachCopy";
+    NSMutableDictionary *samplingPlan = [report[@"cellMonitorPlan"] mutableCopy];
+    samplingPlan[@"stopAfterExplicitNR"] = @(policy == CCNMAdaptiveSamplerPolicyEarlyNR);
+    report[@"cellMonitorPlan"] = samplingPlan;
     NSMutableArray<NSDictionary *> *failures = [NSMutableArray array];
     NSMutableIndexSet *attemptedRefreshIndexes = [NSMutableIndexSet indexSet];
     NSMutableIndexSet *attemptedCopyIndexes = [NSMutableIndexSet indexSet];
@@ -975,9 +984,10 @@ NSDictionary *CCNMRunAdaptiveServingCellSampler(
     NSMutableArray<NSDictionary *> *refreshAttempts = [NSMutableArray array];
     NSMutableArray<NSDictionary *> *samples = [NSMutableArray array];
     NSMutableArray<NSDictionary *> *observedServingCells = [NSMutableArray array];
-    CCNMAdaptiveSamplerState samplerState = CCNMAdaptiveSamplerStart(
+    CCNMAdaptiveSamplerState samplerState = CCNMAdaptiveSamplerStartWithPolicy(
         CCNMServingCellMaximumSampleCount,
-        CCNMServingCellRequiredConsecutiveNRSamples);
+        CCNMServingCellRequiredConsecutiveNRSamples,
+        policy);
     NSTimeInterval samplingStartedMonotonic = CCNMMonotonicNow();
     report[@"cellMonitorSamplingStartedAt"] = @([[NSDate date] timeIntervalSince1970]);
     report[@"cellMonitorSamplingStartedMonotonic"] = @(samplingStartedMonotonic);
@@ -1169,8 +1179,32 @@ NSDictionary *CCNMRunAdaptiveServingCellSampler(
     return report;
 }
 
+NSDictionary *CCNMRunAdaptiveServingCellSampler(
+    id client,
+    id context,
+    void *coreTelephonyHandle
+) {
+    return CCNMRunServingCellSampler(
+        client,
+        context,
+        coreTelephonyHandle,
+        CCNMAdaptiveSamplerPolicyEarlyNR);
+}
+
+NSDictionary *CCNMRunFullWindowServingCellSampler(
+    id client,
+    id context,
+    void *coreTelephonyHandle
+) {
+    return CCNMRunServingCellSampler(
+        client,
+        context,
+        coreTelephonyHandle,
+        CCNMAdaptiveSamplerPolicyFullWindow);
+}
+
 BOOL CCNMServingCellSamplerHasUnsafeOutstandingAttempt(void) {
     @synchronized(CCNMCellMonitorUnsafeOutstandingLock()) {
-        return CCNMCellMonitorUnsafeOutstanding;
+        return CCNMCellMonitorUnsafeOutstandingCount > 0;
     }
 }
