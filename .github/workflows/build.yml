@@ -166,11 +166,14 @@ jobs:
             --build-log "$GITHUB_WORKSPACE/release-artifacts/rootless/build.log" \
             --report "$GITHUB_WORKSPACE/release-artifacts/rootless/verification-report.json" \
             --checksums "$GITHUB_WORKSPACE/release-artifacts/rootless/SHA256SUMS" \
+            --checksum-name "packages-rootless/$(basename "$deb")" \
             --source-sha "$GITHUB_SHA" \
             --run-id "$GITHUB_RUN_ID" \
             --expected-sdk 16.4,16.5 \
             --require-mach-o
           cp "$deb" packages-rootless/
+          ld_version_number="$(xcrun ld -version_details | sed -n 's/[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
+          test "$ld_version_number" = "1053.12"
           {
             printf 'lane=rootless\n'
             printf 'release_version=%s\n' "$RELEASE_VERSION"
@@ -184,7 +187,7 @@ jobs:
             printf 'ccsupport_commit=%s\n' "$CCSUPPORT_COMMIT"
             printf 'xcode=%s\n' "$(xcodebuild -version | tr '\n' ' ')"
             printf 'clang=%s\n' "$(xcrun clang --version | sed -n '1p')"
-            printf 'ld=%s\n' "$(xcrun ld -version_details | sed -n '1p')"
+            printf 'ld=%s\n' "$ld_version_number"
             printf 'system_sdk=%s\n' "$(xcrun --sdk iphoneos --show-sdk-version)"
           } > release-artifacts/rootless/provenance.txt
           shasum -a 256 release-artifacts/rootless/build.log \
@@ -363,11 +366,14 @@ jobs:
             --build-log "$GITHUB_WORKSPACE/release-artifacts/roothide/build.log" \
             --report "$GITHUB_WORKSPACE/release-artifacts/roothide/verification-report.json" \
             --checksums "$GITHUB_WORKSPACE/release-artifacts/roothide/SHA256SUMS" \
+            --checksum-name "packages-roothide/$(basename "$deb")" \
             --source-sha "$GITHUB_SHA" \
             --run-id "$GITHUB_RUN_ID" \
             --expected-sdk 17.5 \
             --require-mach-o
           cp "$deb" packages-roothide/
+          ld_version_number="$(xcrun ld -version_details | sed -n 's/[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
+          test "$ld_version_number" = "1053.12"
           {
             printf 'lane=roothide\n'
             printf 'release_version=%s\n' "$RELEASE_VERSION"
@@ -381,7 +387,7 @@ jobs:
             printf 'ccsupport_commit=%s\n' "$CCSUPPORT_COMMIT"
             printf 'xcode=%s\n' "$(xcodebuild -version | tr '\n' ' ')"
             printf 'clang=%s\n' "$(xcrun clang --version | sed -n '1p')"
-            printf 'ld=%s\n' "$(xcrun ld -version_details | sed -n '1p')"
+            printf 'ld=%s\n' "$ld_version_number"
             printf 'system_sdk=%s\n' "$(xcrun --sdk iphoneos --show-sdk-version)"
             printf 'explicit_sysroot=none\n'
           } > release-artifacts/roothide/provenance.txt

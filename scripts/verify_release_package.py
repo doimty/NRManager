@@ -664,6 +664,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--build-log", type=Path)
     parser.add_argument("--report", type=Path)
     parser.add_argument("--checksums", type=Path)
+    parser.add_argument("--checksum-name", help="Path recorded for the package in SHA256SUMS")
     parser.add_argument("--source-sha", default=os.environ.get("GITHUB_SHA", "unknown"))
     parser.add_argument("--run-id", default=os.environ.get("GITHUB_RUN_ID", "local"))
     parser.add_argument(
@@ -677,8 +678,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     write_report(report, args.report)
     package = args.package.resolve()
     if args.checksums and package.is_file():
+        checksum_name = args.checksum_name or package.name
+        checksum_path = Path(checksum_name)
+        if checksum_path.is_absolute() or ".." in checksum_path.parts:
+            print("ERROR: checksum name must be a safe relative path", file=sys.stderr)
+            return 1
         args.checksums.parent.mkdir(parents=True, exist_ok=True)
-        args.checksums.write_text("%s  %s\n" % (sha256_file(package), package.name), encoding="utf-8")
+        args.checksums.write_text("%s  %s\n" % (sha256_file(package), checksum_name), encoding="utf-8")
     if report["status"] != "passed":
         for failure in report["failures"]:
             print("ERROR: %s" % failure, file=sys.stderr)

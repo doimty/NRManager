@@ -141,6 +141,8 @@ class WorkflowTests(unittest.TestCase):
             self.assertIn("scripts/verify_release_package.py", lane)
             self.assertIn("verification-report.json", lane)
             self.assertIn("SHA256SUMS", lane)
+            self.assertIn("--checksum-name", lane)
+            self.assertIn("ld_version_number", lane)
             self.assertIn("if-no-files-found: error", lane)
             self.assertIn("--require-mach-o", lane)
 
