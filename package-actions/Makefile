@@ -16,9 +16,12 @@ prerm_FRAMEWORKS = Foundation CoreFoundation
 prerm_CFLAGS = -fobjc-arc -fvisibility=hidden
 
 ifeq ($(THEOS_PACKAGE_SCHEME),roothide)
-postinst_LIBRARIES = roothide
+# Maintainer scripts run from /Library/dpkg/info/ where @loader_path/.jbroot
+# does not resolve.  Keep -undefined dynamic_lookup for the roothide API
+# symbols (resolved at runtime through the already-loaded jailbreak library)
+# but do not link -lroothide, which would add libroothide.dylib as a load-time
+# dependency with a broken @loader_path install name.
 postinst_LDFLAGS += -undefined dynamic_lookup
-prerm_LIBRARIES = roothide
 prerm_LDFLAGS += -undefined dynamic_lookup
 endif
 
