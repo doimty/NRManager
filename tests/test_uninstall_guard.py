@@ -28,6 +28,8 @@ class UninstallGuardTests(unittest.TestCase):
         self.assertIn("postinst_INSTALL_PATH = /DEBIAN", makefile)
         self.assertIn("prerm_INSTALL_PATH = /DEBIAN", makefile)
         self.assertIn("../networkmanagerprefs/CCNMN78PolicyController.m", makefile)
+        self.assertIn("postinst_OBJCFLAGS += -fno-modules -fno-implicit-modules", makefile)
+        self.assertIn("prerm_OBJCFLAGS += -fno-modules -fno-implicit-modules", makefile)
         self.assertIn("SUBPROJECTS += package-actions", root_makefile)
 
     def test_remove_upgrade_and_downgrade_path_all_restore_first(self):
