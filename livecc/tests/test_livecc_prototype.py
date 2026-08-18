@@ -28,6 +28,9 @@ class LiveCCPackagingTests(unittest.TestCase):
         self.assertEqual(self.plist["CFBundleIdentifier"], "me.nixuge.networkmanager.livecc")
         self.assertEqual(self.plist["CFBundleExecutable"], "NetworkManagerLive")
         self.assertEqual(self.plist["NSPrincipalClass"], "NetworkManagerLiveModule")
+        self.assertEqual(self.plist["CFBundleShortVersionString"], "0.0.2")
+        self.assertEqual(self.plist["CFBundleVersion"], "2")
+        self.assertIn("Version: 0.0.2", self.control)
         self.assertIn("BUNDLE_NAME = NetworkManagerLive", self.makefile)
         self.assertIn("TARGET := iphone:clang:latest:14.0", self.makefile)
         self.assertNotIn("BUNDLE_NAME = NetworkManager\n", self.makefile)
@@ -166,6 +169,18 @@ class LiveCCStaticSafetyTests(unittest.TestCase):
         rat_handler = self.source[rat_start:rat_end]
         self.assertIn("dispatch_get_main_queue", rat_handler)
         self.assertIn("!self.visible", rat_handler)
+
+    def test_searching_state_uses_radio_symbol_and_keeps_one_pending_refresh(self):
+        for token in (
+            "CCNMLiveSearchingGlyphImage",
+            'systemImageNamed:@"antenna.radiowaves.left.and.right"',
+            'systemImageNamed:@"magnifyingglass"',
+            "hasFreshServingResult",
+            "refreshPending",
+            "shouldRefreshAgain",
+        ):
+            self.assertIn(token, self.source)
+        self.assertNotIn('self.glyphImage = CCNMLiveGlyphImage(@"?")', self.source)
 
     def test_refresh_has_one_in_flight_guard_and_button_is_read_only(self):
         implementation = self.source.index("@implementation NetworkManagerLiveViewController")

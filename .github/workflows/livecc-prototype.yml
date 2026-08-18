@@ -22,7 +22,7 @@ env:
 
 jobs:
   host-tests:
-    name: LiveCC host gates (11 prototype / 97 root)
+    name: LiveCC host gates (12 prototype / 97 root)
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -36,7 +36,7 @@ jobs:
           livecc_log="$RUNNER_TEMP/livecc-tests.log"
           root_log="$RUNNER_TEMP/root-tests.log"
           python3 -m unittest discover -s livecc/tests -v 2>&1 | tee "$livecc_log"
-          grep -Eq '^Ran 11 tests in ' "$livecc_log"
+          grep -Eq '^Ran 12 tests in ' "$livecc_log"
           python3 -m unittest discover -s tests -v 2>&1 | tee "$root_log"
           grep -Eq '^Ran 97 tests in ' "$root_log"
 

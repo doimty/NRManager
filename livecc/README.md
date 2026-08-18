@@ -8,9 +8,12 @@ Prototype question: can a standalone `CCUIContentModule` own a
 is visible, and update `glyphImage` directly without any toggle or policy-writing
 path?
 
-Current verdict: host contracts and a pinned-SDK rootless compile pass. Runtime
-loading, glyph rendering, notifications, and lifecycle behavior remain unverified
-on a device, so this is not a delivery candidate.
+Current verdict: version 0.0.1 loaded on the target device without a SpringBoard
+crash and refreshed serving bands quickly. Version 0.0.2 replaces the initial
+unknown `?` with a radio-search SF Symbol, retains the last valid band during
+periodic refresh, and queues one follow-up refresh when RAT changes during an
+in-flight sample. Each version still requires pinned roothide cloud validation
+before device delivery.
 
 Run the focused checks:
 

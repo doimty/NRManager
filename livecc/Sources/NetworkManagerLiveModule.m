@@ -49,6 +49,19 @@ static UIImage *CCNMLiveGlyphImage(NSString *text) {
     return image;
 }
 
+static UIImage *CCNMLiveSearchingGlyphImage(void) {
+    UIImageSymbolConfiguration *configuration =
+        [UIImageSymbolConfiguration configurationWithPointSize:25.0
+            weight:UIImageSymbolWeightMedium];
+    UIImage *image = [UIImage systemImageNamed:@"antenna.radiowaves.left.and.right"
+        withConfiguration:configuration];
+    if (!image) {
+        image = [UIImage systemImageNamed:@"magnifyingglass"
+            withConfiguration:configuration];
+    }
+    return image ?: CCNMLiveGlyphImage(@"...");
+}
+
 @class NetworkManagerLiveViewController;
 
 static void CCNMLiveServingStatusDidChangeCallback(
@@ -63,6 +76,8 @@ static void CCNMLiveServingStatusDidChangeCallback(
 @property (nonatomic, strong) NSTimer *refreshTimer;
 @property (nonatomic, strong) NSTimer *ratDebounceTimer;
 @property (nonatomic, assign) BOOL refreshInProgress;
+@property (nonatomic, assign) BOOL refreshPending;
+@property (nonatomic, assign) BOOL hasFreshServingResult;
 @property (nonatomic, assign) BOOL observersRegistered;
 @property (nonatomic, assign) BOOL visible;
 @property (nonatomic, assign) long long appliedSampledAtMilliseconds;
@@ -86,7 +101,8 @@ static void CCNMLiveServingStatusDidChangeCallback(
     [super viewDidLoad];
     self.title = @"Live Band";
     self.selected = NO;
-    self.glyphImage = CCNMLiveGlyphImage(@"?");
+    self.glyphColor = UIColor.blackColor;
+    self.glyphImage = CCNMLiveSearchingGlyphImage();
     [self applyNewerCachedSummary];
 }
 
@@ -184,6 +200,8 @@ static void CCNMLiveServingStatusDidChangeCallback(
         if (!self || !self.visible) {
             return;
         }
+        self.hasFreshServingResult = NO;
+        self.glyphImage = CCNMLiveSearchingGlyphImage();
         [self.ratDebounceTimer invalidate];
         __weak typeof(self) weakDebounceSelf = self;
         self.ratDebounceTimer = [NSTimer scheduledTimerWithTimeInterval:CCNMLiveRATDebounceInterval
@@ -197,12 +215,19 @@ static void CCNMLiveServingStatusDidChangeCallback(
 - (void)ratDebounceTimerFired:(NSTimer *)timer {
     (void)timer;
     self.ratDebounceTimer = nil;
+    if (self.refreshInProgress) {
+        self.refreshPending = YES;
+        return;
+    }
     [self requestBoundedServingRefresh];
 }
 
 - (void)requestBoundedServingRefresh {
     if (!self.visible || self.refreshInProgress) {
         return;
+    }
+    if (!self.hasFreshServingResult) {
+        self.glyphImage = CCNMLiveSearchingGlyphImage();
     }
     self.refreshInProgress = YES;
     __weak typeof(self) weakSelf = self;
@@ -214,6 +239,13 @@ static void CCNMLiveServingStatusDidChangeCallback(
             }
             self.refreshInProgress = NO;
             [self applySummary:summary requireNewerTimestamp:NO];
+            BOOL shouldRefreshAgain = self.refreshPending && self.visible;
+            self.refreshPending = NO;
+            if (shouldRefreshAgain) {
+                self.hasFreshServingResult = NO;
+                self.glyphImage = CCNMLiveSearchingGlyphImage();
+                [self requestBoundedServingRefresh];
+            }
         }];
 }
 
@@ -236,12 +268,20 @@ static void CCNMLiveServingStatusDidChangeCallback(
         return;
     }
     self.appliedSampledAtMilliseconds = MAX(self.appliedSampledAtMilliseconds, sampledAt);
-    self.glyphImage = CCNMLiveGlyphImage(CCNMLiveTextForSummary(summary));
+    NSString *text = CCNMLiveTextForSummary(summary);
+    self.hasFreshServingResult = ![text isEqualToString:@"?"];
+    self.glyphImage = CCNMLiveGlyphImage(text);
 }
 
 - (void)buttonTapped:(id)button forEvent:(UIEvent *)event {
     (void)button;
     (void)event;
+    self.hasFreshServingResult = NO;
+    self.glyphImage = CCNMLiveSearchingGlyphImage();
+    if (self.refreshInProgress) {
+        self.refreshPending = YES;
+        return;
+    }
     [self requestBoundedServingRefresh];
 }
 
