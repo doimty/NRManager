@@ -13,8 +13,18 @@ crash and refreshed serving bands quickly. Version 0.0.2 added a radio-search
 SF Symbol and one pending RAT refresh; device feedback confirmed the symbol but
 found its raw bounds offset and black tint inappropriate. Version 0.0.3 renders
 the search symbol as white, always-original media centered in the same 70x70
-canvas used by band text, and renders `B3`/`n78`/`n79` text in white. Each version
-still requires pinned roothide cloud validation before device delivery.
+canvas used by band text, and renders `B3`/`n78`/`n79` text in white. Version
+0.0.4 adds the shared responsive serving sampler: two consecutive clean samples
+with the same normalized RAT+Band complete in about one second of scheduled
+settle time, while changed, ambiguous, or unusable samples reset confirmation.
+NR has priority over LTE in NSA snapshots, but an unclassifiable or conflicting
+winning tier cannot fall through to a lower RAT. Responsive LTE confirmation is
+only UI convergence and does not claim the diagnostic full-window NR-negative
+result. The confirmed cell and timestamp come from the second copy. This version
+also reduces RAT-notification debounce from two seconds to 250 ms and suppresses
+superseded completions/cache notifications. Diagnostic adaptive/full-window
+sampler APIs remain unchanged. Each version still requires pinned roothide cloud
+validation before device delivery.
 
 Run the focused checks:
 

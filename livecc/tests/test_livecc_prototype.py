@@ -28,9 +28,9 @@ class LiveCCPackagingTests(unittest.TestCase):
         self.assertEqual(self.plist["CFBundleIdentifier"], "me.nixuge.networkmanager.livecc")
         self.assertEqual(self.plist["CFBundleExecutable"], "NetworkManagerLive")
         self.assertEqual(self.plist["NSPrincipalClass"], "NetworkManagerLiveModule")
-        self.assertEqual(self.plist["CFBundleShortVersionString"], "0.0.3")
-        self.assertEqual(self.plist["CFBundleVersion"], "3")
-        self.assertIn("Version: 0.0.3", self.control)
+        self.assertEqual(self.plist["CFBundleShortVersionString"], "0.0.4")
+        self.assertEqual(self.plist["CFBundleVersion"], "4")
+        self.assertIn("Version: 0.0.4", self.control)
         self.assertIn("BUNDLE_NAME = NetworkManagerLive", self.makefile)
         self.assertIn("TARGET := iphone:clang:latest:14.0", self.makefile)
         self.assertNotIn("BUNDLE_NAME = NetworkManager\n", self.makefile)
@@ -147,7 +147,7 @@ class LiveCCStaticSafetyTests(unittest.TestCase):
     def test_refresh_timer_debounce_and_lifecycle_are_explicit(self):
         for token in (
             "CCNMLiveRefreshInterval = 15.0",
-            "CCNMLiveRATDebounceInterval = 2.0",
+            "CCNMLiveRATDebounceSeconds = 0.25",
             "CTServiceRadioAccessTechnologyDidChangeNotification",
             "CCNMServingStatusDidChangeDarwinNotification",
             "controlCenterWillPresent",
@@ -182,6 +182,10 @@ class LiveCCStaticSafetyTests(unittest.TestCase):
             "UIImageRenderingModeAlwaysOriginal",
             "hasFreshServingResult",
             "refreshPending",
+            "awaitingCurrentRefresh",
+            "refreshGeneration",
+            "generation != self.refreshGeneration",
+            "if (!superseded)",
             "shouldRefreshAgain",
         ):
             self.assertIn(token, self.source)
@@ -203,12 +207,13 @@ class LiveCCStaticSafetyTests(unittest.TestCase):
 
     def test_darwin_notification_only_applies_a_newer_cache(self):
         self.assertIn(
-            "requireNewerTimestamp && sampledAt <= self.appliedSampledAtMilliseconds",
+            "requireNewerTimestamp && publishedAt <= self.appliedPublishedAtMilliseconds",
             self.source,
         )
         timer_start = self.source.index("- (void)refreshTimerFired:")
         timer_end = self.source.index("- (void)radioAccessTechnologyDidChange:", timer_start)
         self.assertIn("applyCurrentSummary", self.source[timer_start:timer_end])
+        self.assertIn("CCNMServingSummaryPublishedAtMillisecondsKey", self.source)
         self.assertIn("requireNewerTimestamp:NO", self.source)
         implementation_end = self.source.index("@end", self.source.index("- (void)buttonTapped:"))
         callback_start = self.source.index(

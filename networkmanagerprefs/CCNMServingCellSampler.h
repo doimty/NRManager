@@ -8,6 +8,11 @@ FOUNDATION_EXPORT NSDictionary *CCNMRunAdaptiveServingCellSampler(
     id context,
     void *coreTelephonyHandle
 );
+FOUNDATION_EXPORT NSDictionary *CCNMRunResponsiveServingCellSampler(
+    id client,
+    id context,
+    void *coreTelephonyHandle
+);
 FOUNDATION_EXPORT NSDictionary *CCNMRunFullWindowServingCellSampler(
     id client,
     id context,

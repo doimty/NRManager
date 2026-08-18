@@ -15,6 +15,7 @@
 NSString *const CCNMServingSummaryStateKey = @"servingState";
 NSString *const CCNMServingSummaryDataLineKey = @"dataLine";
 NSString *const CCNMServingSummarySampledAtMillisecondsKey = @"sampledAtMilliseconds";
+NSString *const CCNMServingSummaryPublishedAtMillisecondsKey = @"publishedAtMilliseconds";
 NSString *const CCNMServingSummaryStaleKey = @"stale";
 NSString *const CCNMServingSummaryRATKey = @"rat";
 NSString *const CCNMServingSummaryBandKey = @"band";
@@ -43,7 +44,12 @@ static NSDictionary *CCNMServingReadCachedSummary(void) {
         ![summary[CCNMServingSummaryStateKey] isKindOfClass:NSString.class]) {
         return nil;
     }
-    return [summary copy];
+    NSMutableDictionary *normalized = [summary mutableCopy];
+    if (![normalized[CCNMServingSummaryPublishedAtMillisecondsKey] isKindOfClass:NSNumber.class]) {
+        normalized[CCNMServingSummaryPublishedAtMillisecondsKey] =
+            normalized[CCNMServingSummarySampledAtMillisecondsKey] ?: @0;
+    }
+    return [normalized copy];
 }
 
 static BOOL CCNMServingPersistCachedSummary(NSDictionary *summary) {
@@ -51,7 +57,7 @@ static BOOL CCNMServingPersistCachedSummary(NSDictionary *summary) {
         return NO;
     }
     NSDictionary *cache = @{
-        @"schemaVersion": @1,
+        @"schemaVersion": @2,
         @"summary": summary
     };
     return [cache writeToFile:CCNMServingCachePath() atomically:YES];
@@ -329,23 +335,13 @@ static CCNMCellMonitorRATKind CCNMRATKind(NSString *rat) {
     return CCNMCellMonitorRATKindOther;
 }
 
-static NSDictionary *CCNMLatestObservedCell(NSDictionary *current, NSDictionary *candidate) {
-    if (![candidate isKindOfClass:NSDictionary.class] ||
-        ![candidate[@"servingCell"] isKindOfClass:NSDictionary.class]) {
-        return current;
-    }
-    if (!current || [candidate[@"sampleIndex"] integerValue] >= [current[@"sampleIndex"] integerValue]) {
-        return candidate;
-    }
-    return current;
-}
-
 NSDictionary<NSString *, id> *CCNMServingStatusEmptySummary(void) {
     return @{
         CCNMServingSummarySuccessKey: @NO,
         CCNMServingSummaryStateKey: CCNMServingStateUnknown,
         CCNMServingSummaryDataLineKey: @"slot1",
         CCNMServingSummarySampledAtMillisecondsKey: @0,
+        CCNMServingSummaryPublishedAtMillisecondsKey: @0,
         CCNMServingSummaryStaleKey: @YES,
         CCNMServingSummaryRATKey: @"",
         CCNMServingSummaryErrorKey: @"No fresh serving-cell sample is available.",
@@ -358,47 +354,42 @@ static NSDictionary *CCNMServingSummaryFromReport(NSDictionary *report,
                                                    NSString *subscriptionUUID,
                                                    BOOL unsafeOutstanding) {
     BOOL complete = [report[@"cellMonitorSamplingStatus"] isEqual:@"complete"];
-    BOOL nrObserved = [report[@"nrObservationStatus"] isEqual:@"observed"];
-    NSArray *observed = [report[@"observedServingCells"] isKindOfClass:NSArray.class]
-        ? report[@"observedServingCells"] : @[];
-    NSDictionary *latestNR = nil;
-    NSDictionary *latestLTE = nil;
-    NSDictionary *latestOther = nil;
-    for (NSDictionary *entry in observed) {
-        NSDictionary *cell = [entry[@"servingCell"] isKindOfClass:NSDictionary.class]
-            ? entry[@"servingCell"] : nil;
-        NSString *rat = [cell[@"rat"] isKindOfClass:NSString.class] ? cell[@"rat"] : nil;
+    BOOL responsiveMode = [report[@"cellMonitorSamplingMode"] isEqual:@"responsiveStableServing"];
+    BOOL servingConfirmed = [report[@"servingObservationConfirmed"] boolValue];
+    NSDictionary *confirmedServingCell =
+        [report[@"confirmedServingCell"] isKindOfClass:NSDictionary.class]
+            ? report[@"confirmedServingCell"] : nil;
+    NSString *confirmedRAT = [confirmedServingCell[@"rat"] isKindOfClass:NSString.class]
+        ? [confirmedServingCell[@"rat"] stringByTrimmingCharactersInSet:
+            NSCharacterSet.whitespaceAndNewlineCharacterSet]
+        : nil;
+    BOOL confirmedServingCellValid = confirmedRAT.length > 0 &&
+        CCNMBandNumber(confirmedServingCell[@"band"]) != nil;
+
+    NSDictionary *selected = nil;
+    CCNMServingState state = CCNMServingStateUnknown;
+    if (responsiveMode && complete && servingConfirmed && confirmedServingCellValid) {
+        selected = confirmedServingCell;
+        NSString *rat = [selected[@"rat"] isKindOfClass:NSString.class] ? selected[@"rat"] : nil;
         switch (CCNMRATKind(rat)) {
-            case CCNMCellMonitorRATKindNR:
-                latestNR = CCNMLatestObservedCell(latestNR, entry);
+            case CCNMCellMonitorRATKindNR: {
+                NSNumber *band = CCNMBandNumber(selected[@"band"]);
+                state = band.longLongValue == 78 ? CCNMServingStateNRN78 : CCNMServingStateNROther;
                 break;
+            }
             case CCNMCellMonitorRATKindLTE:
-                latestLTE = CCNMLatestObservedCell(latestLTE, entry);
+                state = CCNMServingStateLTE;
                 break;
             case CCNMCellMonitorRATKindOther:
-                latestOther = CCNMLatestObservedCell(latestOther, entry);
+                state = CCNMServingStateOther;
                 break;
         }
     }
 
-    NSDictionary *selected = nil;
-    CCNMServingState state = CCNMServingStateUnknown;
-    if (complete && nrObserved && latestNR) {
-        selected = latestNR[@"servingCell"];
-        NSNumber *band = CCNMBandNumber(selected[@"band"]);
-        state = band.longLongValue == 78 ? CCNMServingStateNRN78 : CCNMServingStateNROther;
-    } else if (complete && !nrObserved && latestLTE) {
-        selected = latestLTE[@"servingCell"];
-        state = CCNMServingStateLTE;
-    } else if (complete && !nrObserved && latestOther) {
-        selected = latestOther[@"servingCell"];
-        state = CCNMServingStateOther;
-    }
-
-    NSNumber *finishedSeconds = [report[@"cellMonitorSamplingFinishedAt"] isKindOfClass:NSNumber.class]
-        ? report[@"cellMonitorSamplingFinishedAt"] : nil;
-    long long sampledAtMilliseconds = finishedSeconds
-        ? (long long)llround(finishedSeconds.doubleValue * 1000.0) : 0;
+    NSNumber *sampledSeconds = [report[@"confirmedServingSampledAt"] isKindOfClass:NSNumber.class]
+        ? report[@"confirmedServingSampledAt"] : nil;
+    long long sampledAtMilliseconds = sampledSeconds
+        ? (long long)llround(sampledSeconds.doubleValue * 1000.0) : 0;
     BOOL success = selected != nil && sampledAtMilliseconds > 0 && !unsafeOutstanding;
     NSMutableDictionary *summary = [CCNMServingStatusEmptySummary() mutableCopy];
     summary[CCNMServingSummarySuccessKey] = @(success);
@@ -409,6 +400,22 @@ static NSDictionary *CCNMServingSummaryFromReport(NSDictionary *report,
     summary[CCNMServingSummarySamplingStatusKey] = report[@"cellMonitorSamplingStatus"] ?: @"failed";
     summary[CCNMServingSummaryUnsafeOutstandingKey] = @(unsafeOutstanding);
     summary[@"subscriptionUUID"] = subscriptionUUID ?: @"";
+    for (NSString *telemetryKey in @[
+        @"cellMonitorSamplingMode",
+        @"cellMonitorStopReason",
+        @"cellMonitorSamplingElapsedMilliseconds",
+        @"cellMonitorScheduledDelayMilliseconds",
+        @"cellMonitorRefreshCallbackLatencyMilliseconds",
+        @"cellMonitorCopyCallbackLatencyMilliseconds",
+        @"cellMonitorAttemptedSampleCount",
+        @"cellMonitorAttemptedRefreshCount",
+        @"stableServingConfirmationCount"
+    ]) {
+        id value = report[telemetryKey];
+        if ([value isKindOfClass:NSString.class] || [value isKindOfClass:NSNumber.class]) {
+            summary[telemetryKey] = value;
+        }
+    }
 
     if (success) {
         NSString *rat = [selected[@"rat"] isKindOfClass:NSString.class] ? selected[@"rat"] : @"";
@@ -471,8 +478,8 @@ static NSDictionary *CCNMServingSummaryFromReport(NSDictionary *report,
     NSDictionary *snapshot = nil;
     @synchronized(self) {
         snapshot = [self.lastSummary copy];
-        long long cachedAt = [cached[CCNMServingSummarySampledAtMillisecondsKey] longLongValue];
-        long long memoryAt = [snapshot[CCNMServingSummarySampledAtMillisecondsKey] longLongValue];
+        long long cachedAt = [cached[CCNMServingSummaryPublishedAtMillisecondsKey] longLongValue];
+        long long memoryAt = [snapshot[CCNMServingSummaryPublishedAtMillisecondsKey] longLongValue];
         if (cachedAt > memoryAt) {
             self.lastSummary = cached;
             snapshot = cached;
@@ -497,9 +504,16 @@ static NSDictionary *CCNMServingSummaryFromReport(NSDictionary *report,
 }
 
 - (void)publishSummary:(NSDictionary *)summary evidence:(NSDictionary *)evidence {
-    NSDictionary *published = summary ?: CCNMServingStatusEmptySummary();
+    NSDictionary *cached = CCNMServingReadCachedSummary();
+    NSMutableDictionary *published =
+        [(summary ?: CCNMServingStatusEmptySummary()) mutableCopy];
     @synchronized(self) {
-        self.lastSummary = published;
+        long long previousPublishedAt = MAX(
+            [cached[CCNMServingSummaryPublishedAtMillisecondsKey] longLongValue],
+            [self.lastSummary[CCNMServingSummaryPublishedAtMillisecondsKey] longLongValue]);
+        long long publishedAt = MAX(CCNMServingUnixMilliseconds(), previousPublishedAt + 1);
+        published[CCNMServingSummaryPublishedAtMillisecondsKey] = @(publishedAt);
+        self.lastSummary = [published copy];
         self.lastSupportEvidence = evidence ?: @{};
     }
     if (CCNMServingPersistCachedSummary(published)) {
@@ -530,19 +544,22 @@ static NSDictionary *CCNMServingSummaryFromReport(NSDictionary *report,
         });
         return;
     }
+    NSMutableDictionary *resolved = nil;
+    @synchronized(self) {
+        resolved = [self.lastSummary mutableCopy] ?: [CCNMServingStatusEmptySummary() mutableCopy];
+    }
+    resolved[CCNMServingSummarySampledAtMillisecondsKey] = @0;
+    resolved[CCNMServingSummaryUnsafeOutstandingKey] = @NO;
+    resolved[CCNMServingSummarySuccessKey] = @NO;
+    resolved[CCNMServingSummaryStateKey] = CCNMServingStateUnknown;
+    resolved[CCNMServingSummaryStaleKey] = @YES;
+    resolved[CCNMServingSummaryErrorKey] =
+        @"The late Cell Monitor callback resolved; refresh serving status again.";
+    [self publishSummary:resolved evidence:self.lastSupportEvidence];
     CCNMReleaseServingSamplerLock(self.retainedSamplerLockDescriptor);
     self.retainedSamplerLockDescriptor = -1;
     self.retainedSamplerClient = nil;
     self.retainedSamplerContext = nil;
-    @synchronized(self) {
-        NSMutableDictionary *resolved = [self.lastSummary mutableCopy] ?: [CCNMServingStatusEmptySummary() mutableCopy];
-        resolved[CCNMServingSummaryUnsafeOutstandingKey] = @NO;
-        resolved[CCNMServingSummarySuccessKey] = @NO;
-        resolved[CCNMServingSummaryStateKey] = CCNMServingStateUnknown;
-        resolved[CCNMServingSummaryStaleKey] = @YES;
-        resolved[CCNMServingSummaryErrorKey] = @"The late Cell Monitor callback resolved; refresh serving status again.";
-        self.lastSummary = resolved;
-    }
 }
 
 - (void)refreshWithCompletion:(void (^)(NSDictionary<NSString *, id> *))completion {
@@ -578,7 +595,7 @@ static NSDictionary *CCNMServingSummaryFromReport(NSDictionary *report,
                     client = CCNMServingCreateClient(&frameworkHandle, &failure);
                     context = client ? CCNMServingTargetContext(client, &subscriptionUUID, &failure) : nil;
                     report = context
-                        ? CCNMRunAdaptiveServingCellSampler(client, context, frameworkHandle)
+                        ? CCNMRunResponsiveServingCellSampler(client, context, frameworkHandle)
                         : @{ @"cellMonitorSamplingFailure": failure ?: @"The data-line context is unavailable." };
                 }
             } @catch (NSException *exception) {

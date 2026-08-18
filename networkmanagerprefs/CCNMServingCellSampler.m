@@ -16,9 +16,11 @@
 
 static const NSUInteger CCNMServingCellMaximumSampleCount = 10;
 static const NSUInteger CCNMServingCellRequiredConsecutiveNRSamples = 2;
+static const NSUInteger CCNMServingCellRequiredConsecutiveServingSamples = 2;
 static const int64_t CCNMServingCellAttemptTimeoutSeconds = 5;
 static const useconds_t CCNMServingCellRefreshSettleMicroseconds = 500000;
 static const useconds_t CCNMServingCellInterSampleDelayMicroseconds = 500000;
+static const useconds_t CCNMServingCellResponsiveInterSampleDelayMicroseconds = 0;
 
 static NSUInteger CCNMCellMonitorUnsafeOutstandingCount = 0;
 
@@ -136,6 +138,8 @@ static NSString *CCNMAdaptiveSamplerStopReasonName(CCNMAdaptiveSamplerStopReason
     switch (reason) {
         case CCNMAdaptiveSamplerStopExplicitNRConfirmed:
             return @"explicitNRConfirmed";
+        case CCNMAdaptiveSamplerStopStableServingConfirmed:
+            return @"stableServingConfirmed";
         case CCNMAdaptiveSamplerStopWindowExhausted:
             return @"windowExhausted";
         case CCNMAdaptiveSamplerStopTimedOut:
@@ -852,11 +856,20 @@ NSDictionary *CCNMServingCellSamplerEmptyReport(void) {
         @"cellMonitorSamplingFailure": @"Sampling did not start.",
         @"cellMonitorSamplingAbortedAfterTimeout": @NO,
         @"cellMonitorSamplingAbortedAfterInvocationException": @NO,
+        @"cellMonitorSamplingElapsedMilliseconds": @0,
+        @"cellMonitorScheduledDelayMilliseconds": @0,
+        @"cellMonitorRefreshCallbackLatencyMilliseconds": @0,
+        @"cellMonitorCopyCallbackLatencyMilliseconds": @0,
         @"observedServingCells": @[],
         @"nrServingCellObserved": @NO,
         @"nrObservationStatus": @"indeterminatePartial",
         @"explicitNRSampleCount": @0,
-        @"explicitNRConfirmationCount": @0
+        @"explicitNRConfirmationCount": @0,
+        @"servingObservationConfirmed": @NO,
+        @"servingConfirmationScope": @"none",
+        @"stableServingConfirmationCount": @0,
+        @"confirmedServingCell": @{},
+        @"confirmedServingSampledAt": @0
     };
 }
 
@@ -892,6 +905,8 @@ static NSString *CCNMOmissionReasonForStop(CCNMAdaptiveSamplerStopReason stopRea
     switch (stopReason) {
         case CCNMAdaptiveSamplerStopExplicitNRConfirmed:
             return @"explicitNRConfirmed";
+        case CCNMAdaptiveSamplerStopStableServingConfirmed:
+            return @"stableServingConfirmed";
         case CCNMAdaptiveSamplerStopTimedOut:
             return @"abortedAfterTimeout";
         case CCNMAdaptiveSamplerStopInvocationException:
@@ -906,6 +921,95 @@ static NSString *CCNMOmissionReasonForStop(CCNMAdaptiveSamplerStopReason stopRea
     }
 }
 
+static NSString *CCNMServingBandIdentity(id bandValue) {
+    long long number = 0;
+    if ([bandValue isKindOfClass:[NSNumber class]] &&
+        CFGetTypeID((__bridge CFTypeRef)bandValue) != CFBooleanGetTypeID()) {
+        const char *type = [(NSNumber *)bandValue objCType];
+        if (!type || !strchr("cCsSiIlLqQ", type[0])) return nil;
+        number = [(NSNumber *)bandValue longLongValue];
+    } else if ([bandValue isKindOfClass:[NSString class]]) {
+        NSString *normalized = [(NSString *)bandValue lowercaseString];
+        normalized = [normalized stringByTrimmingCharactersInSet:
+            NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        for (NSString *prefix in @[ @"band", @"lte", @"nr", @"n", @"b" ]) {
+            if ([normalized hasPrefix:prefix]) {
+                normalized = [normalized substringFromIndex:prefix.length];
+                normalized = [normalized stringByTrimmingCharactersInSet:
+                    NSCharacterSet.whitespaceAndNewlineCharacterSet];
+                break;
+            }
+        }
+        NSScanner *scanner = [NSScanner scannerWithString:normalized];
+        if (![scanner scanLongLong:&number] || !scanner.isAtEnd) return nil;
+    } else {
+        return nil;
+    }
+    return number > 0 && number <= 1024 ? [NSString stringWithFormat:@"%lld", number] : nil;
+}
+
+static NSString *CCNMServingCellIdentity(NSDictionary *servingCell) {
+    if (![servingCell isKindOfClass:[NSDictionary class]]) return nil;
+    NSString *rat = [servingCell[@"rat"] isKindOfClass:[NSString class]]
+        ? [servingCell[@"rat"] stringByTrimmingCharactersInSet:
+            NSCharacterSet.whitespaceAndNewlineCharacterSet]
+        : nil;
+    NSString *band = CCNMServingBandIdentity(servingCell[@"band"]);
+    if (rat.length == 0 || band.length == 0) return nil;
+    return [NSString stringWithFormat:@"%@|%@", rat, band];
+}
+
+static NSInteger CCNMServingCellRATTier(NSDictionary *servingCell) {
+    NSString *rat = [servingCell[@"rat"] isKindOfClass:[NSString class]]
+        ? [servingCell[@"rat"] stringByTrimmingCharactersInSet:
+            NSCharacterSet.whitespaceAndNewlineCharacterSet]
+        : nil;
+    if (rat && CCNMCellMonitorRATIsNR(rat.UTF8String)) return 3;
+    if ([rat isEqual:@"kCTCellMonitorRadioAccessTechnologyLTE"]) return 2;
+    return rat.length > 0 ? 1 : 0;
+}
+
+static NSDictionary *CCNMPreferredServingCell(
+    NSArray *servingCells,
+    NSString **selectedIdentity,
+    BOOL *ambiguous
+) {
+    if (selectedIdentity) *selectedIdentity = nil;
+    if (ambiguous) *ambiguous = NO;
+
+    NSInteger winningTier = 0;
+    for (id value in servingCells) {
+        if (![value isKindOfClass:[NSDictionary class]]) continue;
+        winningTier = MAX(winningTier, CCNMServingCellRATTier(value));
+    }
+    if (winningTier == 0) return nil;
+
+    NSDictionary *selected = nil;
+    NSString *identity = nil;
+    BOOL invalidWinningTier = NO;
+    for (id value in servingCells) {
+        if (![value isKindOfClass:[NSDictionary class]] ||
+            CCNMServingCellRATTier(value) != winningTier) continue;
+        NSString *candidateIdentity = CCNMServingCellIdentity(value);
+        if (candidateIdentity.length == 0) {
+            invalidWinningTier = YES;
+            continue;
+        }
+        if (identity && ![candidateIdentity isEqual:identity]) {
+            invalidWinningTier = YES;
+            continue;
+        }
+        identity = candidateIdentity;
+        selected = value;
+    }
+    if (invalidWinningTier || !selected || identity.length == 0) {
+        if (ambiguous) *ambiguous = YES;
+        return nil;
+    }
+    if (selectedIdentity) *selectedIdentity = identity;
+    return selected;
+}
+
 static NSDictionary *CCNMRunServingCellSampler(
     id client,
     id context,
@@ -913,12 +1017,24 @@ static NSDictionary *CCNMRunServingCellSampler(
     CCNMAdaptiveSamplerPolicy policy
 ) {
     id<CCNMServingCellClient> servingCellClient = (id<CCNMServingCellClient>)client;
+    BOOL responsiveServing = policy == CCNMAdaptiveSamplerPolicyStableServing;
+    useconds_t interSampleDelay = responsiveServing
+        ? CCNMServingCellResponsiveInterSampleDelayMicroseconds
+        : CCNMServingCellInterSampleDelayMicroseconds;
     NSMutableDictionary *report = [CCNMServingCellSamplerEmptyReport() mutableCopy];
-    report[@"cellMonitorSamplingMode"] = policy == CCNMAdaptiveSamplerPolicyFullWindow
-        ? @"fullWindowRefreshBeforeEachCopy"
-        : @"adaptiveRefreshBeforeEachCopy";
+    report[@"cellMonitorSamplingMode"] = responsiveServing
+        ? @"responsiveStableServing"
+        : (policy == CCNMAdaptiveSamplerPolicyFullWindow
+            ? @"fullWindowRefreshBeforeEachCopy"
+            : @"adaptiveRefreshBeforeEachCopy");
     NSMutableDictionary *samplingPlan = [report[@"cellMonitorPlan"] mutableCopy];
+    samplingPlan[@"requiredConsecutiveServingSamples"] =
+        @(CCNMServingCellRequiredConsecutiveServingSamples);
+    samplingPlan[@"interSampleDelaySeconds"] = @((double)interSampleDelay / 1000000.0);
     samplingPlan[@"stopAfterExplicitNR"] = @(policy == CCNMAdaptiveSamplerPolicyEarlyNR);
+    samplingPlan[@"stopAfterStableServing"] = @(responsiveServing);
+    samplingPlan[@"servingConfirmationScope"] = responsiveServing ? @"ratBand" : @"none";
+    samplingPlan[@"negativeObservationRequiresFullCleanWindow"] = @YES;
     report[@"cellMonitorPlan"] = samplingPlan;
     NSMutableArray<NSDictionary *> *failures = [NSMutableArray array];
     NSMutableIndexSet *attemptedRefreshIndexes = [NSMutableIndexSet indexSet];
@@ -986,7 +1102,9 @@ static NSDictionary *CCNMRunServingCellSampler(
     NSMutableArray<NSDictionary *> *observedServingCells = [NSMutableArray array];
     CCNMAdaptiveSamplerState samplerState = CCNMAdaptiveSamplerStartWithPolicy(
         CCNMServingCellMaximumSampleCount,
-        CCNMServingCellRequiredConsecutiveNRSamples,
+        responsiveServing
+            ? CCNMServingCellRequiredConsecutiveServingSamples
+            : CCNMServingCellRequiredConsecutiveNRSamples,
         policy);
     NSTimeInterval samplingStartedMonotonic = CCNMMonotonicNow();
     report[@"cellMonitorSamplingStartedAt"] = @([[NSDate date] timeIntervalSince1970]);
@@ -999,11 +1117,26 @@ static NSDictionary *CCNMRunServingCellSampler(
     NSUInteger completedCopyCount = 0;
     NSUInteger successfulCopyCount = 0;
     NSUInteger parsedSampleCount = 0;
+    NSUInteger observedExplicitNRSampleCount = 0;
+    NSUInteger consecutiveExplicitNRSampleCount = 0;
+    unsigned long long scheduledDelayMicroseconds = 0;
+    long long refreshCallbackLatencyMilliseconds = 0;
+    long long copyCallbackLatencyMilliseconds = 0;
     BOOL nrServingCellObserved = NO;
+    BOOL previousResponsiveAttemptUsable = YES;
+    NSString *previousServingIdentity = nil;
+    NSDictionary *confirmedServingCell = nil;
+    NSNumber *confirmedServingSampledAt = nil;
 
     for (NSUInteger sampleIndex = 0; sampleIndex < CCNMServingCellMaximumSampleCount; sampleIndex++) {
         if (!CCNMAdaptiveSamplerShouldContinue(&samplerState)) break;
-        if (sampleIndex > 0) usleep(CCNMServingCellInterSampleDelayMicroseconds);
+        useconds_t scheduledDelay = responsiveServing && !previousResponsiveAttemptUsable
+            ? CCNMServingCellInterSampleDelayMicroseconds
+            : interSampleDelay;
+        if (sampleIndex > 0 && scheduledDelay > 0) {
+            scheduledDelayMicroseconds += scheduledDelay;
+            usleep(scheduledDelay);
+        }
 
         NSMutableDictionary *sample = [@{
             @"sampleIndex": @(sampleIndex),
@@ -1024,6 +1157,10 @@ static NSDictionary *CCNMRunServingCellSampler(
         BOOL refreshSucceeded = [refreshAttempt[@"cellMonitorRefreshSucceeded"] boolValue];
         BOOL refreshTimedOut = [refreshAttempt[@"cellMonitorRefreshTimedOut"] boolValue];
         BOOL refreshInvocationException = refreshAttempt[@"cellMonitorRefreshInvocationException"] != nil;
+        if ([refreshAttempt[@"refreshCallbackLatencyMilliseconds"] isKindOfClass:[NSNumber class]]) {
+            refreshCallbackLatencyMilliseconds +=
+                [refreshAttempt[@"refreshCallbackLatencyMilliseconds"] longLongValue];
+        }
         if (refreshCompleted) completedRefreshCount++;
         if (refreshSucceeded) successfulRefreshCount++;
 
@@ -1047,10 +1184,18 @@ static NSDictionary *CCNMRunServingCellSampler(
                 CCNMAdaptiveSamplerAbort(&samplerState, refreshTimedOut, refreshInvocationException);
                 break;
             }
-            CCNMAdaptiveSamplerObserve(&samplerState, 0, 0);
+            consecutiveExplicitNRSampleCount = 0;
+            if (responsiveServing) {
+                previousResponsiveAttemptUsable = NO;
+                previousServingIdentity = nil;
+                CCNMAdaptiveSamplerObserveServing(&samplerState, 0, 0, 0);
+            } else {
+                CCNMAdaptiveSamplerObserve(&samplerState, 0, 0);
+            }
             continue;
         }
 
+        scheduledDelayMicroseconds += CCNMServingCellRefreshSettleMicroseconds;
         usleep(CCNMServingCellRefreshSettleMicroseconds);
         attemptedCopyCount++;
         [attemptedCopyIndexes addIndex:sampleIndex];
@@ -1063,6 +1208,10 @@ static NSDictionary *CCNMRunServingCellSampler(
         BOOL parsed = [copyAttempt[@"cellMonitorSucceeded"] boolValue];
         BOOL copyTimedOut = [copyAttempt[@"cellMonitorCopyTimedOut"] boolValue];
         BOOL copyInvocationException = copyAttempt[@"cellMonitorCopyInvocationException"] != nil;
+        if ([copyAttempt[@"copyCallbackLatencyMilliseconds"] isKindOfClass:[NSNumber class]]) {
+            copyCallbackLatencyMilliseconds +=
+                [copyAttempt[@"copyCallbackLatencyMilliseconds"] longLongValue];
+        }
         if (copyCompleted) completedCopyCount++;
         if (copySucceeded) successfulCopyCount++;
         if (parsed) parsedSampleCount++;
@@ -1084,7 +1233,35 @@ static NSDictionary *CCNMRunServingCellSampler(
             }
         }
         sample[@"explicitNRServingCellObserved"] = @(sampleObservedNR);
-        if (sampleObservedNR) nrServingCellObserved = YES;
+        if (parsed && sampleObservedNR) {
+            nrServingCellObserved = YES;
+            observedExplicitNRSampleCount++;
+            consecutiveExplicitNRSampleCount++;
+        } else {
+            consecutiveExplicitNRSampleCount = 0;
+        }
+
+        NSString *servingIdentity = nil;
+        BOOL servingIdentityAmbiguous = NO;
+        NSDictionary *responsiveCandidate = responsiveServing && parsed
+            ? CCNMPreferredServingCell(
+                servingCells, &servingIdentity, &servingIdentityAmbiguous)
+            : nil;
+        BOOL sameServingIdentity = servingIdentity.length > 0 &&
+            previousServingIdentity.length > 0 &&
+            [servingIdentity isEqual:previousServingIdentity];
+        if (responsiveServing) {
+            previousResponsiveAttemptUsable = parsed && servingIdentity.length > 0;
+            sample[@"servingIdentityAvailable"] = @(servingIdentity.length > 0);
+            sample[@"servingIdentityAmbiguous"] = @(servingIdentityAmbiguous);
+            sample[@"sameServingIdentityAsPrevious"] = @(sameServingIdentity);
+            if (servingIdentity.length > 0) {
+                sample[@"servingIdentity"] = servingIdentity;
+                previousServingIdentity = servingIdentity;
+            } else {
+                previousServingIdentity = nil;
+            }
+        }
 
         if (!parsed) {
             NSString *reason = copyAttempt[@"cellMonitorParseError"] ?: copyAttempt[@"cellMonitorError"] ?:
@@ -1106,7 +1283,20 @@ static NSDictionary *CCNMRunServingCellSampler(
             CCNMAdaptiveSamplerAbort(&samplerState, copyTimedOut, copyInvocationException);
             break;
         }
-        CCNMAdaptiveSamplerObserve(&samplerState, parsed, sampleObservedNR);
+        if (responsiveServing) {
+            CCNMAdaptiveSamplerObserveServing(
+                &samplerState,
+                parsed,
+                servingIdentity.length > 0,
+                sameServingIdentity);
+            if (samplerState.stopReason == CCNMAdaptiveSamplerStopStableServingConfirmed) {
+                confirmedServingCell = [responsiveCandidate copy];
+                confirmedServingSampledAt = [copyAttempt[@"sampledAt"] isKindOfClass:[NSNumber class]]
+                    ? copyAttempt[@"sampledAt"] : nil;
+            }
+        } else {
+            CCNMAdaptiveSamplerObserve(&samplerState, parsed, sampleObservedNR);
+        }
     }
 
     NSString *remainingReason = CCNMOmissionReasonForStop(samplerState.stopReason);
@@ -1123,22 +1313,47 @@ static NSDictionary *CCNMRunServingCellSampler(
     }
 
     BOOL explicitNRConfirmed = samplerState.stopReason == CCNMAdaptiveSamplerStopExplicitNRConfirmed;
+    BOOL stableServingConfirmed =
+        samplerState.stopReason == CCNMAdaptiveSamplerStopStableServingConfirmed;
     BOOL windowExhausted = samplerState.stopReason == CCNMAdaptiveSamplerStopWindowExhausted;
-    CCNMCellMonitorSamplingStatus samplingStatus = CCNMClassifyAdaptiveCellMonitorSamplingStatus(
-        CCNMServingCellMaximumSampleCount,
-        CCNMServingCellRequiredConsecutiveNRSamples,
-        attemptedRefreshCount,
-        completedRefreshCount,
-        successfulRefreshCount,
-        attemptedCopyCount,
-        completedCopyCount,
-        successfulCopyCount,
-        parsedSampleCount,
-        explicitNRConfirmed,
-        windowExhausted);
-    CCNMNRObservationStatus nrObservationStatus = CCNMClassifyNRObservationStatus(
-        nrServingCellObserved,
-        samplingStatus);
+    BOOL fullCleanWindow = windowExhausted &&
+        attemptedRefreshCount == CCNMServingCellMaximumSampleCount &&
+        completedRefreshCount == CCNMServingCellMaximumSampleCount &&
+        successfulRefreshCount == CCNMServingCellMaximumSampleCount &&
+        attemptedCopyCount == CCNMServingCellMaximumSampleCount &&
+        completedCopyCount == CCNMServingCellMaximumSampleCount &&
+        successfulCopyCount == CCNMServingCellMaximumSampleCount &&
+        parsedSampleCount == CCNMServingCellMaximumSampleCount;
+    CCNMCellMonitorSamplingStatus samplingStatus = responsiveServing
+        ? CCNMClassifyStableServingSamplingStatus(
+            CCNMServingCellRequiredConsecutiveServingSamples,
+            attemptedRefreshCount,
+            completedRefreshCount,
+            successfulRefreshCount,
+            attemptedCopyCount,
+            completedCopyCount,
+            successfulCopyCount,
+            parsedSampleCount,
+            stableServingConfirmed)
+        : CCNMClassifyAdaptiveCellMonitorSamplingStatus(
+            CCNMServingCellMaximumSampleCount,
+            CCNMServingCellRequiredConsecutiveNRSamples,
+            attemptedRefreshCount,
+            completedRefreshCount,
+            successfulRefreshCount,
+            attemptedCopyCount,
+            completedCopyCount,
+            successfulCopyCount,
+            parsedSampleCount,
+            explicitNRConfirmed,
+            windowExhausted);
+    CCNMNRObservationStatus nrObservationStatus = responsiveServing
+        ? (nrServingCellObserved
+            ? CCNMNRObservationObserved
+            : (fullCleanWindow
+                ? CCNMNRObservationNotObservedComplete
+                : CCNMNRObservationIndeterminatePartial))
+        : CCNMClassifyNRObservationStatus(nrServingCellObserved, samplingStatus);
 
     report[@"cellMonitorRefreshAttempts"] = refreshAttempts;
     report[@"cellMonitorAttemptedRefreshCount"] = @(attemptedRefreshCount);
@@ -1170,11 +1385,25 @@ static NSDictionary *CCNMRunServingCellSampler(
     report[@"cellMonitorSamplingFinishedMonotonic"] = @(CCNMMonotonicNow());
     report[@"cellMonitorSamplingElapsedMilliseconds"] =
         CCNMElapsedMillisecondsSince(samplingStartedMonotonic);
+    report[@"cellMonitorScheduledDelayMilliseconds"] =
+        @((long long)(scheduledDelayMicroseconds / 1000));
+    report[@"cellMonitorRefreshCallbackLatencyMilliseconds"] =
+        @(refreshCallbackLatencyMilliseconds);
+    report[@"cellMonitorCopyCallbackLatencyMilliseconds"] =
+        @(copyCallbackLatencyMilliseconds);
     report[@"observedServingCells"] = observedServingCells;
     report[@"nrServingCellObserved"] = @(nrServingCellObserved);
     report[@"nrObservationStatus"] = CCNMNRObservationStatusName(nrObservationStatus);
-    report[@"explicitNRSampleCount"] = @(samplerState.explicitNRSampleCount);
-    report[@"explicitNRConfirmationCount"] = @(samplerState.consecutiveNRSampleCount);
+    report[@"explicitNRSampleCount"] = @(responsiveServing
+        ? observedExplicitNRSampleCount : samplerState.explicitNRSampleCount);
+    report[@"explicitNRConfirmationCount"] = @(responsiveServing
+        ? consecutiveExplicitNRSampleCount : samplerState.consecutiveNRSampleCount);
+    report[@"servingObservationConfirmed"] = @(stableServingConfirmed);
+    report[@"servingConfirmationScope"] = stableServingConfirmed ? @"ratBand" : @"none";
+    report[@"stableServingConfirmationCount"] =
+        @(samplerState.consecutiveStableServingSampleCount);
+    report[@"confirmedServingCell"] = confirmedServingCell ?: @{};
+    report[@"confirmedServingSampledAt"] = confirmedServingSampledAt ?: @0;
     report[@"cellMonitorSucceeded"] = @(samplingStatus == CCNMCellMonitorSamplingComplete);
     return report;
 }
@@ -1189,6 +1418,18 @@ NSDictionary *CCNMRunAdaptiveServingCellSampler(
         context,
         coreTelephonyHandle,
         CCNMAdaptiveSamplerPolicyEarlyNR);
+}
+
+NSDictionary *CCNMRunResponsiveServingCellSampler(
+    id client,
+    id context,
+    void *coreTelephonyHandle
+) {
+    return CCNMRunServingCellSampler(
+        client,
+        context,
+        coreTelephonyHandle,
+        CCNMAdaptiveSamplerPolicyStableServing);
 }
 
 NSDictionary *CCNMRunFullWindowServingCellSampler(

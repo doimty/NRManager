@@ -9,6 +9,9 @@ on:
       - networkmanagerprefs/CCNMServingStatusProvider.m
       - networkmanagerprefs/CCNMServingCellSampler.h
       - networkmanagerprefs/CCNMServingCellSampler.m
+      - networkmanagerprefs/CCNMServingCellProbeSupport.h
+      - tests/test_responsive_serving_sampler.py
+      - tests/test_serving_status_provider.py
       - .github/workflows/livecc-prototype.yml
 
 permissions:
@@ -22,7 +25,7 @@ env:
 
 jobs:
   host-tests:
-    name: LiveCC host gates (12 prototype / 97 root)
+    name: LiveCC host gates (12 prototype / 100 root)
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -38,7 +41,7 @@ jobs:
           python3 -m unittest discover -s livecc/tests -v 2>&1 | tee "$livecc_log"
           grep -Eq '^Ran 12 tests in ' "$livecc_log"
           python3 -m unittest discover -s tests -v 2>&1 | tee "$root_log"
-          grep -Eq '^Ran 97 tests in ' "$root_log"
+          grep -Eq '^Ran 100 tests in ' "$root_log"
 
       - name: Compile Python gates and verify source policy
         run: |
@@ -57,6 +60,7 @@ jobs:
             networkmanagerprefs/CCNMServingStatusProvider.m
             networkmanagerprefs/CCNMServingCellSampler.h
             networkmanagerprefs/CCNMServingCellSampler.m
+            networkmanagerprefs/CCNMServingCellProbeSupport.h
           )
           forbidden='libroothide|jbroot[[:space:]]*\(|roothide\.h|CCNMEnableN78Preference|CCNMDisableN78Preference|CCNMRecoverN78Preference|enableWithCompletion:|disableWithCompletion:|recoverWithCompletion:|setActiveBandInfo|setRatSelection|_CTServerConnectionSetRATSelection|reconfigureView|refreshState|class_getInstanceVariable|object_getIvar|valueForKey:|setValue:forKey:'
           if grep -En "$forbidden" "${source_files[@]}"; then

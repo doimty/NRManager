@@ -8,6 +8,7 @@ NS_ASSUME_NONNULL_BEGIN
 FOUNDATION_EXPORT NSString *const CCNMServingSummaryStateKey;
 FOUNDATION_EXPORT NSString *const CCNMServingSummaryDataLineKey;
 FOUNDATION_EXPORT NSString *const CCNMServingSummarySampledAtMillisecondsKey;
+FOUNDATION_EXPORT NSString *const CCNMServingSummaryPublishedAtMillisecondsKey;
 FOUNDATION_EXPORT NSString *const CCNMServingSummaryStaleKey;
 FOUNDATION_EXPORT NSString *const CCNMServingSummaryRATKey;
 FOUNDATION_EXPORT NSString *const CCNMServingSummaryBandKey;

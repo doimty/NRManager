@@ -52,14 +52,18 @@ int main(void) {
             run = subprocess.run([str(executable)], capture_output=True, text=True, check=False)
             self.assertEqual(run.returncode, 0, run.stderr)
 
-    def test_provider_uses_reviewed_adaptive_sampler_and_build_includes_it(self):
+    def test_provider_uses_reviewed_responsive_sampler_and_build_includes_it(self):
         source = SOURCE.read_text()
+        sampler = SAMPLER.read_text()
         makefile = MAKEFILE.read_text()
         self.assertTrue(HEADER.exists())
         self.assertTrue(SAMPLER.exists())
         self.assertIn('#import "CCNMServingCellSampler.h"', source)
-        self.assertIn("CCNMRunAdaptiveServingCellSampler", source)
-        self.assertNotIn("CCNMRunFullWindowServingCellSampler", source)
+        self.assertIn("CCNMRunResponsiveServingCellSampler", source)
+        self.assertNotIn("CCNMRunAdaptiveServingCellSampler(client", source)
+        self.assertNotIn("CCNMRunFullWindowServingCellSampler(client", source)
+        self.assertIn("CCNMRunAdaptiveServingCellSampler", sampler)
+        self.assertIn("CCNMRunFullWindowServingCellSampler", sampler)
         for filename in ("CCNMServingStatusProvider.m", "CCNMServingCellSampler.m"):
             self.assertIn(filename, makefile)
 
@@ -96,6 +100,7 @@ int main(void) {
             "CCNMServingStateOther",
             "CCNMServingStateUnknown",
             "sampledAtMilliseconds",
+            "publishedAtMilliseconds",
             "stale",
             "frequencyMHz",
             "dataLine",
@@ -109,16 +114,33 @@ int main(void) {
         self.assertIn("CCNMServingStatusDidChangeDarwinNotification", header + source)
         self.assertIn("CFNotificationCenterPostNotification", source)
         self.assertIn("CCNMServingReadCachedSummary", source)
-        self.assertIn("nrObservationStatus", source)
-        self.assertIn("cellMonitorSamplingStatus", source)
+        self.assertIn("CCNMServingSummaryPublishedAtMillisecondsKey", header + source)
+        self.assertIn("previousPublishedAt + 1", source)
+        self.assertIn("CCNMServingSummaryPublishedAtMillisecondsKey] longLongValue", source)
+        release_start = source.index("- (void)releaseRetainedSamplerLockWhenSafe")
+        release_end = source.index("- (void)refreshWithCompletion:", release_start)
+        release = source[release_start:release_end]
+        self.assertLess(release.index("[self publishSummary:resolved"),
+                        release.index("CCNMReleaseServingSamplerLock"))
+        self.assertIn("CCNMServingSummarySampledAtMillisecondsKey] = @0", release)
+        self.assertIn("nrObservationStatus", SAMPLER.read_text())
+        self.assertIn("cellMonitorSamplingStatus", source + SAMPLER.read_text())
 
-    def test_nr_is_preferred_over_lte_only_from_explicit_cell_monitor_evidence(self):
+    def test_provider_accepts_only_a_valid_current_confirmation(self):
         source = SOURCE.read_text()
-        self.assertIn("latestNR", source)
-        self.assertIn("latestLTE", source)
+        sampler = SAMPLER.read_text()
         self.assertIn("CCNMCellMonitorRATKind", source)
-        self.assertIn('[@"nrObservationStatus"] isEqual:@"observed"', source)
-        self.assertIn('[@"cellMonitorSamplingStatus"] isEqual:@"complete"', source)
+        self.assertIn('report[@"cellMonitorSamplingMode"]', source)
+        self.assertIn('report[@"cellMonitorSamplingStatus"]', source)
+        self.assertIn('report[@"servingObservationConfirmed"]', source)
+        self.assertIn('report[@"confirmedServingCell"]', source)
+        self.assertIn("confirmedServingCellValid", source)
+        self.assertIn('report[@"confirmedServingSampledAt"]', source)
+        self.assertNotIn("latestNR", source)
+        self.assertNotIn("latestLTE", source)
+        self.assertNotIn("latestOther", source)
+        self.assertIn("CCNMServingCellRATTier", sampler)
+        self.assertIn("invalidWinningTier", sampler)
 
 
 if __name__ == "__main__":

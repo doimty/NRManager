@@ -8,7 +8,7 @@
 #import "CCNMServingStatusProvider.h"
 
 static const NSTimeInterval CCNMLiveRefreshInterval = 15.0;
-static const NSTimeInterval CCNMLiveRATDebounceInterval = 2.0;
+static const NSTimeInterval CCNMLiveRATDebounceSeconds = 0.25;
 
 static NSString *CCNMLiveTextForSummary(NSDictionary<NSString *, id> *summary) {
     NSString *state = [summary[CCNMServingSummaryStateKey] isKindOfClass:NSString.class]
@@ -100,10 +100,12 @@ static void CCNMLiveServingStatusDidChangeCallback(
 @property (nonatomic, strong) NSTimer *ratDebounceTimer;
 @property (nonatomic, assign) BOOL refreshInProgress;
 @property (nonatomic, assign) BOOL refreshPending;
+@property (nonatomic, assign) BOOL awaitingCurrentRefresh;
 @property (nonatomic, assign) BOOL hasFreshServingResult;
 @property (nonatomic, assign) BOOL observersRegistered;
 @property (nonatomic, assign) BOOL visible;
-@property (nonatomic, assign) long long appliedSampledAtMilliseconds;
+@property (nonatomic, assign) NSUInteger refreshGeneration;
+@property (nonatomic, assign) long long appliedPublishedAtMilliseconds;
 
 - (void)applyNewerCachedSummary;
 - (void)applyCurrentSummary;
@@ -115,7 +117,7 @@ static void CCNMLiveServingStatusDidChangeCallback(
 - (instancetype)init {
     self = [super initWithNibName:nil bundle:nil];
     if (self) {
-        _appliedSampledAtMilliseconds = -1;
+        _appliedPublishedAtMilliseconds = -1;
     }
     return self;
 }
@@ -223,11 +225,13 @@ static void CCNMLiveServingStatusDidChangeCallback(
         if (!self || !self.visible) {
             return;
         }
+        self.refreshGeneration++;
+        self.awaitingCurrentRefresh = YES;
         self.hasFreshServingResult = NO;
         self.glyphImage = CCNMLiveSearchingGlyphImage();
         [self.ratDebounceTimer invalidate];
         __weak typeof(self) weakDebounceSelf = self;
-        self.ratDebounceTimer = [NSTimer scheduledTimerWithTimeInterval:CCNMLiveRATDebounceInterval
+        self.ratDebounceTimer = [NSTimer scheduledTimerWithTimeInterval:CCNMLiveRATDebounceSeconds
             repeats:NO
             block:^(NSTimer *timer) {
                 [weakDebounceSelf ratDebounceTimerFired:timer];
@@ -242,6 +246,7 @@ static void CCNMLiveServingStatusDidChangeCallback(
         self.refreshPending = YES;
         return;
     }
+    self.refreshPending = NO;
     [self requestBoundedServingRefresh];
 }
 
@@ -249,10 +254,15 @@ static void CCNMLiveServingStatusDidChangeCallback(
     if (!self.visible || self.refreshInProgress) {
         return;
     }
+    if (self.ratDebounceTimer) {
+        self.refreshPending = YES;
+        return;
+    }
     if (!self.hasFreshServingResult) {
         self.glyphImage = CCNMLiveSearchingGlyphImage();
     }
     self.refreshInProgress = YES;
+    NSUInteger generation = self.refreshGeneration;
     __weak typeof(self) weakSelf = self;
     [[CCNMServingStatusProvider sharedProvider]
         refreshWithCompletion:^(NSDictionary<NSString *, id> *summary) {
@@ -261,24 +271,38 @@ static void CCNMLiveServingStatusDidChangeCallback(
                 return;
             }
             self.refreshInProgress = NO;
-            [self applySummary:summary requireNewerTimestamp:NO];
-            BOOL shouldRefreshAgain = self.refreshPending && self.visible;
+            BOOL superseded = generation != self.refreshGeneration;
+            BOOL shouldRefreshAgain = (self.refreshPending || superseded) && self.visible;
             self.refreshPending = NO;
+            if (!superseded) {
+                self.awaitingCurrentRefresh = NO;
+                [self applySummary:summary requireNewerTimestamp:NO];
+            }
             if (shouldRefreshAgain) {
                 self.hasFreshServingResult = NO;
                 self.glyphImage = CCNMLiveSearchingGlyphImage();
+                if (self.ratDebounceTimer) {
+                    self.refreshPending = YES;
+                    return;
+                }
                 [self requestBoundedServingRefresh];
             }
         }];
 }
 
 - (void)applyNewerCachedSummary {
+    if (self.awaitingCurrentRefresh) {
+        return;
+    }
     NSDictionary<NSString *, id> *summary =
         [[CCNMServingStatusProvider sharedProvider] currentSummary];
     [self applySummary:summary requireNewerTimestamp:YES];
 }
 
 - (void)applyCurrentSummary {
+    if (self.awaitingCurrentRefresh) {
+        return;
+    }
     NSDictionary<NSString *, id> *summary =
         [[CCNMServingStatusProvider sharedProvider] currentSummary];
     [self applySummary:summary requireNewerTimestamp:NO];
@@ -286,11 +310,12 @@ static void CCNMLiveServingStatusDidChangeCallback(
 
 - (void)applySummary:(NSDictionary<NSString *, id> *)summary
     requireNewerTimestamp:(BOOL)requireNewerTimestamp {
-    long long sampledAt = [summary[CCNMServingSummarySampledAtMillisecondsKey] longLongValue];
-    if (requireNewerTimestamp && sampledAt <= self.appliedSampledAtMilliseconds) {
+    long long publishedAt = [summary[CCNMServingSummaryPublishedAtMillisecondsKey] longLongValue];
+    if (requireNewerTimestamp && publishedAt <= self.appliedPublishedAtMilliseconds) {
         return;
     }
-    self.appliedSampledAtMilliseconds = MAX(self.appliedSampledAtMilliseconds, sampledAt);
+    self.appliedPublishedAtMilliseconds =
+        MAX(self.appliedPublishedAtMilliseconds, publishedAt);
     NSString *text = CCNMLiveTextForSummary(summary);
     self.hasFreshServingResult = ![text isEqualToString:@"?"];
     self.glyphImage = CCNMLiveGlyphImage(text);
@@ -299,8 +324,12 @@ static void CCNMLiveServingStatusDidChangeCallback(
 - (void)buttonTapped:(id)button forEvent:(UIEvent *)event {
     (void)button;
     (void)event;
+    self.refreshGeneration++;
+    self.awaitingCurrentRefresh = YES;
     self.hasFreshServingResult = NO;
     self.glyphImage = CCNMLiveSearchingGlyphImage();
+    [self.ratDebounceTimer invalidate];
+    self.ratDebounceTimer = nil;
     if (self.refreshInProgress) {
         self.refreshPending = YES;
         return;
