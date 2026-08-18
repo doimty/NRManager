@@ -22,6 +22,10 @@ NetworkManagerLive_CFLAGS = -fobjc-arc -Iinclude -I../networkmanagerprefs
 NetworkManagerLive_CFLAGS += -DCCNMServingStatusProvider=CCNMLiveServingStatusProvider
 NetworkManagerLive_CFLAGS += -Wno-error=objc-method-access
 NetworkManagerLive_FRAMEWORKS = CoreFoundation CoreTelephony Foundation QuartzCore UIKit
+ifneq ($(THEOS_PACKAGE_SCHEME),roothide)
 NetworkManagerLive_PRIVATE_FRAMEWORKS = ControlCenterUIKit
+else
+NetworkManagerLive_LDFLAGS += -undefined dynamic_lookup
+endif
 
 include $(THEOS_MAKE_PATH)/bundle.mk

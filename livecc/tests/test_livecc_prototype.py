@@ -58,6 +58,10 @@ class LiveCCPackagingTests(unittest.TestCase):
         self.assertIn(
             "-DCCNMServingStatusProvider=CCNMLiveServingStatusProvider", self.makefile
         )
+        self.assertIn("ifneq ($(THEOS_PACKAGE_SCHEME),roothide)", self.makefile)
+        self.assertIn("NetworkManagerLive_PRIVATE_FRAMEWORKS = ControlCenterUIKit", self.makefile)
+        self.assertIn("NetworkManagerLive_LDFLAGS += -undefined dynamic_lookup", self.makefile)
+        self.assertNotIn("NetworkManagerLive_LIBRARIES = roothide", self.makefile)
 
     def test_installed_bundle_files_do_not_overlap_the_main_package(self):
         install_root = "/Library/ControlCenter/Bundles"
