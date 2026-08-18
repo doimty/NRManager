@@ -336,10 +336,18 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
 }
 
 - (void)showPolicyFailureForSummary:(NSDictionary<NSString *, id> *)summary {
-    NSString *key = [self policyFailureLocalizationKey:summary[CCNMN78PolicySummaryErrorCodeKey]];
+    NSString *errorCode = [summary[CCNMN78PolicySummaryErrorCodeKey] isKindOfClass:NSString.class]
+        ? summary[CCNMN78PolicySummaryErrorCodeKey] : @"unknown";
+    NSString *technicalError = [summary[CCNMN78PolicySummaryErrorKey] isKindOfClass:NSString.class]
+        ? summary[CCNMN78PolicySummaryErrorKey] : @"";
+    NSString *key = [self policyFailureLocalizationKey:errorCode];
+    NSString *message = [NSString stringWithFormat:
+        CCNMPreferencesLocalizedString(@"POLICY_ERROR_DIAGNOSTIC_FORMAT"),
+        CCNMPreferencesLocalizedString(key), errorCode,
+        technicalError.length > 0 ? technicalError : CCNMPreferencesLocalizedString(@"VALUE_UNKNOWN")];
     UIAlertController *alert = [UIAlertController
         alertControllerWithTitle:CCNMPreferencesLocalizedString(@"POLICY_ERROR_TITLE")
-        message:CCNMPreferencesLocalizedString(key)
+        message:message
         preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction
         actionWithTitle:CCNMPreferencesLocalizedString(@"BUTTON_OK")

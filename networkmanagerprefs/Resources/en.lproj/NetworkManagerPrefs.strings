@@ -79,3 +79,4 @@
 "POLICY_ERROR_REBOOT_REQUIRED" = "The modem setter result is uncertain. Restart the device before making another change.";
 "POLICY_ERROR_RECOVERY_REQUIRED" = "Saved policy evidence must be recovered before another change.";
 "POLICY_ERROR_GENERIC" = "The policy could not be changed or verified. Review the recovery state before retrying.";
+"POLICY_ERROR_DIAGNOSTIC_FORMAT" = "%@\n\nError code: %@\nDetails: %@";
