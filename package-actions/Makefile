@@ -9,18 +9,18 @@ postinst_FILES = postinst.m ../networkmanagerprefs/CCNMN78PolicyController.m
 postinst_INSTALL_PATH = /DEBIAN
 postinst_FRAMEWORKS = Foundation CoreFoundation
 postinst_CFLAGS = -fobjc-arc -fvisibility=hidden
+postinst_OBJCFLAGS += -fno-modules -fno-implicit-modules
 
 prerm_FILES = prerm.m ../networkmanagerprefs/CCNMN78PolicyController.m
 prerm_INSTALL_PATH = /DEBIAN
 prerm_FRAMEWORKS = Foundation CoreFoundation
 prerm_CFLAGS = -fobjc-arc -fvisibility=hidden
+prerm_OBJCFLAGS += -fno-modules -fno-implicit-modules
 
 ifeq ($(THEOS_PACKAGE_SCHEME),roothide)
 # Maintainer scripts run from /Library/dpkg/info/ where @loader_path/.jbroot
-# does not resolve.  Keep -undefined dynamic_lookup for the roothide API
-# symbols (resolved at runtime through the already-loaded jailbreak library)
-# but do not link -lroothide, which would add libroothide.dylib as a load-time
-# dependency with a broken @loader_path install name.
+# does not resolve. Keep modules disabled so roothide's modulemap cannot
+# auto-link libroothide.dylib; retain dynamic lookup for the jbroot symbol.
 postinst_LDFLAGS += -undefined dynamic_lookup
 prerm_LDFLAGS += -undefined dynamic_lookup
 endif
