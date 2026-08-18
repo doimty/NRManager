@@ -41,6 +41,13 @@
 "FRESHNESS_UPDATED_FORMAT" = "更新于 %@";
 "FRESHNESS_STALE_FORMAT" = "已过期 · %@";
 
+"GROUP_KNOWN_ORPHAN_RECOVERY" = "一次性设备恢复";
+"KNOWN_ORPHAN_RECOVERY_FOOTER" = "仅当此设备与已审阅的 n78 孤儿状态完全一致时显示。该操作只恢复内置的固定历史配置，不能导入其他快照。";
+"RECOVER_KNOWN_ORPHANED_N78" = "恢复已审阅的原始 NR 频段";
+"KNOWN_ORPHAN_RECOVERY_ALERT_TITLE" = "恢复此设备已审阅的 NR 配置？";
+"KNOWN_ORPHAN_RECOVERY_ALERT_MESSAGE" = "此一次性操作将采用软件包内已审阅的历史基线，通过受保护的策略事务恢复，并验证完整 BandInfo 读回。";
+"BUTTON_RECOVER_KNOWN_ORPHAN" = "恢复并验证";
+
 "GROUP_RECOVERY" = "恢复与维护";
 "RECOVERY_FOOTER" = "仅在已验证的策略记录需要处理时显示恢复控制。";
 "ROW_RECOVERY_STATE" = "恢复状态";

@@ -55,6 +55,22 @@ int main(int argc, const char *argv[]) {
         }
 
         NSDictionary<NSString *, id> *current = CCNMReadN78PolicyState();
+        NSDictionary<NSString *, id> *orphanEligibility = CCNMReadKnownOrphanedN78RemovalSafety();
+        if ([orphanEligibility[@"eligible"] boolValue]) {
+            fprintf(stderr,
+                "NetworkManagerReborn: removal blocked; confirm the reviewed one-time NR recovery in Settings first.\n");
+            fflush(stderr);
+            return CCNMPrermBlocked;
+        }
+
+        if (![orphanEligibility[@"conclusive"] boolValue]) {
+            fprintf(stderr,
+                "NetworkManagerReborn: removal blocked; the live band configuration could not be proven clean (error=%s).\n",
+                [orphanEligibility[CCNMN78PolicySummaryErrorKey] isKindOfClass:NSString.class]
+                    ? [orphanEligibility[CCNMN78PolicySummaryErrorKey] UTF8String] : "unknown");
+            fflush(stderr);
+            return CCNMPrermBlocked;
+        }
         if (CCNMSummaryAllowsRemoval(current)) {
             return CCNMRemovalAllowed;
         }

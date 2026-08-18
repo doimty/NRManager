@@ -13,6 +13,7 @@ typedef void (^CCNMSettingsActionHandler)(void);
 @property (nonatomic, copy, nullable) CCNMSettingsPreferenceRequestHandler n78PreferenceRequestHandler;
 @property (nonatomic, copy, nullable) CCNMSettingsActionHandler refreshServingStatusHandler;
 @property (nonatomic, copy, nullable) CCNMSettingsActionHandler restoreOriginalBandConfigurationHandler;
+@property (nonatomic, copy, nullable) CCNMSettingsActionHandler recoverKnownOrphanedN78Handler;
 
 - (void)updateN78PreferenceEnabled:(BOOL)enabled controlAvailable:(BOOL)available;
 - (void)updateTransitionStateWithLocalizationKey:(NSString *)localizationKey;

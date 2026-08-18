@@ -41,6 +41,13 @@
 "FRESHNESS_UPDATED_FORMAT" = "Updated %@";
 "FRESHNESS_STALE_FORMAT" = "Stale · %@";
 
+"GROUP_KNOWN_ORPHAN_RECOVERY" = "One-Time Device Recovery";
+"KNOWN_ORPHAN_RECOVERY_FOOTER" = "Shown only when this device exactly matches the reviewed orphaned-n78 state. It restores the fixed historical configuration and cannot import another snapshot.";
+"RECOVER_KNOWN_ORPHANED_N78" = "Restore reviewed original NR bands";
+"KNOWN_ORPHAN_RECOVERY_ALERT_TITLE" = "Restore this device's reviewed NR configuration?";
+"KNOWN_ORPHAN_RECOVERY_ALERT_MESSAGE" = "This one-time action will adopt the package-reviewed historical baseline, restore it through the guarded policy transaction, and verify the complete BandInfo read-back.";
+"BUTTON_RECOVER_KNOWN_ORPHAN" = "Restore and Verify";
+
 "GROUP_RECOVERY" = "Recovery & Maintenance";
 "RECOVERY_FOOTER" = "Recovery controls appear only when a validated policy record requires attention.";
 "ROW_RECOVERY_STATE" = "Recovery state";

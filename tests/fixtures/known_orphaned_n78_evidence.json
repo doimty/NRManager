@@ -1,0 +1,26 @@
+{
+  "reviewedSourceSHA256": "9e6230dfae679537b5b827518975e7675abf864cd403e96f97f11de63316ac76",
+  "deviceModel": "iPhone14,3",
+  "systemVersion": "15.1.1",
+  "systemBuild": "19B81",
+  "slotID": 1,
+  "targetSubscriptionUUID": "00000000-0000-0000-0000-000000000001",
+  "transactionCompletedSafely": true,
+  "restoreReadBackEqual": true,
+  "originalActiveBands": {
+    "kCTRegistrationRadioAccessTechnologyCDMAHybrid": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
+    "kCTRegistrationRadioAccessTechnologyGSM": [1, 2, 3, 4, 5, 6, 7, 8, 9],
+    "kCTRegistrationRadioAccessTechnologyLTE": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 17, 18, 19, 20, 21, 24, 25, 26, 27, 28, 29, 30, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 46, 48, 66, 71],
+    "kCTRegistrationRadioAccessTechnologyNR": [1, 2, 3, 5, 7, 8, 12, 13, 14, 18, 20, 25, 26, 28, 30, 34, 38, 39, 40, 41, 48, 50, 51, 53, 65, 66, 70, 71, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 257, 258, 259, 260, 261],
+    "kCTRegistrationRadioAccessTechnologyTDSCDMA": [1, 2, 3, 4, 5, 6],
+    "kCTRegistrationRadioAccessTechnologyUTRAN": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+  },
+  "supportedBandsAtSelection": {
+    "kCTRegistrationRadioAccessTechnologyCDMAHybrid": [1, 2, 3, 12],
+    "kCTRegistrationRadioAccessTechnologyGSM": [1, 2, 7, 9],
+    "kCTRegistrationRadioAccessTechnologyLTE": [1, 2, 3, 4, 5, 7, 8, 12, 13, 17, 18, 19, 20, 25, 26, 28, 30, 34, 38, 39, 40, 41, 42, 46, 48, 66],
+    "kCTRegistrationRadioAccessTechnologyNR": [1, 2, 3, 5, 7, 8, 12, 20, 25, 28, 30, 38, 40, 41, 48, 66, 77, 78, 79],
+    "kCTRegistrationRadioAccessTechnologyTDSCDMA": [],
+    "kCTRegistrationRadioAccessTechnologyUTRAN": [1, 2, 4, 5, 6, 8]
+  }
+}

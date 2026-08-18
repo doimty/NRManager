@@ -11,6 +11,8 @@ static NSString * const CCNMServingStateSpecifierID = @"servingState";
 static NSString * const CCNMDataLineSpecifierID = @"dataLine";
 static NSString * const CCNMFreshnessSpecifierID = @"freshness";
 static NSString * const CCNMRefreshSpecifierID = @"refreshServingStatus";
+static NSString * const CCNMKnownOrphanRecoveryGroupSpecifierID = @"knownOrphanRecoveryGroup";
+static NSString * const CCNMKnownOrphanRecoverySpecifierID = @"recoverKnownOrphanedN78";
 static NSString * const CCNMRecoveryGroupSpecifierID = @"recoveryGroup";
 static NSString * const CCNMRecoveryStateSpecifierID = @"recoveryState";
 static NSString * const CCNMRebootRequirementSpecifierID = @"rebootRequirement";
@@ -21,9 +23,12 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
 
 @property (nonatomic, assign) BOOL n78PreferenceEnabled;
 @property (nonatomic, assign) BOOL n78PreferenceControlAvailable;
+@property (nonatomic, assign) BOOL knownOrphanedN78RecoveryEligible;
+@property (nonatomic, assign) NSUInteger knownOrphanRecoveryProbeGeneration;
 @property (nonatomic, assign) BOOL recoverySectionVisible;
 @property (nonatomic, assign) BOOL hasRecoverableBaseline;
 @property (nonatomic, assign) BOOL requiresReboot;
+@property (nonatomic, copy) NSArray<PSSpecifier *> *knownOrphanRecoverySpecifiers;
 @property (nonatomic, copy) NSArray<PSSpecifier *> *recoverySpecifiers;
 @property (nonatomic, copy) NSDictionary<NSString *, id> *policySummary;
 @property (nonatomic, copy) NSDictionary<NSString *, id> *servingSummary;
@@ -32,13 +37,16 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
 
 - (void)configureProductionHandlers;
 - (void)refreshPolicyState;
+- (void)refreshKnownOrphanedN78RecoveryEligibility;
 - (void)requestN78PreferenceEnabled:(BOOL)enabled;
 - (void)beginPolicyRecovery;
+- (void)beginKnownOrphanedN78Recovery;
 - (void)applyPolicySummary:(NSDictionary<NSString *, id> *)summary;
 - (void)beginServingRefresh;
 - (void)applyServingSummary:(NSDictionary<NSString *, id> *)summary;
 - (void)showPolicyFailureForSummary:(NSDictionary<NSString *, id> *)summary;
 - (void)localizeSpecifiers:(NSArray<PSSpecifier *> *)specifiers;
+- (NSArray<PSSpecifier *> *)knownOrphanRecoverySpecifiersFromArray:(NSArray<PSSpecifier *> *)specifiers;
 - (NSArray<PSSpecifier *> *)recoverySpecifiersFromArray:(NSArray<PSSpecifier *> *)specifiers;
 - (PSSpecifier *)recoverySpecifierForID:(NSString *)identifier;
 - (void)setDisplayValue:(NSString *)valueOrLocalizationKey forSpecifierID:(NSString *)identifier;
@@ -46,6 +54,7 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
 - (void)setN78PreferenceValue:(id)value specifier:(PSSpecifier *)specifier;
 - (void)refreshServingStatus:(PSSpecifier *)specifier;
 - (void)restoreOriginalBandConfiguration:(PSSpecifier *)specifier;
+- (void)confirmKnownOrphanedN78Recovery:(PSSpecifier *)specifier;
 - (void)openRepository:(PSSpecifier *)specifier;
 - (void)showLinkOpenFailure;
 - (void)rebuildRecoverySection;
@@ -62,7 +71,9 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
                                                                                 bundle:bundle] mutableCopy];
         [self localizeSpecifiers:loaded];
 
+        self.knownOrphanRecoverySpecifiers = [self knownOrphanRecoverySpecifiersFromArray:loaded];
         self.recoverySpecifiers = [self recoverySpecifiersFromArray:loaded];
+        [loaded removeObjectsInArray:self.knownOrphanRecoverySpecifiers];
         [loaded removeObjectsInArray:self.recoverySpecifiers];
         _specifiers = loaded;
     }
@@ -106,10 +117,36 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
     self.restoreOriginalBandConfigurationHandler = ^{
         [weakSelf beginPolicyRecovery];
     };
+    self.recoverKnownOrphanedN78Handler = ^{
+        [weakSelf beginKnownOrphanedN78Recovery];
+    };
 }
 
 - (void)refreshPolicyState {
     [self applyPolicySummary:CCNMReadN78PolicyState()];
+    [self refreshKnownOrphanedN78RecoveryEligibility];
+}
+
+- (void)refreshKnownOrphanedN78RecoveryEligibility {
+    NSUInteger probeGeneration = ++self.knownOrphanRecoveryProbeGeneration;
+    if (self.policyOperationInProgress) {
+        self.knownOrphanedN78RecoveryEligible = NO;
+        [self rebuildRecoverySection];
+        return;
+    }
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        NSDictionary *eligibility = CCNMReadKnownOrphanedN78RecoveryEligibility();
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __strong typeof(weakSelf) self = weakSelf;
+            if (!self || self.policyOperationInProgress ||
+                probeGeneration != self.knownOrphanRecoveryProbeGeneration) {
+                return;
+            }
+            self.knownOrphanedN78RecoveryEligible = [eligibility[@"eligible"] boolValue];
+            [self rebuildRecoverySection];
+        });
+    });
 }
 
 - (void)requestN78PreferenceEnabled:(BOOL)enabled {
@@ -163,6 +200,35 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
         }
         self.policyOperationInProgress = NO;
         [self applyPolicySummary:summary];
+        if (![summary[CCNMN78PolicySummarySuccessKey] boolValue]) {
+            [self showPolicyFailureForSummary:summary];
+        } else {
+            [self beginServingRefresh];
+        }
+    });
+}
+
+- (void)beginKnownOrphanedN78Recovery {
+    if (self.policyOperationInProgress || !self.knownOrphanedN78RecoveryEligible) {
+        return;
+    }
+    self.policyOperationInProgress = YES;
+    ++self.knownOrphanRecoveryProbeGeneration;
+    self.knownOrphanedN78RecoveryEligible = NO;
+    [self rebuildRecoverySection];
+    [self updateTransitionStateWithLocalizationKey:@"TRANSITION_APPLYING"];
+    [self updateN78PreferenceEnabled:NO controlAvailable:NO];
+    [self applyServingSummary:self.servingSummary];
+
+    __weak typeof(self) weakSelf = self;
+    CCNMRecoverKnownOrphanedN78WithCompletion(^(NSDictionary<NSString *, id> *summary) {
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self) {
+            return;
+        }
+        self.policyOperationInProgress = NO;
+        [self applyPolicySummary:summary];
+        [self refreshKnownOrphanedN78RecoveryEligibility];
         if (![summary[CCNMN78PolicySummarySuccessKey] boolValue]) {
             [self showPolicyFailureForSummary:summary];
         } else {
@@ -380,6 +446,20 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
     }
 }
 
+- (NSArray<PSSpecifier *> *)knownOrphanRecoverySpecifiersFromArray:(NSArray<PSSpecifier *> *)specifiers {
+    NSSet<NSString *> *knownOrphanIDs = [NSSet setWithArray:@[
+        CCNMKnownOrphanRecoveryGroupSpecifierID,
+        CCNMKnownOrphanRecoverySpecifierID,
+    ]];
+    NSMutableArray<PSSpecifier *> *result = [NSMutableArray array];
+    for (PSSpecifier *specifier in specifiers) {
+        if ([knownOrphanIDs containsObject:specifier.identifier]) {
+            [result addObject:specifier];
+        }
+    }
+    return result;
+}
+
 - (NSArray<PSSpecifier *> *)recoverySpecifiersFromArray:(NSArray<PSSpecifier *> *)specifiers {
     NSSet<NSString *> *recoveryIDs = [NSSet setWithArray:@[
         CCNMRecoveryGroupSpecifierID,
@@ -468,6 +548,36 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
         handler:^(UIAlertAction *action) {
             (void)action;
             CCNMSettingsActionHandler handler = weakSelf.restoreOriginalBandConfigurationHandler;
+            if (handler) {
+                handler();
+            }
+        }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)confirmKnownOrphanedN78Recovery:(PSSpecifier *)specifier {
+    (void)specifier;
+    if (!self.knownOrphanedN78RecoveryEligible || self.policyOperationInProgress ||
+        self.servingRefreshInProgress || !self.recoverKnownOrphanedN78Handler) {
+        return;
+    }
+
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:CCNMPreferencesLocalizedString(@"KNOWN_ORPHAN_RECOVERY_ALERT_TITLE")
+        message:CCNMPreferencesLocalizedString(@"KNOWN_ORPHAN_RECOVERY_ALERT_MESSAGE")
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction
+        actionWithTitle:CCNMPreferencesLocalizedString(@"BUTTON_CANCEL")
+        style:UIAlertActionStyleCancel
+        handler:nil]];
+
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction
+        actionWithTitle:CCNMPreferencesLocalizedString(@"BUTTON_RECOVER_KNOWN_ORPHAN")
+        style:UIAlertActionStyleDestructive
+        handler:^(UIAlertAction *action) {
+            (void)action;
+            CCNMSettingsActionHandler handler = weakSelf.recoverKnownOrphanedN78Handler;
             if (handler) {
                 handler();
             }
@@ -569,31 +679,45 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
 
 - (void)rebuildRecoverySection {
     NSMutableArray<PSSpecifier *> *updatedSpecifiers = [_specifiers mutableCopy];
+    [updatedSpecifiers removeObjectsInArray:self.knownOrphanRecoverySpecifiers];
     [updatedSpecifiers removeObjectsInArray:self.recoverySpecifiers];
+    NSMutableArray<PSSpecifier *> *visibleMaintenanceSpecifiers = [NSMutableArray array];
+
+    if (self.knownOrphanedN78RecoveryEligible) {
+        for (PSSpecifier *specifier in self.knownOrphanRecoverySpecifiers) {
+            if ([specifier.identifier isEqualToString:CCNMKnownOrphanRecoverySpecifierID]) {
+                BOOL enabled = self.recoverKnownOrphanedN78Handler != nil &&
+                    !self.policyOperationInProgress && !self.servingRefreshInProgress;
+                [specifier setProperty:@(enabled) forKey:PSEnabledKey];
+            }
+            [visibleMaintenanceSpecifiers addObject:specifier];
+        }
+    }
 
     if (self.recoverySectionVisible) {
-        NSMutableArray<PSSpecifier *> *visibleRecoverySpecifiers = [NSMutableArray array];
         PSSpecifier *group = [self recoverySpecifierForID:CCNMRecoveryGroupSpecifierID];
         PSSpecifier *state = [self recoverySpecifierForID:CCNMRecoveryStateSpecifierID];
         PSSpecifier *reboot = [self recoverySpecifierForID:CCNMRebootRequirementSpecifierID];
         PSSpecifier *restore = [self recoverySpecifierForID:CCNMRestoreSpecifierID];
 
         if (group) {
-            [visibleRecoverySpecifiers addObject:group];
+            [visibleMaintenanceSpecifiers addObject:group];
         }
         if (state) {
-            [visibleRecoverySpecifiers addObject:state];
+            [visibleMaintenanceSpecifiers addObject:state];
         }
         if (self.requiresReboot && reboot) {
-            [visibleRecoverySpecifiers addObject:reboot];
+            [visibleMaintenanceSpecifiers addObject:reboot];
         }
         if (self.hasRecoverableBaseline && restore) {
             BOOL restoreEnabled = self.restoreOriginalBandConfigurationHandler != nil &&
                 !self.requiresReboot && !self.policyOperationInProgress && !self.servingRefreshInProgress;
             [restore setProperty:@(restoreEnabled) forKey:PSEnabledKey];
-            [visibleRecoverySpecifiers addObject:restore];
+            [visibleMaintenanceSpecifiers addObject:restore];
         }
+    }
 
+    if (visibleMaintenanceSpecifiers.count > 0) {
         PSSpecifier *aboutGroup = nil;
         for (PSSpecifier *specifier in updatedSpecifiers) {
             if ([specifier.identifier isEqualToString:CCNMAboutGroupSpecifierID]) {
@@ -605,8 +729,8 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
             ? [updatedSpecifiers indexOfObjectIdenticalTo:aboutGroup]
             : updatedSpecifiers.count;
         NSIndexSet *indexes = [NSIndexSet indexSetWithIndexesInRange:
-            NSMakeRange(insertionIndex, visibleRecoverySpecifiers.count)];
-        [updatedSpecifiers insertObjects:visibleRecoverySpecifiers atIndexes:indexes];
+            NSMakeRange(insertionIndex, visibleMaintenanceSpecifiers.count)];
+        [updatedSpecifiers insertObjects:visibleMaintenanceSpecifiers atIndexes:indexes];
     }
 
     _specifiers = updatedSpecifiers;
