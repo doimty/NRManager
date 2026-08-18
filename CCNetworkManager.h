@@ -7,9 +7,5 @@
 
 #import <ControlCenterUIKit/CCUIToggleModule.h>
 
-@interface CCUIToggleModule (CCNMReconfigureView)
-- (void)reconfigureView;
-@end
-
 @interface CCNetworkManager : CCUIToggleModule
 @end

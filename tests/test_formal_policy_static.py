@@ -101,6 +101,10 @@ class FormalPolicyStaticTests(unittest.TestCase):
         self.assertNotIn("CCNMMarkRecovery", preflight_failure)
         self.assertIn("No baseline, intent, in-flight marker, or setter call", preflight_failure)
 
+    def test_control_center_uses_public_toggle_refresh_api(self):
+        self.assertIn("refreshState", self.cc_source)
+        self.assertNotIn("reconfigureView", self.cc_source)
+
     def test_control_center_does_not_persist_local_network_label_as_truth(self):
         self.assertNotIn("selectedNetwork", self.cc_source)
         self.assertIn("CCNMN78Policy", self.cc_source)
