@@ -5,6 +5,7 @@
 #import <dlfcn.h>
 #import <errno.h>
 #import <fcntl.h>
+#import <mach-o/dyld.h>
 #import <pwd.h>
 #import <string.h>
 #import <sys/file.h>
@@ -43,19 +44,50 @@ static BOOL CCNMIsJBResourceName(const char *name) {
     return check == (uint8_t)value;
 }
 
+static NSString *CCNMJBResourceRootFromExecutable(void) {
+    uint32_t size = 0;
+    (void)_NSGetExecutablePath(NULL, &size);
+    if (size == 0) {
+        return nil;
+    }
+    char *buffer = calloc(1, size);
+    if (!buffer) {
+        return nil;
+    }
+    NSString *root = nil;
+    if (_NSGetExecutablePath(buffer, &size) == 0) {
+        NSString *executablePath = [NSString stringWithUTF8String:buffer];
+        NSMutableArray<NSString *> *prefix = [NSMutableArray array];
+        for (NSString *component in executablePath.pathComponents) {
+            [prefix addObject:component];
+            if (CCNMIsJBResourceName(component.UTF8String)) {
+                root = [NSString pathWithComponents:prefix];
+                break;
+            }
+        }
+    }
+    free(buffer);
+    return root;
+}
+
+static NSString *CCNMJBResourceRootByScan(void) {
+    NSString *applicationDirectory = @"/var/containers/Bundle/Application/";
+    NSArray *entries = [[NSFileManager defaultManager]
+        contentsOfDirectoryAtPath:applicationDirectory error:NULL];
+    NSMutableArray<NSString *> *matches = [NSMutableArray array];
+    for (NSString *entry in entries) {
+        if (CCNMIsJBResourceName(entry.UTF8String)) {
+            [matches addObject:[applicationDirectory stringByAppendingPathComponent:entry]];
+        }
+    }
+    return matches.count == 1 ? matches.firstObject : nil;
+}
+
 static NSString *CCNMJBResourceRoot(void) {
     static NSString *cachedRoot;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        NSString *applicationDirectory = @"/var/containers/Bundle/Application/";
-        NSArray *entries = [[NSFileManager defaultManager]
-            contentsOfDirectoryAtPath:applicationDirectory error:NULL];
-        for (NSString *entry in entries) {
-            if (CCNMIsJBResourceName(entry.UTF8String)) {
-                cachedRoot = [applicationDirectory stringByAppendingPathComponent:entry];
-                break;
-            }
-        }
+        cachedRoot = CCNMJBResourceRootFromExecutable() ?: CCNMJBResourceRootByScan();
     });
     return cachedRoot;
 }
@@ -63,7 +95,7 @@ static NSString *CCNMJBResourceRoot(void) {
 static NSString *CCNMPolicyRootForMaintainer(NSString *path) {
     NSString *root = CCNMJBResourceRoot();
     if (root.length == 0) {
-        return path;
+        return [@"/.networkmanager-invalid-jbroot" stringByAppendingPathComponent:path];
     }
     return [root stringByAppendingPathComponent:path];
 }
