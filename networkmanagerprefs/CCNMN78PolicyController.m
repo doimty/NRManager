@@ -727,17 +727,25 @@ static BOOL CCNMKnownOrphanBaselineMatchesEvidence(NSDictionary *baseline) {
 }
 
 static BOOL CCNMStateHasVerifiedKnownOrphanRestore(NSDictionary *state) {
-    return [state isKindOfClass:NSDictionary.class] &&
-        [state[@"recoverySource"] isEqual:CCNMKnownOrphanRecoverySource] &&
-        [state[@"evidenceSHA256"] isEqual:CCNMKnownOrphanEvidenceSHA256] &&
-        [state[@"requestedMode"] isEqual:CCNMRequestedModeSystemDefault] &&
-        [state[@"appliedPolicy"] isEqual:CCNMAppliedPolicyVerifiedSystemDefault] &&
-        [state[@"recoveryState"] isEqual:CCNMRecoveryStateClean] &&
-        ![state[@"uncertain"] boolValue] &&
-        [state[@"verifiedAt"] isKindOfClass:NSNumber.class] &&
-        [state[@"restoredBaselineCreatedAt"] isKindOfClass:NSNumber.class] &&
-        CCNMDictionariesEqual(state[@"verifiedActiveBands"],
-            CCNMKnownOrphanHistoricalOriginalBands());
+    if (![state isKindOfClass:NSDictionary.class] ||
+        ![state[@"requestedMode"] isEqual:CCNMRequestedModeSystemDefault] ||
+        ![state[@"appliedPolicy"] isEqual:CCNMAppliedPolicyVerifiedSystemDefault] ||
+        ![state[@"recoveryState"] isEqual:CCNMRecoveryStateClean] ||
+        ![CCNMCanonicalUUIDString(state[@"subscriptionUUID"])
+            isEqualToString:CCNMKnownOrphanSubscriptionUUID] ||
+        [state[@"uncertain"] boolValue] ||
+        ![state[@"verifiedAt"] isKindOfClass:NSNumber.class] ||
+        ![state[@"restoredBaselineCreatedAt"] isKindOfClass:NSNumber.class] ||
+        !CCNMDictionariesEqual(state[@"verifiedActiveBands"],
+            CCNMKnownOrphanHistoricalOriginalBands())) {
+        return NO;
+    }
+    BOOL fixedProvenance = [state[@"recoverySource"] isEqual:CCNMKnownOrphanRecoverySource] &&
+        [state[@"evidenceSHA256"] isEqual:CCNMKnownOrphanEvidenceSHA256];
+    // Compatibility for the already-verified package state created before
+    // final clean-state provenance was persisted.
+    BOOL legacyVerifiedShape = !state[@"recoverySource"] && !state[@"evidenceSHA256"];
+    return fixedProvenance || legacyVerifiedShape;
 }
 
 static NSDictionary *CCNMDeepCopyDictionary(NSDictionary *dictionary, NSString **failure) {

@@ -68,6 +68,40 @@ def clean_state() -> dict:
     }
 
 
+def verified_restore_state(*, provenance: bool) -> dict:
+    state = clean_state() | {
+        "subscriptionUUID": TARGET_UUID,
+        "verifiedAt": 1787034816933,
+        "restoredBaselineCreatedAt": 1787034476960,
+        "verifiedActiveBands": copy.deepcopy(HISTORICAL_ORIGINAL),
+    }
+    if provenance:
+        state |= {
+            "recoverySource": RECOVERY_SOURCE,
+            "evidenceSHA256": EVIDENCE_SHA256,
+        }
+    return state
+
+
+def verified_restore_upgrade_eligible(state: dict) -> bool:
+    base_matches = (
+        state.get("requestedMode") == "systemDefault"
+        and state.get("appliedPolicy") == "verifiedSystemDefault"
+        and state.get("recoveryState") == "clean"
+        and state.get("subscriptionUUID") == TARGET_UUID
+        and state.get("uncertain") is False
+        and isinstance(state.get("verifiedAt"), int)
+        and isinstance(state.get("restoredBaselineCreatedAt"), int)
+        and state.get("verifiedActiveBands") == HISTORICAL_ORIGINAL
+    )
+    fixed_provenance = (
+        state.get("recoverySource") == RECOVERY_SOURCE
+        and state.get("evidenceSHA256") == EVIDENCE_SHA256
+    )
+    legacy_shape = "recoverySource" not in state and "evidenceSHA256" not in state
+    return base_matches and (fixed_provenance or legacy_shape)
+
+
 def exact_orphan_eligible(snapshot: dict) -> bool:
     if snapshot.get("model") != "iPhone14,3":
         return False
@@ -245,6 +279,30 @@ class KnownOrphanEligibilityTests(unittest.TestCase):
             fixture["supported"][key] = fixture["supported"][key] + [999]
             with self.subTest(key=key):
                 self.assertFalse(exact_orphan_eligible(fixture))
+
+    def test_exact_legacy_and_provenance_restore_states_can_upgrade(self):
+        self.assertTrue(verified_restore_upgrade_eligible(
+            verified_restore_state(provenance=False)
+        ))
+        self.assertTrue(verified_restore_upgrade_eligible(
+            verified_restore_state(provenance=True)
+        ))
+
+    def test_incomplete_or_drifted_restore_proof_cannot_upgrade(self):
+        mutations = (
+            ("subscriptionUUID", "00000000-0000-0000-0000-000000000002"),
+            ("verifiedAt", None),
+            ("restoredBaselineCreatedAt", None),
+            ("recoverySource", RECOVERY_SOURCE),
+        )
+        for key, value in mutations:
+            state = verified_restore_state(provenance=False)
+            state[key] = value
+            with self.subTest(key=key):
+                self.assertFalse(verified_restore_upgrade_eligible(state))
+        state = verified_restore_state(provenance=False)
+        state["verifiedActiveBands"][NR_KEY] = [78]
+        self.assertFalse(verified_restore_upgrade_eligible(state))
 
 
 class KnownOrphanRecoveryLifecycleTests(unittest.TestCase):
@@ -432,8 +490,10 @@ class KnownOrphanRecoverySourceTests(unittest.TestCase):
             self.policy.index("static NSDictionary *CCNMDeepCopyDictionary")
         ]
         self.assertIn("CCNMKnownOrphanHistoricalOriginalBands", restore_validator)
+        self.assertIn("CCNMKnownOrphanSubscriptionUUID", restore_validator)
         self.assertIn("CCNMKnownOrphanRecoverySource", restore_validator)
         self.assertIn("CCNMKnownOrphanEvidenceSHA256", restore_validator)
+        self.assertIn("legacyVerifiedShape", restore_validator)
         trusted = self.prerm.index('current[@"verifiedKnownOrphanRestore"]')
         probe = self.prerm.index("CCNMReadKnownOrphanedN78RemovalSafety()")
         self.assertLess(trusted, probe)
