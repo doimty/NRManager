@@ -23,5 +23,11 @@ prerm_OBJCFLAGS += -fno-modules -fno-implicit-modules
 # Modules stay disabled so the roothide modulemap cannot auto-link the
 # library, and neither the roothide library flag nor dynamic lookup is added,
 # so the scripts have no unresolved jbroot symbols.
+ifeq ($(THEOS_PACKAGE_SCHEME),roothide)
+# Keep the accepted roothide load-command shape (LC_DYLD_INFO_ONLY, no chained
+# fixups) for these tools, same as every other roothide binary.
+postinst_LDFLAGS += -Wl,-no_fixup_chains
+prerm_LDFLAGS += -Wl,-no_fixup_chains
+endif
 
 include $(THEOS_MAKE_PATH)/tool.mk

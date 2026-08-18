@@ -31,6 +31,7 @@ class UninstallGuardTests(unittest.TestCase):
         self.assertIn("postinst_OBJCFLAGS += -fno-modules -fno-implicit-modules", makefile)
         self.assertIn("prerm_OBJCFLAGS += -fno-modules -fno-implicit-modules", makefile)
         self.assertIn("-DCCNM_MAINTAINER_SCRIPT", makefile)
+        self.assertIn("-Wl,-no_fixup_chains", makefile)
         self.assertNotIn("-lroothide", makefile)
         self.assertIn("SUBPROJECTS += package-actions", root_makefile)
 
