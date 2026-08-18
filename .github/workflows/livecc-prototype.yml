@@ -1,0 +1,275 @@
+name: NetworkManager LiveCC prototype validation
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - livecc/**
+      - networkmanagerprefs/CCNMServingStatusProvider.h
+      - networkmanagerprefs/CCNMServingStatusProvider.m
+      - networkmanagerprefs/CCNMServingCellSampler.h
+      - networkmanagerprefs/CCNMServingCellSampler.m
+      - .github/workflows/livecc-prototype.yml
+
+permissions:
+  contents: read
+
+env:
+  THEOS_COMMIT: 88506b2c22e9e07dd4ed055f23c9e398a117a2c7
+  THEOS_SDK_COMMIT: 0222fd5413cf4b9af096f37b4621afa2688572f7
+  CCSUPPORT_COMMIT: ec20c982b3f74f2f0500a83761363384e92a0ca3
+  XCODE_DEVELOPER_DIR: /Applications/Xcode_15.4.app/Contents/Developer
+
+jobs:
+  host-tests:
+    name: LiveCC host gates (11 prototype / 97 root)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          submodules: true
+
+      - name: Run LiveCC and root test suites
+        run: |
+          set -euo pipefail
+          livecc_log="$RUNNER_TEMP/livecc-tests.log"
+          root_log="$RUNNER_TEMP/root-tests.log"
+          python3 -m unittest discover -s livecc/tests -v 2>&1 | tee "$livecc_log"
+          grep -Eq '^Ran 11 tests in ' "$livecc_log"
+          python3 -m unittest discover -s tests -v 2>&1 | tee "$root_log"
+          grep -Eq '^Ran 97 tests in ' "$root_log"
+
+      - name: Compile Python gates and verify source policy
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/*.py tests/*.py livecc/tests/*.py
+          python3 scripts/verify_release_source.py \
+            --repo "$GITHUB_WORKSPACE" \
+            --report "$RUNNER_TEMP/source-verification.json"
+
+          source_files=(
+            livecc/Sources/CCNMLiveBandText.c
+            livecc/Sources/CCNMLiveBandText.h
+            livecc/Sources/CCNMLiveServingPaths.m
+            livecc/Sources/NetworkManagerLiveModule.m
+            networkmanagerprefs/CCNMServingStatusProvider.h
+            networkmanagerprefs/CCNMServingStatusProvider.m
+            networkmanagerprefs/CCNMServingCellSampler.h
+            networkmanagerprefs/CCNMServingCellSampler.m
+          )
+          forbidden='libroothide|jbroot[[:space:]]*\(|roothide\.h|CCNMEnableN78Preference|CCNMDisableN78Preference|CCNMRecoverN78Preference|enableWithCompletion:|disableWithCompletion:|recoverWithCompletion:|setActiveBandInfo|setRatSelection|_CTServerConnectionSetRATSelection|reconfigureView|refreshState|class_getInstanceVariable|object_getIvar|valueForKey:|setValue:forKey:'
+          if grep -En "$forbidden" "${source_files[@]}"; then
+            echo "forbidden writer, path shim, or private refresh source found" >&2
+            exit 1
+          fi
+          git diff --check
+
+  roothide:
+    name: Package LiveCC roothide (macOS 14 / Xcode 15.4)
+    needs: host-tests
+    runs-on: macos-14
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_15.4.app/Contents/Developer
+      THEOS: ${{ github.workspace }}/theos
+      THEOS_PACKAGE_SCHEME: roothide
+      FINALPACKAGE: 1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          submodules: true
+
+      - name: Select and verify Xcode 15.4 toolchain
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s "$XCODE_DEVELOPER_DIR"
+          test -d "$XCODE_DEVELOPER_DIR"
+          xcode_version="$(xcodebuild -version)"
+          printf '%s\n' "$xcode_version"
+          test "$(printf '%s\n' "$xcode_version" | sed -n '1p')" = "Xcode 15.4"
+          test "$(printf '%s\n' "$xcode_version" | sed -n '2p')" = "Build version 15F31d"
+
+          clang_version="$(xcrun clang --version)"
+          printf '%s\n' "$clang_version"
+          printf '%s\n' "$clang_version" | grep -Eq 'Apple clang version 15\.0\.0'
+
+          ld_version="$(xcrun ld -version_details)"
+          printf '%s\n' "$ld_version"
+          printf '%s\n' "$ld_version" | grep -Eq '"version"[[:space:]]*:[[:space:]]*"1053\.12"|PROJECT:ld-1053\.12|ld-1053\.12'
+
+          system_sdk="$(xcrun --sdk iphoneos --show-sdk-version)"
+          system_sdk_path="$(xcrun --sdk iphoneos --show-sdk-path)"
+          printf 'system_sdk=%s\n' "$system_sdk"
+          printf 'system_sdk_path=%s\n' "$system_sdk_path"
+          test "$system_sdk" = "17.5"
+
+      - name: Install packaging tools
+        run: |
+          set -euo pipefail
+          brew update
+          brew install dpkg ldid make
+
+      - name: Install pinned roothide Theos
+        run: |
+          set -euo pipefail
+          rm -rf "$THEOS"
+          git clone --recursive https://github.com/roothide/theos.git "$THEOS"
+          git -C "$THEOS" checkout --detach "$THEOS_COMMIT"
+          git -C "$THEOS" submodule sync --recursive
+          git -C "$THEOS" submodule update --init --recursive
+          test "$(git -C "$THEOS" rev-parse HEAD)" = "$THEOS_COMMIT"
+          printf 'roothide_theos_commit=%s\n' "$(git -C "$THEOS" rev-parse HEAD)"
+          git -C "$THEOS" submodule status --recursive
+
+      - name: Materialize pinned SDK for provenance only
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/theos-sdks"
+          git clone https://github.com/theos/sdks.git "$RUNNER_TEMP/theos-sdks"
+          git -C "$RUNNER_TEMP/theos-sdks" checkout --detach "$THEOS_SDK_COMMIT"
+          test "$(git -C "$RUNNER_TEMP/theos-sdks" rev-parse HEAD)" = "$THEOS_SDK_COMMIT"
+          test -d "$RUNNER_TEMP/theos-sdks/iPhoneOS16.5.sdk"
+          if [ -d "$THEOS/sdks" ] && find "$THEOS/sdks" -maxdepth 1 -name '*.sdk' -print -quit | grep -q .; then
+            echo "LiveCC roothide must use the Xcode system SDK, not an SDK under \$THEOS" >&2
+            exit 1
+          fi
+          printf 'theos_sdk_repository_commit=%s\n' "$(git -C "$RUNNER_TEMP/theos-sdks" rev-parse HEAD)"
+          printf 'pinned_sdk_provenance_path=%s\n' "$RUNNER_TEMP/theos-sdks/iPhoneOS16.5.sdk"
+          printf 'system_sdk_for_roothide=%s\n' "$(xcrun --sdk iphoneos --show-sdk-path)"
+
+      - name: Install pinned CCSupport templates
+        run: |
+          set -euo pipefail
+          rm -rf "$HOME/CCSupportTemplates"
+          git clone https://github.com/opa334/CCSupportTemplates.git "$HOME/CCSupportTemplates"
+          git -C "$HOME/CCSupportTemplates" checkout --detach "$CCSUPPORT_COMMIT"
+          test "$(git -C "$HOME/CCSupportTemplates" rev-parse HEAD)" = "$CCSUPPORT_COMMIT"
+          cd "$HOME/CCSupportTemplates"
+          chmod +x install.sh
+          export PATH="/opt/homebrew/opt/make/libexec/gnubin:$THEOS/bin:$PATH"
+          ./install.sh
+          printf 'ccsupport_commit=%s\n' "$(git -C "$HOME/CCSupportTemplates" rev-parse HEAD)"
+
+      - name: Build only the LiveCC roothide package
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/opt/make/libexec/gnubin:$THEOS/bin:$PATH"
+          rm -rf livecc/packages release-artifacts/livecc
+          mkdir -p livecc/packages release-artifacts/livecc
+          build_log="$GITHUB_WORKSPACE/release-artifacts/livecc/build.log"
+          unset SYSROOT
+          set +e
+          cd livecc && make clean package ARCHS="arm64 arm64e" 2>&1 | tee "$build_log"
+          build_status=${PIPESTATUS[0]}
+          set -e
+          cd "$GITHUB_WORKSPACE"
+          test -s "$build_log"
+          python3 scripts/verify_build_log.py "$build_log"
+          test "$build_status" -eq 0
+
+      - name: Verify and stage the LiveCC package
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/opt/make/libexec/gnubin:$THEOS/bin:$PATH"
+          artifact_dir="$GITHUB_WORKSPACE/release-artifacts/livecc"
+          payload_root="$RUNNER_TEMP/livecc-payload"
+          shopt -s nullglob
+          debs=(livecc/packages/*.deb)
+          if [[ "${#debs[@]}" -ne 1 ]]; then
+            printf 'expected exactly one LiveCC deb, found %d\n' "${#debs[@]}" >&2
+            printf '%s\n' "${debs[@]}" >&2
+            exit 1
+          fi
+          deb="${debs[0]}"
+          test "$(dpkg-deb -f "$deb" Package)" = "me.nixuge.networkmanager.livecc"
+
+          rm -rf "$payload_root"
+          mkdir -p "$payload_root"
+          dpkg-deb -x "$deb" "$payload_root"
+          payload_files="$(
+            cd "$payload_root"
+            find . \( -type f -o -type l \) -print | LC_ALL=C sort
+          )"
+          expected_files=$'./Library/ControlCenter/Bundles/NetworkManagerLive.bundle/Info.plist\n./Library/ControlCenter/Bundles/NetworkManagerLive.bundle/NetworkManagerLive'
+          if [[ "$payload_files" != "$expected_files" ]]; then
+            echo "LiveCC package must contain exactly its Info.plist and executable" >&2
+            printf 'payload:\n%s\n' "$payload_files" >&2
+            exit 1
+          fi
+          if find "$payload_root" -path '*/NetworkManager.bundle*' -print -quit | grep -q .; then
+            echo "LiveCC payload overlaps NetworkManager.bundle" >&2
+            exit 1
+          fi
+
+          binary="$payload_root/Library/ControlCenter/Bundles/NetworkManagerLive.bundle/NetworkManagerLive"
+          test -x "$binary"
+          read -r -a architectures <<< "$(xcrun lipo -archs "$binary")"
+          test "${#architectures[@]}" -eq 2
+          test "$(printf '%s\n' "${architectures[@]}" | LC_ALL=C sort)" = $'arm64\narm64e'
+
+          : > "$artifact_dir/verification.txt"
+          for architecture in arm64 arm64e; do
+            mach_header="$(xcrun otool -arch "$architecture" -hv "$binary")"
+            printf '%s\n' "$mach_header" | tee -a "$artifact_dir/verification.txt"
+            # otool renders the MH_DYLIB filetype as DYLIB in symbolic headers.
+            printf '%s\n' "$mach_header" | grep -Eq '[[:space:]]DYLIB[[:space:]]'
+            printf '%s\n' "$mach_header" | grep -Eq '[[:space:]]NOUNDEFS([[:space:]]|$)'
+            printf '%s\n' "$mach_header" | grep -Eq '[[:space:]]TWOLEVEL([[:space:]]|$)'
+
+            build_version="$(xcrun vtool -arch "$architecture" -show-build "$binary")"
+            printf '%s\n' "$build_version" | tee -a "$artifact_dir/verification.txt"
+            printf '%s\n' "$build_version" | grep -Eq 'minos[[:space:]]+14\.0([[:space:]]|$)'
+            printf '%s\n' "$build_version" | grep -Eq 'sdk[[:space:]]+17\.5([[:space:]]|$)'
+          done
+
+          dependency_surface="$RUNNER_TEMP/livecc-dependency-surface.txt"
+          {
+            xcrun otool -L "$binary"
+            xcrun nm -u "$binary"
+            strings -a "$binary"
+          } > "$dependency_surface"
+          forbidden='libroothide|jbroot[[:space:]]*\(|CCNMN78PolicyController|CCNMEnableN78Preference|CCNMDisableN78Preference|CCNMRecoverN78Preference|enableWithCompletion:|disableWithCompletion:|recoverWithCompletion:|setActiveBandInfo|setRatSelection|_CTServerConnectionSetRATSelection|reconfigureView|refreshState|class_getInstanceVariable|object_getIvar|valueForKey:|setValue:forKey:'
+          if grep -En "$forbidden" "$dependency_surface"; then
+            echo "forbidden LiveCC binary symbol or dependency found" >&2
+            exit 1
+          fi
+          cat "$dependency_surface" >> "$artifact_dir/verification.txt"
+
+          cp "$deb" "$artifact_dir/"
+          ld_version_number="$(xcrun ld -version_details | sed -n 's/[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
+          test "$ld_version_number" = "1053.12"
+          {
+            printf 'lane=livecc-roothide\n'
+            printf 'source_sha=%s\n' "$GITHUB_SHA"
+            printf 'run_id=%s\n' "$GITHUB_RUN_ID"
+            printf 'run_attempt=%s\n' "$GITHUB_RUN_ATTEMPT"
+            printf 'package=%s\n' "$(basename "$deb")"
+            printf 'package_id=me.nixuge.networkmanager.livecc\n'
+            printf 'package_size_bytes=%s\n' "$(stat -f '%z' "$deb")"
+            printf 'package_sha256=%s\n' "$(shasum -a 256 "$deb" | awk '{print $1}')"
+            printf 'architectures=arm64 arm64e\n'
+            printf 'minimum_ios=14.0\n'
+            printf 'sdk=17.5\n'
+            printf 'theos_commit=%s\n' "$(git -C "$THEOS" rev-parse HEAD)"
+            printf 'theos_sdk_repository_commit=%s\n' "$THEOS_SDK_COMMIT"
+            printf 'theos_sdk_location=provenance-only-outside-THEOS\n'
+            printf 'ccsupport_commit=%s\n' "$CCSUPPORT_COMMIT"
+            printf 'xcode=%s\n' "$(xcodebuild -version | tr '\n' ' ')"
+            printf 'clang=%s\n' "$(xcrun clang --version | sed -n '1p')"
+            printf 'ld=%s\n' "$ld_version_number"
+            printf 'system_sdk=%s\n' "$(xcrun --sdk iphoneos --show-sdk-version)"
+            printf 'explicit_sysroot=none\n'
+          } > "$artifact_dir/provenance.txt"
+          (
+            cd "$artifact_dir"
+            shasum -a 256 -- *.deb build.log provenance.txt verification.txt > SHA256SUMS
+          )
+
+      - name: Upload LiveCC roothide package and provenance
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: NetworkManager-LiveCC-prototype-roothide-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-artifacts/livecc/*
+          if-no-files-found: error
+          retention-days: 30

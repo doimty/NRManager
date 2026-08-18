@@ -1,0 +1,3 @@
+.theos/
+packages/
+tests/__pycache__/

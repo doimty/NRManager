@@ -1,0 +1,9 @@
+Package: me.nixuge.networkmanager.livecc
+Name: NetworkManager Live CC Prototype
+Depends: com.opa334.ccsupport
+Version: 0.0.1
+Architecture: iphoneos-arm64
+Description: Non-deliverable read-only live serving-band Control Center prototype
+Maintainer: Nixuge, 灰灰
+Author: Nixuge, 灰灰
+Section: Control Center (Modules)
