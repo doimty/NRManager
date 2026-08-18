@@ -160,7 +160,9 @@ class FormalSettingsUITests(unittest.TestCase):
         ):
             self.assertIn(token, self.controller)
         self.assertIn('summary[@"baselineValid"]', self.controller)
-        self.assertNotIn("CCNMN78PolicySummaryErrorKey]]", self.controller)
+        self.assertIn('CCNMN78PolicySummaryErrorCodeKey', self.controller)
+        self.assertIn('CCNMN78PolicySummaryErrorKey', self.controller)
+        self.assertIn('POLICY_ERROR_DIAGNOSTIC_FORMAT', self.controller)
 
     def test_version_and_credits_are_formal(self):
         version_rows = [item for item in self.items if item.get("id") == "version"]

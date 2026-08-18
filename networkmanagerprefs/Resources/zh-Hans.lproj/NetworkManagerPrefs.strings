@@ -79,3 +79,4 @@
 "POLICY_ERROR_REBOOT_REQUIRED" = "基带设置结果不确定。再次更改前必须重启设备。";
 "POLICY_ERROR_RECOVERY_REQUIRED" = "再次更改前，必须先处理已保存的策略恢复记录。";
 "POLICY_ERROR_GENERIC" = "策略未能完成更改或验证。重试前请先查看恢复状态。";
+"POLICY_ERROR_DIAGNOSTIC_FORMAT" = "%@\n\n错误代码：%@\n详细信息：%@";
