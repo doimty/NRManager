@@ -23,6 +23,8 @@ NSString *const CCNMServingSummaryErrorKey = @"error";
 NSString *const CCNMServingSummarySuccessKey = @"success";
 NSString *const CCNMServingSummarySamplingStatusKey = @"samplingStatus";
 NSString *const CCNMServingSummaryUnsafeOutstandingKey = @"unsafeOutstanding";
+NSString *const CCNMServingStatusDidChangeDarwinNotification =
+    @"me.nixuge.networkmanager.serving-status-changed";
 
 static const long long CCNMServingFreshnessLifetimeMilliseconds = 30000;
 static NSString *const CCNMServingCacheFilename = @"me.nixuge.networkmanager.serving-status.plist";
@@ -44,15 +46,15 @@ static NSDictionary *CCNMServingReadCachedSummary(void) {
     return [summary copy];
 }
 
-static void CCNMServingPersistCachedSummary(NSDictionary *summary) {
+static BOOL CCNMServingPersistCachedSummary(NSDictionary *summary) {
     if (![summary isKindOfClass:NSDictionary.class]) {
-        return;
+        return NO;
     }
     NSDictionary *cache = @{
         @"schemaVersion": @1,
         @"summary": summary
     };
-    [cache writeToFile:CCNMServingCachePath() atomically:YES];
+    return [cache writeToFile:CCNMServingCachePath() atomically:YES];
 }
 
 @protocol CCNMServingCoreTelephonyClient <NSObject>
@@ -465,9 +467,16 @@ static NSDictionary *CCNMServingSummaryFromReport(NSDictionary *report,
 }
 
 - (NSDictionary<NSString *, id> *)currentSummary {
+    NSDictionary *cached = CCNMServingReadCachedSummary();
     NSDictionary *snapshot = nil;
     @synchronized(self) {
         snapshot = [self.lastSummary copy];
+        long long cachedAt = [cached[CCNMServingSummarySampledAtMillisecondsKey] longLongValue];
+        long long memoryAt = [snapshot[CCNMServingSummarySampledAtMillisecondsKey] longLongValue];
+        if (cachedAt > memoryAt) {
+            self.lastSummary = cached;
+            snapshot = cached;
+        }
     }
     NSMutableDictionary *current = [snapshot mutableCopy] ?: [CCNMServingStatusEmptySummary() mutableCopy];
     long long sampledAt = [current[CCNMServingSummarySampledAtMillisecondsKey] longLongValue];
@@ -493,7 +502,12 @@ static NSDictionary *CCNMServingSummaryFromReport(NSDictionary *report,
         self.lastSummary = published;
         self.lastSupportEvidence = evidence ?: @{};
     }
-    CCNMServingPersistCachedSummary(published);
+    if (CCNMServingPersistCachedSummary(published)) {
+        CFNotificationCenterPostNotification(
+            CFNotificationCenterGetDarwinNotifyCenter(),
+            (__bridge CFStringRef)CCNMServingStatusDidChangeDarwinNotification,
+            NULL, NULL, true);
+    }
 }
 
 - (void)deliverCompletion:(void (^)(NSDictionary<NSString *, id> *))completion {

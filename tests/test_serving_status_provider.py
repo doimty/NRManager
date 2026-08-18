@@ -106,6 +106,9 @@ int main(void) {
         self.assertIn("CCNMServingReadCachedSummary", source)
         self.assertIn("CCNMServingPersistCachedSummary", source)
         self.assertIn("writeToFile:CCNMServingCachePath() atomically:YES", source)
+        self.assertIn("CCNMServingStatusDidChangeDarwinNotification", header + source)
+        self.assertIn("CFNotificationCenterPostNotification", source)
+        self.assertIn("CCNMServingReadCachedSummary", source)
         self.assertIn("nrObservationStatus", source)
         self.assertIn("cellMonitorSamplingStatus", source)
 

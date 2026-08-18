@@ -62,6 +62,17 @@ class ControlCenterServingLabelTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, refresh)
 
+    def test_cache_notification_reloads_the_live_glyph_without_respring(self):
+        for token in (
+            "CCNMServingStatusDidChangeDarwinNotification",
+            "CCNMServingStatusDidChangeCallback",
+            "refreshModulePresentation",
+            "contentViewController",
+            "respondsToSelector:@selector(reconfigureView)",
+            "[controller reconfigureView]",
+        ):
+            self.assertIn(token, self.source)
+
     def test_selected_color_remains_policy_truth(self):
         selected = self.source[self.source.index("- (BOOL)isSelected"):self.source.index("- (void)setSelected:")]
         self.assertIn("CCNMPolicyIsRequested", selected)

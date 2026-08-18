@@ -16,6 +16,7 @@ FOUNDATION_EXPORT NSString *const CCNMServingSummaryErrorKey;
 FOUNDATION_EXPORT NSString *const CCNMServingSummarySuccessKey;
 FOUNDATION_EXPORT NSString *const CCNMServingSummarySamplingStatusKey;
 FOUNDATION_EXPORT NSString *const CCNMServingSummaryUnsafeOutstandingKey;
+FOUNDATION_EXPORT NSString *const CCNMServingStatusDidChangeDarwinNotification;
 
 // The UI receives only this compact typed summary. Full sampler evidence stays
 // behind supportEvidence for diagnostics/export and is never used as policy truth.

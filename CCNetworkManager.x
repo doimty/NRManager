@@ -39,6 +39,10 @@ static NSString *CCNMServingGlyphText(NSDictionary *summary, BOOL refreshInProgr
     return @"?";
 }
 
+@protocol CCNMGlyphReconfiguring <NSObject>
+- (void)reconfigureView;
+@end
+
 @interface CCNetworkManager ()
 @property (nonatomic, assign) BOOL policyOperationPending;
 @property (nonatomic, assign) BOOL policyOperationTargetN78;
@@ -49,6 +53,7 @@ static NSString *CCNMServingGlyphText(NSDictionary *summary, BOOL refreshInProgr
 
 - (void)requestServingRefreshIfNeeded;
 - (void)invalidateServingStatus;
+- (void)refreshModulePresentation;
 @end
 
 static void CCNMPolicyDidChangeCallback(CFNotificationCenterRef center,
@@ -63,7 +68,24 @@ static void CCNMPolicyDidChangeCallback(CFNotificationCenterRef center,
     CCNetworkManager *module = (__bridge CCNetworkManager *)observer;
     dispatch_async(dispatch_get_main_queue(), ^{
         [module invalidateServingStatus];
-        [module refreshState];
+        [module refreshModulePresentation];
+    });
+}
+
+static void CCNMServingStatusDidChangeCallback(CFNotificationCenterRef center,
+                                                void *observer,
+                                                CFStringRef name,
+                                                const void *object,
+                                                CFDictionaryRef userInfo) {
+    (void)center;
+    (void)name;
+    (void)object;
+    (void)userInfo;
+    CCNetworkManager *module = (__bridge CCNetworkManager *)observer;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        module.servingSummary = CCNMServingStatusProvider.sharedProvider.currentSummary;
+        module.servingRefreshInProgress = NO;
+        [module refreshModulePresentation];
     });
 }
 
@@ -80,6 +102,13 @@ static void CCNMPolicyDidChangeCallback(CFNotificationCenterRef center,
             (__bridge CFStringRef)CCNMN78PolicyDidChangeDarwinNotification,
             NULL,
             CFNotificationSuspensionBehaviorDeliverImmediately);
+        CFNotificationCenterAddObserver(
+            CFNotificationCenterGetDarwinNotifyCenter(),
+            (__bridge const void *)self,
+            CCNMServingStatusDidChangeCallback,
+            (__bridge CFStringRef)CCNMServingStatusDidChangeDarwinNotification,
+            NULL,
+            CFNotificationSuspensionBehaviorDeliverImmediately);
     }
     return self;
 }
@@ -90,6 +119,19 @@ static void CCNMPolicyDidChangeCallback(CFNotificationCenterRef center,
         (__bridge const void *)self,
         (__bridge CFStringRef)CCNMN78PolicyDidChangeDarwinNotification,
         NULL);
+    CFNotificationCenterRemoveObserver(
+        CFNotificationCenterGetDarwinNotifyCenter(),
+        (__bridge const void *)self,
+        (__bridge CFStringRef)CCNMServingStatusDidChangeDarwinNotification,
+        NULL);
+}
+
+- (void)refreshModulePresentation {
+    [self refreshState];
+    id<CCNMGlyphReconfiguring> controller = (id)self.contentViewController;
+    if ([controller respondsToSelector:@selector(reconfigureView)]) {
+        [controller reconfigureView];
+    }
 }
 
 - (void)invalidateServingStatus {
@@ -127,9 +169,9 @@ static void CCNMPolicyDidChangeCallback(CFNotificationCenterRef center,
         if (!self) {
             return;
         }
-        self.servingSummary = summary ?: CCNMServingStatusEmptySummary();
+        self.servingSummary = provider.currentSummary;
         self.servingRefreshInProgress = NO;
-        [self refreshState];
+        [self refreshModulePresentation];
     }];
 }
 
@@ -199,7 +241,7 @@ static void CCNMPolicyDidChangeCallback(CFNotificationCenterRef center,
         (void)summary;
         dispatch_async(dispatch_get_main_queue(), ^{
             weakSelf.policyOperationPending = NO;
-            [weakSelf refreshState];
+            [weakSelf refreshModulePresentation];
         });
     };
     if (selected) {
