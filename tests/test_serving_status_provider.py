@@ -102,6 +102,10 @@ int main(void) {
         ):
             self.assertIn(token, header + source)
         self.assertIn("CCNMServingFreshnessLifetimeMilliseconds", source)
+        self.assertIn("me.nixuge.networkmanager.serving-status.plist", source)
+        self.assertIn("CCNMServingReadCachedSummary", source)
+        self.assertIn("CCNMServingPersistCachedSummary", source)
+        self.assertIn("writeToFile:CCNMServingCachePath() atomically:YES", source)
         self.assertIn("nrObservationStatus", source)
         self.assertIn("cellMonitorSamplingStatus", source)
 

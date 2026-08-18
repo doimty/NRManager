@@ -25,6 +25,35 @@ NSString *const CCNMServingSummarySamplingStatusKey = @"samplingStatus";
 NSString *const CCNMServingSummaryUnsafeOutstandingKey = @"unsafeOutstanding";
 
 static const long long CCNMServingFreshnessLifetimeMilliseconds = 30000;
+static NSString *const CCNMServingCacheFilename = @"me.nixuge.networkmanager.serving-status.plist";
+
+static NSString *CCNMServingCachePath(void) {
+    return [CCNMN78PolicyStatePath().stringByDeletingLastPathComponent
+        stringByAppendingPathComponent:CCNMServingCacheFilename];
+}
+
+static NSDictionary *CCNMServingReadCachedSummary(void) {
+    NSDictionary *cache = [NSDictionary dictionaryWithContentsOfFile:CCNMServingCachePath()];
+    NSDictionary *summary = [cache[@"summary"] isKindOfClass:NSDictionary.class]
+        ? cache[@"summary"] : nil;
+    if (![summary isKindOfClass:NSDictionary.class] ||
+        ![summary[CCNMServingSummarySampledAtMillisecondsKey] isKindOfClass:NSNumber.class] ||
+        ![summary[CCNMServingSummaryStateKey] isKindOfClass:NSString.class]) {
+        return nil;
+    }
+    return [summary copy];
+}
+
+static void CCNMServingPersistCachedSummary(NSDictionary *summary) {
+    if (![summary isKindOfClass:NSDictionary.class]) {
+        return;
+    }
+    NSDictionary *cache = @{
+        @"schemaVersion": @1,
+        @"summary": summary
+    };
+    [cache writeToFile:CCNMServingCachePath() atomically:YES];
+}
 
 @protocol CCNMServingCoreTelephonyClient <NSObject>
 - (instancetype)initWithQueue:(dispatch_queue_t)queue;
@@ -428,7 +457,7 @@ static NSDictionary *CCNMServingSummaryFromReport(NSDictionary *report,
     self = [super init];
     if (self) {
         _operationQueue = dispatch_queue_create("me.nixuge.networkmanager.serving-status", DISPATCH_QUEUE_SERIAL);
-        _lastSummary = CCNMServingStatusEmptySummary();
+        _lastSummary = CCNMServingReadCachedSummary() ?: CCNMServingStatusEmptySummary();
         _lastSupportEvidence = @{};
         _retainedSamplerLockDescriptor = -1;
     }
@@ -459,10 +488,12 @@ static NSDictionary *CCNMServingSummaryFromReport(NSDictionary *report,
 }
 
 - (void)publishSummary:(NSDictionary *)summary evidence:(NSDictionary *)evidence {
+    NSDictionary *published = summary ?: CCNMServingStatusEmptySummary();
     @synchronized(self) {
-        self.lastSummary = summary ?: CCNMServingStatusEmptySummary();
+        self.lastSummary = published;
         self.lastSupportEvidence = evidence ?: @{};
     }
+    CCNMServingPersistCachedSummary(published);
 }
 
 - (void)deliverCompletion:(void (^)(NSDictionary<NSString *, id> *))completion {

@@ -44,6 +44,7 @@ static NSString *CCNMServingGlyphText(NSDictionary *summary, BOOL refreshInProgr
 @property (nonatomic, assign) BOOL policyOperationTargetN78;
 @property (nonatomic, assign) BOOL servingRefreshInProgress;
 @property (nonatomic, assign) NSTimeInterval servingRefreshLastAttempt;
+@property (nonatomic, assign) NSTimeInterval servingRefreshStartedAt;
 @property (nonatomic, copy) NSDictionary<NSString *, id> *servingSummary;
 
 - (void)requestServingRefreshIfNeeded;
@@ -118,6 +119,7 @@ static void CCNMPolicyDidChangeCallback(CFNotificationCenterRef center,
         return;
     }
     self.servingRefreshLastAttempt = now;
+    self.servingRefreshStartedAt = now;
     self.servingRefreshInProgress = YES;
     __weak typeof(self) weakSelf = self;
     [provider refreshWithCompletion:^(NSDictionary<NSString *, id> *summary) {
@@ -133,6 +135,12 @@ static void CCNMPolicyDidChangeCallback(CFNotificationCenterRef center,
 
 - (UIImage *)iconGlyph {
     NSDictionary *state = CCNMReadN78PolicyState();
+    NSTimeInterval now = NSDate.date.timeIntervalSince1970;
+    if (self.servingRefreshInProgress &&
+        now - self.servingRefreshStartedAt > 20.0) {
+        self.servingRefreshInProgress = NO;
+        self.servingRefreshLastAttempt = now;
+    }
     [self requestServingRefreshIfNeeded];
     UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 70, 70)];
     label.textColor = UIColor.blackColor;

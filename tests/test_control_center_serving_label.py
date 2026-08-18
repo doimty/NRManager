@@ -42,12 +42,14 @@ class ControlCenterServingLabelTests(unittest.TestCase):
         for token in (
             "servingRefreshInProgress",
             "servingRefreshLastAttempt",
+            "servingRefreshStartedAt",
             "refreshWithCompletion",
             "CCNMServingSummaryStaleKey",
             "dispatch_get_main_queue",
             "refreshState",
         ):
             self.assertIn(token, self.source)
+        self.assertIn("now - self.servingRefreshStartedAt > 20.0", self.source)
         start = self.source.index("- (void)requestServingRefreshIfNeeded")
         end = self.source.index("- (UIImage *)iconGlyph", start)
         refresh = self.source[start:end]
