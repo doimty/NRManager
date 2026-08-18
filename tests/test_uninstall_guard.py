@@ -30,6 +30,8 @@ class UninstallGuardTests(unittest.TestCase):
         self.assertIn("../networkmanagerprefs/CCNMN78PolicyController.m", makefile)
         self.assertIn("postinst_OBJCFLAGS += -fno-modules -fno-implicit-modules", makefile)
         self.assertIn("prerm_OBJCFLAGS += -fno-modules -fno-implicit-modules", makefile)
+        self.assertIn("-DCCNM_MAINTAINER_SCRIPT", makefile)
+        self.assertNotIn("-lroothide", makefile)
         self.assertIn("SUBPROJECTS += package-actions", root_makefile)
 
     def test_remove_upgrade_and_downgrade_path_all_restore_first(self):
@@ -82,6 +84,14 @@ class UninstallGuardTests(unittest.TestCase):
         lock_body = source[source.index("static int CCNMAcquirePolicyLock"):source.index("static void CCNMReleasePolicyLock")]
         self.assertIn("CCNMNormalizePolicyDescriptorOwnership", write_body)
         self.assertIn("CCNMNormalizePolicyDescriptorOwnership", lock_body)
+
+    def test_maintainer_scripts_are_self_contained(self):
+        source = POLICY_SOURCE.read_text()
+        self.assertIn("CCNM_MAINTAINER_SCRIPT", source)
+        self.assertIn("CCNMJBResourceRoot", source)
+        self.assertIn('@"/var/containers/Bundle/Application/"', source)
+        self.assertIn('".jbroot-"', source)
+        self.assertNotIn("#import <roothide.h>", source.split("#elif __has_include(<roothide.h>)")[0])
 
     def test_missing_baseline_only_cleans_a_verified_restore_checkpoint(self):
         source = POLICY_SOURCE.read_text()
