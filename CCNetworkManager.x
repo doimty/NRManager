@@ -17,6 +17,7 @@ static BOOL CCNMPolicyNeedsRecovery(NSDictionary *state) {
 
 @interface CCNetworkManager ()
 @property (nonatomic, assign) BOOL policyOperationPending;
+@property (nonatomic, assign) BOOL policyOperationTargetN78;
 @end
 
 static void CCNMPolicyDidChangeCallback(CFNotificationCenterRef center,
@@ -70,12 +71,15 @@ static void CCNMPolicyDidChangeCallback(CFNotificationCenterRef center,
     label.numberOfLines = 2;
     label.font = [UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold];
 
+    BOOL requested = self.policyOperationPending
+        ? self.policyOperationTargetN78
+        : CCNMPolicyIsRequested(state);
     if (self.policyOperationPending || CCNMPolicyIsTransitioning(state)) {
-        label.text = @"n78\n...";
+        label.text = requested ? @"n78\n..." : @"Auto\n...";
     } else if (CCNMPolicyNeedsRecovery(state)) {
-        label.text = @"n78\n!";
+        label.text = requested ? @"n78\n!" : @"Auto\n!";
     } else {
-        label.text = @"n78";
+        label.text = requested ? @"n78" : @"Auto";
     }
 
     UIGraphicsBeginImageContextWithOptions(label.bounds.size, NO, 0.0);
@@ -107,6 +111,7 @@ static void CCNMPolicyDidChangeCallback(CFNotificationCenterRef center,
     }
 
     self.policyOperationPending = YES;
+    self.policyOperationTargetN78 = selected;
     __weak typeof(self) weakSelf = self;
     CCNMN78PolicyCompletion completion = ^(NSDictionary<NSString *, id> *summary) {
         (void)summary;

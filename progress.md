@@ -44,6 +44,12 @@ Target: iPhone14,3 / iOS 15.1.1 (19B81), slot 1, one present and good SIM
 - The CC Darwin-notification callback, blocked-operation paths, setter completion, and immediate post-request path now call `refreshState`; the obsolete `reconfigureView` category declaration was removed. A static regression failed before the change and passes after it.
 - Full host suite is now 63/63; source verifier, Python compile, and `git diff --check` pass. Cloud/device retest is still required.
 
+## Control Center glyph state fix
+
+- Device testing found a second UI defect: the CC glyph was hardcoded to `n78`, so it still displayed n78 after the policy was disabled and the device was serving LTE B3.
+- `iconGlyph` now derives the label from requested policy: `n78` when n78 is requested, `Auto` when system default is requested, and matching `...`/`!` forms during transition or recovery. A pending target property keeps the transition glyph truthful before the durable state write completes.
+- Full host suite is now 64/64; source verifier, Python compile, and `git diff --check` pass. Cloud/device retest is still required.
+
 ## Remaining gates
 
 - Run pinned macOS 14/Xcode 15.4 rootless and roothide cloud builds. Reject empty/fatal logs, incompatible arm64e warnings, exact-minOS/load-command/dependency drift, and maintainer-script verification failures.
