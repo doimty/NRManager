@@ -35,7 +35,7 @@ static NSString *CCNMLiveTextForSummary(NSDictionary<NSString *, id> *summary) {
 static UIImage *CCNMLiveGlyphImage(NSString *text) {
     UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 70, 70)];
     label.text = text.length > 0 ? text : @"?";
-    label.textColor = UIColor.blackColor;
+    label.textColor = UIColor.whiteColor;
     label.backgroundColor = UIColor.clearColor;
     label.textAlignment = NSTextAlignmentCenter;
     label.adjustsFontSizeToFitWidth = YES;
@@ -49,17 +49,40 @@ static UIImage *CCNMLiveGlyphImage(NSString *text) {
     return image;
 }
 
+static UIImage *CCNMLiveCenteredSymbolGlyphImage(UIImage *symbol) {
+    if (!symbol) {
+        return nil;
+    }
+    CGSize canvasSize = CGSizeMake(70.0, 70.0);
+    CGFloat maxDimension = 30.0;
+    CGFloat scale = MIN(maxDimension / MAX(symbol.size.width, 1.0),
+        maxDimension / MAX(symbol.size.height, 1.0));
+    CGSize drawSize = CGSizeMake(symbol.size.width * scale, symbol.size.height * scale);
+    CGRect drawRect = CGRectMake(
+        (canvasSize.width - drawSize.width) / 2.0,
+        (canvasSize.height - drawSize.height) / 2.0,
+        drawSize.width,
+        drawSize.height);
+    UIImage *whiteSymbol = [symbol imageWithTintColor:UIColor.whiteColor
+        renderingMode:UIImageRenderingModeAlwaysOriginal];
+    UIGraphicsBeginImageContextWithOptions(canvasSize, NO, 0.0);
+    [whiteSymbol drawInRect:CGRectIntegral(drawRect)];
+    UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    return image;
+}
+
 static UIImage *CCNMLiveSearchingGlyphImage(void) {
     UIImageSymbolConfiguration *configuration =
         [UIImageSymbolConfiguration configurationWithPointSize:25.0
             weight:UIImageSymbolWeightMedium];
-    UIImage *image = [UIImage systemImageNamed:@"antenna.radiowaves.left.and.right"
+    UIImage *symbol = [UIImage systemImageNamed:@"antenna.radiowaves.left.and.right"
         withConfiguration:configuration];
-    if (!image) {
-        image = [UIImage systemImageNamed:@"magnifyingglass"
+    if (!symbol) {
+        symbol = [UIImage systemImageNamed:@"magnifyingglass"
             withConfiguration:configuration];
     }
-    return image ?: CCNMLiveGlyphImage(@"...");
+    return CCNMLiveCenteredSymbolGlyphImage(symbol) ?: CCNMLiveGlyphImage(@"...");
 }
 
 @class NetworkManagerLiveViewController;
@@ -101,7 +124,7 @@ static void CCNMLiveServingStatusDidChangeCallback(
     [super viewDidLoad];
     self.title = @"Live Band";
     self.selected = NO;
-    self.glyphColor = UIColor.blackColor;
+    self.glyphColor = UIColor.whiteColor;
     self.glyphImage = CCNMLiveSearchingGlyphImage();
     [self applyNewerCachedSummary];
 }
