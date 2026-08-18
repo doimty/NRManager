@@ -30,7 +30,7 @@ static void CCNMPolicyDidChangeCallback(CFNotificationCenterRef center,
     (void)userInfo;
     CCNetworkManager *module = (__bridge CCNetworkManager *)observer;
     dispatch_async(dispatch_get_main_queue(), ^{
-        [module reconfigureView];
+        [module refreshState];
     });
 }
 
@@ -95,14 +95,14 @@ static void CCNMPolicyDidChangeCallback(CFNotificationCenterRef center,
 
 - (void)setSelected:(BOOL)selected {
     if (self.policyOperationPending) {
-        [super reconfigureView];
+        [self refreshState];
         return;
     }
     NSDictionary *state = CCNMReadN78PolicyState();
     BOOL currentlyRequested = CCNMPolicyIsRequested(state);
     BOOL mayWrite = [state[CCNMN78PolicySummaryMayWriteKey] boolValue];
     if (selected == currentlyRequested || !mayWrite) {
-        [super reconfigureView];
+        [self refreshState];
         return;
     }
 
@@ -112,7 +112,7 @@ static void CCNMPolicyDidChangeCallback(CFNotificationCenterRef center,
         (void)summary;
         dispatch_async(dispatch_get_main_queue(), ^{
             weakSelf.policyOperationPending = NO;
-            [weakSelf reconfigureView];
+            [weakSelf refreshState];
         });
     };
     if (selected) {
@@ -121,7 +121,7 @@ static void CCNMPolicyDidChangeCallback(CFNotificationCenterRef center,
         CCNMDisableN78Preference(completion);
     }
 
-    [super reconfigureView];
+    [self refreshState];
 }
 
 @end
