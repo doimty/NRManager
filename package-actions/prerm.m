@@ -55,6 +55,11 @@ int main(int argc, const char *argv[]) {
         }
 
         NSDictionary<NSString *, id> *current = CCNMReadN78PolicyState();
+        if (CCNMSummaryIsClean(current) &&
+            [current[@"verifiedKnownOrphanRestore"] boolValue] &&
+            ![current[@"removalGuardPresent"] boolValue]) {
+            return CCNMRemovalAllowed;
+        }
         NSDictionary<NSString *, id> *orphanEligibility = CCNMReadKnownOrphanedN78RemovalSafety();
         if ([orphanEligibility[@"eligible"] boolValue]) {
             fprintf(stderr,

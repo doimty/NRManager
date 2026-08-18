@@ -420,6 +420,25 @@ class KnownOrphanRecoverySourceTests(unittest.TestCase):
             self.assertIn(token, self.settings)
         self.assertNotIn("CCNMRecoverKnownOrphanedN78", self.cc)
 
+    def test_verified_known_restore_can_upgrade_without_dpkg_telephony_permission(self):
+        summary = self.policy[
+            self.policy.index("static NSDictionary *CCNMSummaryFromState"):
+            self.policy.index("static NSDictionary *CCNMReadPolicyStateInternal")
+        ]
+        self.assertIn('"verifiedKnownOrphanRestore"', summary)
+        self.assertIn("CCNMStateHasVerifiedKnownOrphanRestore(base)", summary)
+        restore_validator = self.policy[
+            self.policy.index("static BOOL CCNMStateHasVerifiedKnownOrphanRestore"):
+            self.policy.index("static NSDictionary *CCNMDeepCopyDictionary")
+        ]
+        self.assertIn("CCNMKnownOrphanHistoricalOriginalBands", restore_validator)
+        self.assertIn("CCNMKnownOrphanRecoverySource", restore_validator)
+        self.assertIn("CCNMKnownOrphanEvidenceSHA256", restore_validator)
+        trusted = self.prerm.index('current[@"verifiedKnownOrphanRestore"]')
+        probe = self.prerm.index("CCNMReadKnownOrphanedN78RemovalSafety()")
+        self.assertLess(trusted, probe)
+        self.assertIn('![current[@"removalGuardPresent"] boolValue]', self.prerm)
+
     def test_prerm_blocks_exact_orphan_without_automatic_modem_write(self):
         probe = self.prerm.index("CCNMReadKnownOrphanedN78RemovalSafety()")
         existing_guard_acceptance = self.prerm.index(

@@ -726,6 +726,20 @@ static BOOL CCNMKnownOrphanBaselineMatchesEvidence(NSDictionary *baseline) {
             CCNMKnownOrphanHistoricalOriginalBands());
 }
 
+static BOOL CCNMStateHasVerifiedKnownOrphanRestore(NSDictionary *state) {
+    return [state isKindOfClass:NSDictionary.class] &&
+        [state[@"recoverySource"] isEqual:CCNMKnownOrphanRecoverySource] &&
+        [state[@"evidenceSHA256"] isEqual:CCNMKnownOrphanEvidenceSHA256] &&
+        [state[@"requestedMode"] isEqual:CCNMRequestedModeSystemDefault] &&
+        [state[@"appliedPolicy"] isEqual:CCNMAppliedPolicyVerifiedSystemDefault] &&
+        [state[@"recoveryState"] isEqual:CCNMRecoveryStateClean] &&
+        ![state[@"uncertain"] boolValue] &&
+        [state[@"verifiedAt"] isKindOfClass:NSNumber.class] &&
+        [state[@"restoredBaselineCreatedAt"] isKindOfClass:NSNumber.class] &&
+        CCNMDictionariesEqual(state[@"verifiedActiveBands"],
+            CCNMKnownOrphanHistoricalOriginalBands());
+}
+
 static NSDictionary *CCNMDeepCopyDictionary(NSDictionary *dictionary, NSString **failure) {
     if (![dictionary isKindOfClass:[NSDictionary class]]) {
         if (failure) {
@@ -1241,7 +1255,8 @@ static NSDictionary *CCNMSummaryFromState(NSDictionary *state,
         @"intentPath": CCNMN78PolicyIntentPath(),
         @"inFlightPath": CCNMN78PolicyInFlightPath(),
         @"lockPath": CCNMN78PolicyLockPath(),
-        @"removalGuardPath": CCNMN78PolicyRemovalGuardPath()
+        @"removalGuardPath": CCNMN78PolicyRemovalGuardPath(),
+        @"verifiedKnownOrphanRestore": @(CCNMStateHasVerifiedKnownOrphanRestore(base))
     } mutableCopy];
     if (details) {
         [summary addEntriesFromDictionary:details];
