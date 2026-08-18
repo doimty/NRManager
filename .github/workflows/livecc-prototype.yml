@@ -229,11 +229,13 @@ jobs:
             xcrun nm -u "$binary"
             strings -a "$binary"
           } > "$dependency_surface"
-          forbidden='libroothide|jbroot[[:space:]]*\(|CCNMN78PolicyController|CCNMEnableN78Preference|CCNMDisableN78Preference|CCNMRecoverN78Preference|enableWithCompletion:|disableWithCompletion:|recoverWithCompletion:|setActiveBandInfo|setRatSelection|_CTServerConnectionSetRATSelection|reconfigureView|refreshState|class_getInstanceVariable|object_getIvar|valueForKey:|setValue:forKey:'
+          forbidden='libroothide|jbroot[[:space:]]*\(|CCNMN78PolicyController|_OBJC_CLASS_\$_CCNMServingStatusProvider|CCNMCellMonitorAsyncState|CCNMEnableN78Preference|CCNMDisableN78Preference|CCNMRecoverN78Preference|enableWithCompletion:|disableWithCompletion:|recoverWithCompletion:|setActiveBandInfo|setRatSelection|_CTServerConnectionSetRATSelection|reconfigureView|refreshState|class_getInstanceVariable|object_getIvar|valueForKey:|setValue:forKey:'
           if grep -En "$forbidden" "$dependency_surface"; then
             echo "forbidden LiveCC binary symbol or dependency found" >&2
             exit 1
           fi
+          grep -F 'CCNMLiveServingStatusProvider' "$dependency_surface" >/dev/null
+          grep -F 'CCNMLiveCellMonitorAsyncState' "$dependency_surface" >/dev/null
           cat "$dependency_surface" >> "$artifact_dir/verification.txt"
 
           cp "$deb" "$artifact_dir/"

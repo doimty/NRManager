@@ -48,6 +48,9 @@ class LiveCCPackagingTests(unittest.TestCase):
             workflow,
         )
         self.assertNotIn("payload_root/var/jb/Library/ControlCenter", workflow)
+        self.assertIn("CCNMCellMonitorAsyncState", workflow)
+        self.assertIn("CCNMLiveCellMonitorAsyncState", workflow)
+        self.assertIn("CCNMLiveServingStatusProvider", workflow)
         self.assertNotIn("make -C .", workflow)
 
     def test_bundle_compiles_only_read_only_shared_dependencies(self):
@@ -57,6 +60,9 @@ class LiveCCPackagingTests(unittest.TestCase):
         self.assertIn("Sources/CCNMLiveServingPaths.m", self.makefile)
         self.assertIn(
             "-DCCNMServingStatusProvider=CCNMLiveServingStatusProvider", self.makefile
+        )
+        self.assertIn(
+            "-DCCNMCellMonitorAsyncState=CCNMLiveCellMonitorAsyncState", self.makefile
         )
         self.assertIn("ifneq ($(THEOS_PACKAGE_SCHEME),roothide)", self.makefile)
         self.assertIn("NetworkManagerLive_PRIVATE_FRAMEWORKS = ControlCenterUIKit", self.makefile)
@@ -152,6 +158,9 @@ class LiveCCStaticSafetyTests(unittest.TestCase):
             self.assertIn(token, self.source)
         self.assertEqual(self.source.count("repeats:YES"), 1)
         self.assertEqual(self.source.count("repeats:NO"), 1)
+        self.assertGreaterEqual(self.source.count("__weak typeof(self)"), 3)
+        self.assertIn("[weakSelf refreshTimerFired:timer]", self.source)
+        self.assertIn("[weakDebounceSelf ratDebounceTimerFired:timer]", self.source)
         rat_start = self.source.index("- (void)radioAccessTechnologyDidChange:")
         rat_end = self.source.index("- (void)ratDebounceTimerFired:", rat_start)
         rat_handler = self.source[rat_start:rat_end]

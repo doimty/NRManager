@@ -119,11 +119,12 @@ static void CCNMLiveServingStatusDidChangeCallback(
     [self registerObserversIfNeeded];
     [self applyNewerCachedSummary];
     if (!self.refreshTimer) {
+        __weak typeof(self) weakSelf = self;
         self.refreshTimer = [NSTimer scheduledTimerWithTimeInterval:CCNMLiveRefreshInterval
-            target:self
-            selector:@selector(refreshTimerFired:)
-            userInfo:nil
-            repeats:YES];
+            repeats:YES
+            block:^(NSTimer *timer) {
+                [weakSelf refreshTimerFired:timer];
+            }];
     }
 }
 
@@ -184,11 +185,12 @@ static void CCNMLiveServingStatusDidChangeCallback(
             return;
         }
         [self.ratDebounceTimer invalidate];
+        __weak typeof(self) weakDebounceSelf = self;
         self.ratDebounceTimer = [NSTimer scheduledTimerWithTimeInterval:CCNMLiveRATDebounceInterval
-            target:self
-            selector:@selector(ratDebounceTimerFired:)
-            userInfo:nil
-            repeats:NO];
+            repeats:NO
+            block:^(NSTimer *timer) {
+                [weakDebounceSelf ratDebounceTimerFired:timer];
+            }];
     });
 }
 
