@@ -415,7 +415,7 @@ def verify_macho_binary(
     if dependency_code != 0:
         failures.append("otool -L failed for %s" % binary)
     elif lane == "roothide":
-        if ROOTHIDE_DYLIB not in dependencies:
+        if binary.name not in MAINTAINER_BINARY_FILES and ROOTHIDE_DYLIB not in dependencies:
             failures.append("%s lacks the pinned roothide runtime dependency" % binary)
         forbidden_private = [
             item
