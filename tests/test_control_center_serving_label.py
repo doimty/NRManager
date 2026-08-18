@@ -36,7 +36,7 @@ class ControlCenterServingLabelTests(unittest.TestCase):
         self.assertIn('return @"?";', self.source)
         self.assertIn("CCNMPolicyIsTransitioning", self.source)
         self.assertIn("CCNMPolicyNeedsRecovery", self.source)
-        self.assertIn("policyOperationPending", self.source)
+        self.assertNotIn("policyOperationPending", self.source)
 
     def test_refresh_is_async_bounded_and_never_writes_modem(self):
         for token in (
@@ -72,6 +72,20 @@ class ControlCenterServingLabelTests(unittest.TestCase):
             "[controller reconfigureView]",
         ):
             self.assertIn(token, self.source)
+
+    def test_system_set_selected_callback_is_read_only(self):
+        start = self.source.index("- (void)setSelected:")
+        callback = self.source[start:self.source.index("@end", start)]
+        self.assertNotIn("CCNMEnableN78Preference", callback)
+        self.assertNotIn("CCNMDisableN78Preference", callback)
+        self.assertNotIn("CCNMRecoverN78Preference", callback)
+        self.assertIn("[self refreshModulePresentation]", callback)
+        for writer in (
+            "CCNMEnableN78Preference",
+            "CCNMDisableN78Preference",
+            "CCNMRecoverN78Preference",
+        ):
+            self.assertNotIn(writer, self.source)
 
     def test_selected_color_remains_policy_truth(self):
         selected = self.source[self.source.index("- (BOOL)isSelected"):self.source.index("- (void)setSelected:")]

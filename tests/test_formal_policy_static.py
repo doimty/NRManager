@@ -115,12 +115,12 @@ class FormalPolicyStaticTests(unittest.TestCase):
             self.cc_source,
         )
 
-    def test_control_center_does_not_persist_local_network_label_as_truth(self):
+    def test_control_center_is_read_only_and_does_not_persist_local_truth(self):
         self.assertNotIn("selectedNetwork", self.cc_source)
         self.assertIn("CCNMN78Policy", self.cc_source)
-        self.assertIn("policyOperationPending", self.cc_source)
-        self.assertIn("self.policyOperationPending = YES", self.cc_source)
-        self.assertIn("weakSelf.policyOperationPending = NO", self.cc_source)
+        self.assertNotIn("policyOperationPending", self.cc_source)
+        self.assertNotIn("CCNMEnableN78Preference", self.cc_source)
+        self.assertNotIn("CCNMDisableN78Preference", self.cc_source)
         self.assertIn("CCNMN78PolicyDidChangeDarwinNotification", self.cc_source)
         self.assertIn("CFNotificationCenterAddObserver", self.cc_source)
         self.assertIn("CFNotificationCenterRemoveObserver", self.cc_source)

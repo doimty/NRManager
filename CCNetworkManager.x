@@ -44,8 +44,6 @@ static NSString *CCNMServingGlyphText(NSDictionary *summary, BOOL refreshInProgr
 @end
 
 @interface CCNetworkManager ()
-@property (nonatomic, assign) BOOL policyOperationPending;
-@property (nonatomic, assign) BOOL policyOperationTargetN78;
 @property (nonatomic, assign) BOOL servingRefreshInProgress;
 @property (nonatomic, assign) NSTimeInterval servingRefreshLastAttempt;
 @property (nonatomic, assign) NSTimeInterval servingRefreshStartedAt;
@@ -140,7 +138,7 @@ static void CCNMServingStatusDidChangeCallback(CFNotificationCenterRef center,
 }
 
 - (void)requestServingRefreshIfNeeded {
-    if (self.policyOperationPending || self.servingRefreshInProgress) {
+    if (self.servingRefreshInProgress) {
         return;
     }
     NSDictionary *policy = CCNMReadN78PolicyState();
@@ -194,10 +192,8 @@ static void CCNMServingStatusDidChangeCallback(CFNotificationCenterRef center,
     label.numberOfLines = 2;
     label.font = [UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold];
 
-    BOOL requested = self.policyOperationPending
-        ? self.policyOperationTargetN78
-        : CCNMPolicyIsRequested(state);
-    if (self.policyOperationPending || CCNMPolicyIsTransitioning(state)) {
+    BOOL requested = CCNMPolicyIsRequested(state);
+    if (CCNMPolicyIsTransitioning(state)) {
         label.text = requested ? @"n78\n..." : @"Auto\n...";
     } else if (CCNMPolicyNeedsRecovery(state)) {
         label.text = requested ? @"n78\n!" : @"Auto\n!";
@@ -221,36 +217,8 @@ static void CCNMServingStatusDidChangeCallback(CFNotificationCenterRef center,
 }
 
 - (void)setSelected:(BOOL)selected {
-    if (self.policyOperationPending || self.servingRefreshInProgress) {
-        [self refreshState];
-        return;
-    }
-    NSDictionary *state = CCNMReadN78PolicyState();
-    BOOL currentlyRequested = CCNMPolicyIsRequested(state);
-    BOOL mayWrite = [state[CCNMN78PolicySummaryMayWriteKey] boolValue];
-    if (selected == currentlyRequested || !mayWrite) {
-        [self refreshState];
-        return;
-    }
-
-    self.policyOperationPending = YES;
-    self.policyOperationTargetN78 = selected;
-    [self invalidateServingStatus];
-    __weak typeof(self) weakSelf = self;
-    CCNMN78PolicyCompletion completion = ^(NSDictionary<NSString *, id> *summary) {
-        (void)summary;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            weakSelf.policyOperationPending = NO;
-            [weakSelf refreshModulePresentation];
-        });
-    };
-    if (selected) {
-        CCNMEnableN78Preference(completion);
-    } else {
-        CCNMDisableN78Preference(completion);
-    }
-
-    [self refreshState];
+    (void)selected;
+    [self refreshModulePresentation];
 }
 
 @end
