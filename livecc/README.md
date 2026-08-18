@@ -23,7 +23,11 @@ only UI convergence and does not claim the diagnostic full-window NR-negative
 result. The confirmed cell and timestamp come from the second copy. This version
 also reduces RAT-notification debounce from two seconds to 250 ms and suppresses
 superseded completions/cache notifications. Diagnostic adaptive/full-window
-sampler APIs remain unchanged. Each version still requires pinned roothide cloud
+sampler APIs remain unchanged. Version 0.0.5 isolates the prototype's cache and
+Darwin notification namespace from the installed stable package, serializes
+publication revisions with a dedicated advisory lock, refuses to publish a
+false-safe summary on modem-lock contention, and clears pending refresh state
+across visibility sessions. Each version still requires pinned roothide cloud
 validation before device delivery.
 
 Run the focused checks:

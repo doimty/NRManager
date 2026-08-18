@@ -11,30 +11,28 @@ static const NSTimeInterval CCNMLiveRefreshInterval = 15.0;
 static const NSTimeInterval CCNMLiveRATDebounceSeconds = 0.25;
 
 static NSString *CCNMLiveTextForSummary(NSDictionary<NSString *, id> *summary) {
-    NSString *state = [summary[CCNMServingSummaryStateKey] isKindOfClass:NSString.class]
-        ? summary[CCNMServingSummaryStateKey] : CCNMServingStateUnknown;
-    CCNMLiveRadioKind radioKind = CCNMLiveRadioKindUnknown;
-    if ([state isEqual:CCNMServingStateLTE]) {
-        radioKind = CCNMLiveRadioKindLTE;
-    } else if ([state isEqual:CCNMServingStateNRN78] ||
-               [state isEqual:CCNMServingStateNROther]) {
-        radioKind = CCNMLiveRadioKindNR;
+    BOOL success = [summary[CCNMServingSummarySuccessKey] boolValue];
+    BOOL stale = [summary[CCNMServingSummaryStaleKey] boolValue];
+    long long band = [summary[CCNMServingSummaryBandKey] longLongValue];
+    if (!success || stale || band <= 0 || band > 1024) {
+        return nil;
     }
 
-    char text[32] = {0};
-    CCNMLiveFormatBandText(
-        text,
-        sizeof(text),
-        [summary[CCNMServingSummarySuccessKey] boolValue],
-        [summary[CCNMServingSummaryStaleKey] boolValue],
-        radioKind,
-        [summary[CCNMServingSummaryBandKey] longLongValue]);
-    return [NSString stringWithUTF8String:text] ?: @"?";
+    NSString *state = [summary[CCNMServingSummaryStateKey] isKindOfClass:NSString.class]
+        ? summary[CCNMServingSummaryStateKey] : CCNMServingStateUnknown;
+    if ([state isEqual:CCNMServingStateLTE]) {
+        return [NSString stringWithFormat:@"B%lld", band];
+    }
+    if ([state isEqual:CCNMServingStateNRN78] ||
+        [state isEqual:CCNMServingStateNROther]) {
+        return [NSString stringWithFormat:@"n%lld", band];
+    }
+    return nil;
 }
 
 static UIImage *CCNMLiveGlyphImage(NSString *text) {
     UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 70, 70)];
-    label.text = text.length > 0 ? text : @"?";
+    label.text = text.length > 0 ? text : @"...";
     label.textColor = UIColor.whiteColor;
     label.backgroundColor = UIColor.clearColor;
     label.textAlignment = NSTextAlignmentCenter;
@@ -171,6 +169,8 @@ static void CCNMLiveServingStatusDidChangeCallback(
 
 - (void)endVisibleSession {
     self.visible = NO;
+    self.refreshPending = NO;
+    self.awaitingCurrentRefresh = NO;
     [self.refreshTimer invalidate];
     self.refreshTimer = nil;
     [self.ratDebounceTimer invalidate];
@@ -261,6 +261,7 @@ static void CCNMLiveServingStatusDidChangeCallback(
     if (!self.hasFreshServingResult) {
         self.glyphImage = CCNMLiveSearchingGlyphImage();
     }
+    self.refreshPending = NO;
     self.refreshInProgress = YES;
     NSUInteger generation = self.refreshGeneration;
     __weak typeof(self) weakSelf = self;
@@ -317,8 +318,10 @@ static void CCNMLiveServingStatusDidChangeCallback(
     self.appliedPublishedAtMilliseconds =
         MAX(self.appliedPublishedAtMilliseconds, publishedAt);
     NSString *text = CCNMLiveTextForSummary(summary);
-    self.hasFreshServingResult = ![text isEqualToString:@"?"];
-    self.glyphImage = CCNMLiveGlyphImage(text);
+    self.hasFreshServingResult = text.length > 0;
+    self.glyphImage = self.hasFreshServingResult
+        ? CCNMLiveGlyphImage(text)
+        : CCNMLiveSearchingGlyphImage();
 }
 
 - (void)buttonTapped:(id)button forEvent:(UIEvent *)event {

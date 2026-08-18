@@ -21,6 +21,7 @@ NetworkManagerLive_RESOURCE_DIRS = Resources
 NetworkManagerLive_CFLAGS = -fobjc-arc -Iinclude -I../networkmanagerprefs
 NetworkManagerLive_CFLAGS += -DCCNMServingStatusProvider=CCNMLiveServingStatusProvider
 NetworkManagerLive_CFLAGS += -DCCNMCellMonitorAsyncState=CCNMLiveCellMonitorAsyncState
+NetworkManagerLive_CFLAGS += -DCCNM_SERVING_USE_LIVECC_NAMESPACE=1
 NetworkManagerLive_CFLAGS += -Wno-error=objc-method-access
 NetworkManagerLive_FRAMEWORKS = CoreFoundation CoreTelephony Foundation QuartzCore UIKit
 ifneq ($(THEOS_PACKAGE_SCHEME),roothide)

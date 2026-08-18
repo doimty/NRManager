@@ -12,6 +12,10 @@
 #import <sys/sysctl.h>
 #import <unistd.h>
 
+#ifndef CCNM_SERVING_USE_LIVECC_NAMESPACE
+#define CCNM_SERVING_USE_LIVECC_NAMESPACE 0
+#endif
+
 NSString *const CCNMServingSummaryStateKey = @"servingState";
 NSString *const CCNMServingSummaryDataLineKey = @"dataLine";
 NSString *const CCNMServingSummarySampledAtMillisecondsKey = @"sampledAtMilliseconds";
@@ -24,15 +28,53 @@ NSString *const CCNMServingSummaryErrorKey = @"error";
 NSString *const CCNMServingSummarySuccessKey = @"success";
 NSString *const CCNMServingSummarySamplingStatusKey = @"samplingStatus";
 NSString *const CCNMServingSummaryUnsafeOutstandingKey = @"unsafeOutstanding";
+#if CCNM_SERVING_USE_LIVECC_NAMESPACE
+NSString *const CCNMServingStatusDidChangeDarwinNotification =
+    @"me.nixuge.networkmanager.livecc.serving-status-changed";
+#else
 NSString *const CCNMServingStatusDidChangeDarwinNotification =
     @"me.nixuge.networkmanager.serving-status-changed";
+#endif
 
 static const long long CCNMServingFreshnessLifetimeMilliseconds = 30000;
-static NSString *const CCNMServingCacheFilename = @"me.nixuge.networkmanager.serving-status.plist";
+#if CCNM_SERVING_USE_LIVECC_NAMESPACE
+static NSString *const CCNMServingCacheFilename =
+    @"me.nixuge.networkmanager.livecc.serving-status.plist";
+static NSString *const CCNMServingCacheLockFilename =
+    @"me.nixuge.networkmanager.livecc.serving-status.lock";
+#else
+static NSString *const CCNMServingCacheFilename =
+    @"me.nixuge.networkmanager.serving-status.plist";
+static NSString *const CCNMServingCacheLockFilename =
+    @"me.nixuge.networkmanager.serving-status.lock";
+#endif
 
 static NSString *CCNMServingCachePath(void) {
     return [CCNMN78PolicyStatePath().stringByDeletingLastPathComponent
         stringByAppendingPathComponent:CCNMServingCacheFilename];
+}
+
+static NSString *CCNMServingCacheLockPath(void) {
+    return [CCNMN78PolicyStatePath().stringByDeletingLastPathComponent
+        stringByAppendingPathComponent:CCNMServingCacheLockFilename];
+}
+
+static int CCNMServingAcquireCacheLock(void) {
+    int descriptor = open(CCNMServingCacheLockPath().fileSystemRepresentation,
+        O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
+    if (descriptor < 0) return -1;
+    while (flock(descriptor, LOCK_EX) != 0) {
+        if (errno == EINTR) continue;
+        close(descriptor);
+        return -1;
+    }
+    return descriptor;
+}
+
+static void CCNMServingReleaseCacheLock(int descriptor) {
+    if (descriptor < 0) return;
+    flock(descriptor, LOCK_UN);
+    close(descriptor);
 }
 
 static NSDictionary *CCNMServingReadCachedSummary(void) {
@@ -504,7 +546,8 @@ static NSDictionary *CCNMServingSummaryFromReport(NSDictionary *report,
 }
 
 - (void)publishSummary:(NSDictionary *)summary evidence:(NSDictionary *)evidence {
-    NSDictionary *cached = CCNMServingReadCachedSummary();
+    int cacheLockDescriptor = CCNMServingAcquireCacheLock();
+    NSDictionary *cached = cacheLockDescriptor >= 0 ? CCNMServingReadCachedSummary() : nil;
     NSMutableDictionary *published =
         [(summary ?: CCNMServingStatusEmptySummary()) mutableCopy];
     @synchronized(self) {
@@ -516,7 +559,9 @@ static NSDictionary *CCNMServingSummaryFromReport(NSDictionary *report,
         self.lastSummary = [published copy];
         self.lastSupportEvidence = evidence ?: @{};
     }
-    if (CCNMServingPersistCachedSummary(published)) {
+    BOOL persisted = cacheLockDescriptor >= 0 && CCNMServingPersistCachedSummary(published);
+    CCNMServingReleaseCacheLock(cacheLockDescriptor);
+    if (persisted) {
         CFNotificationCenterPostNotification(
             CFNotificationCenterGetDarwinNotifyCenter(),
             (__bridge CFStringRef)CCNMServingStatusDidChangeDarwinNotification,
@@ -576,9 +621,9 @@ static NSDictionary *CCNMServingSummaryFromReport(NSDictionary *report,
             }
             int lockDescriptor = CCNMAcquireServingSamplerLock(&failure);
             if (lockDescriptor < 0) {
-                NSMutableDictionary *summary = [CCNMServingStatusEmptySummary() mutableCopy];
-                summary[CCNMServingSummaryErrorKey] = failure ?: @"The shared modem lock is busy.";
-                [self publishSummary:summary evidence:@{}];
+                // A different process may own an unsafe private callback latch.
+                // Never overwrite shared serving truth merely because this caller
+                // could not acquire the modem lock.
                 [self deliverCompletion:completion];
                 return;
             }

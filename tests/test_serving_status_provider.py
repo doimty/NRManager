@@ -108,6 +108,12 @@ int main(void) {
             self.assertIn(token, header + source)
         self.assertIn("CCNMServingFreshnessLifetimeMilliseconds", source)
         self.assertIn("me.nixuge.networkmanager.serving-status.plist", source)
+        self.assertIn("me.nixuge.networkmanager.livecc.serving-status.plist", source)
+        self.assertIn("me.nixuge.networkmanager.livecc.serving-status-changed", source)
+        self.assertIn("CCNM_SERVING_USE_LIVECC_NAMESPACE", source)
+        self.assertIn("CCNMServingCacheLockPath", source)
+        self.assertIn("CCNMServingAcquireCacheLock", source)
+        self.assertIn("flock(descriptor, LOCK_EX)", source)
         self.assertIn("CCNMServingReadCachedSummary", source)
         self.assertIn("CCNMServingPersistCachedSummary", source)
         self.assertIn("writeToFile:CCNMServingCachePath() atomically:YES", source)
@@ -116,6 +122,8 @@ int main(void) {
         self.assertIn("CCNMServingReadCachedSummary", source)
         self.assertIn("CCNMServingSummaryPublishedAtMillisecondsKey", header + source)
         self.assertIn("previousPublishedAt + 1", source)
+        self.assertIn("cacheLockDescriptor >= 0 && CCNMServingPersistCachedSummary", source)
+        self.assertIn("CCNMServingReleaseCacheLock(cacheLockDescriptor)", source)
         self.assertIn("CCNMServingSummaryPublishedAtMillisecondsKey] longLongValue", source)
         release_start = source.index("- (void)releaseRetainedSamplerLockWhenSafe")
         release_end = source.index("- (void)refreshWithCompletion:", release_start)
@@ -123,6 +131,11 @@ int main(void) {
         self.assertLess(release.index("[self publishSummary:resolved"),
                         release.index("CCNMReleaseServingSamplerLock"))
         self.assertIn("CCNMServingSummarySampledAtMillisecondsKey] = @0", release)
+        lock_failure_start = source.index("if (lockDescriptor < 0)")
+        lock_failure_end = source.index("NSDictionary *report = nil", lock_failure_start)
+        lock_failure = source[lock_failure_start:lock_failure_end]
+        self.assertNotIn("publishSummary", lock_failure)
+        self.assertIn("deliverCompletion", lock_failure)
         self.assertIn("nrObservationStatus", SAMPLER.read_text())
         self.assertIn("cellMonitorSamplingStatus", source + SAMPLER.read_text())
 

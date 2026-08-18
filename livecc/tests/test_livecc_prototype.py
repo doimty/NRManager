@@ -28,9 +28,9 @@ class LiveCCPackagingTests(unittest.TestCase):
         self.assertEqual(self.plist["CFBundleIdentifier"], "me.nixuge.networkmanager.livecc")
         self.assertEqual(self.plist["CFBundleExecutable"], "NetworkManagerLive")
         self.assertEqual(self.plist["NSPrincipalClass"], "NetworkManagerLiveModule")
-        self.assertEqual(self.plist["CFBundleShortVersionString"], "0.0.4")
-        self.assertEqual(self.plist["CFBundleVersion"], "4")
-        self.assertIn("Version: 0.0.4", self.control)
+        self.assertEqual(self.plist["CFBundleShortVersionString"], "0.0.5")
+        self.assertEqual(self.plist["CFBundleVersion"], "5")
+        self.assertIn("Version: 0.0.5", self.control)
         self.assertIn("BUNDLE_NAME = NetworkManagerLive", self.makefile)
         self.assertIn("TARGET := iphone:clang:latest:14.0", self.makefile)
         self.assertNotIn("BUNDLE_NAME = NetworkManager\n", self.makefile)
@@ -67,6 +67,7 @@ class LiveCCPackagingTests(unittest.TestCase):
         self.assertIn(
             "-DCCNMCellMonitorAsyncState=CCNMLiveCellMonitorAsyncState", self.makefile
         )
+        self.assertIn("CCNM_SERVING_USE_LIVECC_NAMESPACE=1", self.makefile)
         self.assertIn("ifneq ($(THEOS_PACKAGE_SCHEME),roothide)", self.makefile)
         self.assertIn("NetworkManagerLive_PRIVATE_FRAMEWORKS = ControlCenterUIKit", self.makefile)
         self.assertIn("NetworkManagerLive_LDFLAGS += -undefined dynamic_lookup", self.makefile)
@@ -112,7 +113,7 @@ class LiveCCStaticSafetyTests(unittest.TestCase):
 
     def test_direct_glyph_assignment_has_no_private_refresh_path(self):
         apply_method = self.source[self.source.index("- (void)applySummary:") :]
-        self.assertIn("self.glyphImage = CCNMLiveGlyphImage", apply_method)
+        self.assertIn("self.glyphImage = self.hasFreshServingResult", apply_method)
         for forbidden in (
             "reconfigureView",
             "refreshState",
@@ -164,6 +165,11 @@ class LiveCCStaticSafetyTests(unittest.TestCase):
         self.assertGreaterEqual(self.source.count("__weak typeof(self)"), 3)
         self.assertIn("[weakSelf refreshTimerFired:timer]", self.source)
         self.assertIn("[weakDebounceSelf ratDebounceTimerFired:timer]", self.source)
+        end_start = self.source.index("- (void)endVisibleSession")
+        end_end = self.source.index("- (void)registerObserversIfNeeded", end_start)
+        end_session = self.source[end_start:end_end]
+        self.assertIn("self.refreshPending = NO", end_session)
+        self.assertIn("self.awaitingCurrentRefresh = NO", end_session)
         rat_start = self.source.index("- (void)radioAccessTechnologyDidChange:")
         rat_end = self.source.index("- (void)ratDebounceTimerFired:", rat_start)
         rat_handler = self.source[rat_start:rat_end]
@@ -190,6 +196,8 @@ class LiveCCStaticSafetyTests(unittest.TestCase):
         ):
             self.assertIn(token, self.source)
         self.assertNotIn('self.glyphImage = CCNMLiveGlyphImage(@"?")', self.source)
+        self.assertNotIn('@"?"', self.source)
+        self.assertIn("CCNMLiveSearchingGlyphImage()", self.source)
         self.assertNotIn("glyphColor = UIColor.blackColor", self.source)
         self.assertIn("glyphColor = UIColor.whiteColor", self.source)
 
