@@ -39,10 +39,6 @@ static NSString *CCNMServingGlyphText(NSDictionary *summary, BOOL refreshInProgr
     return @"?";
 }
 
-@protocol CCNMGlyphReconfiguring <NSObject>
-- (void)reconfigureView;
-@end
-
 @interface CCNetworkManager ()
 @property (nonatomic, assign) BOOL servingRefreshInProgress;
 @property (nonatomic, assign) NSTimeInterval servingRefreshLastAttempt;
@@ -126,10 +122,6 @@ static void CCNMServingStatusDidChangeCallback(CFNotificationCenterRef center,
 
 - (void)refreshModulePresentation {
     [self refreshState];
-    id<CCNMGlyphReconfiguring> controller = (id)self.contentViewController;
-    if ([controller respondsToSelector:@selector(reconfigureView)]) {
-        [controller reconfigureView];
-    }
 }
 
 - (void)invalidateServingStatus {
@@ -218,7 +210,6 @@ static void CCNMServingStatusDidChangeCallback(CFNotificationCenterRef center,
 
 - (void)setSelected:(BOOL)selected {
     (void)selected;
-    [self refreshModulePresentation];
 }
 
 @end

@@ -62,16 +62,21 @@ class ControlCenterServingLabelTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, refresh)
 
-    def test_cache_notification_reloads_the_live_glyph_without_respring(self):
+    def test_cache_notification_uses_only_safe_public_refresh(self):
         for token in (
             "CCNMServingStatusDidChangeDarwinNotification",
             "CCNMServingStatusDidChangeCallback",
             "refreshModulePresentation",
-            "contentViewController",
-            "respondsToSelector:@selector(reconfigureView)",
-            "[controller reconfigureView]",
+            "[self refreshState]",
         ):
             self.assertIn(token, self.source)
+        for forbidden in (
+            "contentViewController",
+            "class_getInstanceVariable",
+            "object_getIvar",
+            "reconfigureView",
+        ):
+            self.assertNotIn(forbidden, self.source)
 
     def test_system_set_selected_callback_is_read_only(self):
         start = self.source.index("- (void)setSelected:")
@@ -79,7 +84,9 @@ class ControlCenterServingLabelTests(unittest.TestCase):
         self.assertNotIn("CCNMEnableN78Preference", callback)
         self.assertNotIn("CCNMDisableN78Preference", callback)
         self.assertNotIn("CCNMRecoverN78Preference", callback)
-        self.assertIn("[self refreshModulePresentation]", callback)
+        self.assertNotIn("refreshState", callback)
+        self.assertNotIn("refreshModulePresentation", callback)
+        self.assertIn("(void)selected", callback)
         for writer in (
             "CCNMEnableN78Preference",
             "CCNMDisableN78Preference",
