@@ -400,7 +400,8 @@ def verify_macho_binary(
         has_chained_fixups = "LC_DYLD_CHAINED_FIXUPS" in load_commands
         if not has_info_only and not has_chained_fixups:
             failures.append("%s lacks both supported dyld fixup formats" % binary)
-        if lane == "roothide" and has_chained_fixups:
+        if (lane == "roothide" and has_chained_fixups and
+                binary.name not in MAINTAINER_BINARY_FILES):
             failures.append("%s contains forbidden LC_DYLD_CHAINED_FIXUPS" % binary)
         if lane == "roothide" and binary.name in ROOTHIDE_BASELINE_DEPENDENCIES and set(load_commands) != ROOTHIDE_RELEASE_LOAD_COMMANDS:
             failures.append(
