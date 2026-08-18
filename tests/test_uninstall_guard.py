@@ -89,7 +89,11 @@ class UninstallGuardTests(unittest.TestCase):
         source = POLICY_SOURCE.read_text()
         self.assertIn("CCNM_MAINTAINER_SCRIPT", source)
         self.assertIn("CCNMJBResourceRoot", source)
+        self.assertIn("CCNMJBResourceRootFromExecutable", source)
+        self.assertIn("_NSGetExecutablePath", source)
         self.assertIn('@"/var/containers/Bundle/Application/"', source)
+        self.assertIn("matches.count == 1", source)
+        self.assertIn('@"/.networkmanager-invalid-jbroot"', source)
         self.assertIn('".jbroot-"', source)
         self.assertNotIn("#import <roothide.h>", source.split("#elif __has_include(<roothide.h>)")[0])
 
