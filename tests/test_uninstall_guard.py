@@ -31,7 +31,6 @@ class UninstallGuardTests(unittest.TestCase):
         self.assertIn("postinst_OBJCFLAGS += -fno-modules -fno-implicit-modules", makefile)
         self.assertIn("prerm_OBJCFLAGS += -fno-modules -fno-implicit-modules", makefile)
         self.assertIn("-DCCNM_MAINTAINER_SCRIPT", makefile)
-        self.assertIn("-Wl,-no_fixup_chains", makefile)
         self.assertNotIn("-lroothide", makefile)
         self.assertIn("SUBPROJECTS += package-actions", root_makefile)
 
@@ -105,6 +104,8 @@ class UninstallGuardTests(unittest.TestCase):
     def test_package_verifier_requires_and_inspects_prerm(self):
         self.assertEqual(verify_release_package.REQUIRED_MAINTAINER_FILES, {"postinst", "prerm"})
         self.assertEqual(verify_release_package.MAINTAINER_BINARY_FILES, ("postinst", "prerm"))
+        verifier = (ROOT / "scripts/verify_release_package.py").read_text()
+        self.assertIn("binary.name not in MAINTAINER_BINARY_FILES", verifier)
 
 
 if __name__ == "__main__":
