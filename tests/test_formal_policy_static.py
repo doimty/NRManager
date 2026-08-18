@@ -107,8 +107,12 @@ class FormalPolicyStaticTests(unittest.TestCase):
 
     def test_control_center_glyph_reflects_requested_policy(self):
         self.assertIn("CCNMPolicyIsRequested(state)", self.cc_source)
-        self.assertIn('requested ? @"n78" : @"Auto"', self.cc_source)
         self.assertIn('requested ? @"n78\\n..." : @"Auto\\n..."', self.cc_source)
+        self.assertIn('requested ? @"n78\\n!" : @"Auto\\n!"', self.cc_source)
+        self.assertIn(
+            "CCNMServingGlyphText(self.servingSummary, self.servingRefreshInProgress)",
+            self.cc_source,
+        )
 
     def test_control_center_does_not_persist_local_network_label_as_truth(self):
         self.assertNotIn("selectedNetwork", self.cc_source)

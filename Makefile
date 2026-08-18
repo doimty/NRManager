@@ -5,7 +5,7 @@ export ARCHS = arm64 arm64e
 
 BUNDLE_NAME = NetworkManager
 NetworkManager_BUNDLE_EXTENSION = bundle
-NetworkManager_FILES = CCNetworkManager.x networkmanagerprefs/CCNMN78PolicyController.m
+NetworkManager_FILES = CCNetworkManager.x networkmanagerprefs/CCNMN78PolicyController.m networkmanagerprefs/CCNMServingStatusProvider.m networkmanagerprefs/CCNMServingCellSampler.m
 NetworkManager_FRAMEWORKS = CoreTelephony Foundation UIKit
 NetworkManager_INSTALL_PATH = /Library/ControlCenter/Bundles
 
