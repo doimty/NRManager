@@ -57,9 +57,9 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
 - (NSArray *)specifiers {
     if (!_specifiers) {
         NSBundle *bundle = [NSBundle bundleForClass:self.class];
-        NSMutableArray<PSSpecifier *> *loaded = [self loadSpecifiersFromPlistName:@"Root"
-                                                                           target:self
-                                                                           bundle:bundle];
+        NSMutableArray<PSSpecifier *> *loaded = [[self loadSpecifiersFromPlistName:@"Root"
+                                                                                target:self
+                                                                                bundle:bundle] mutableCopy];
         [self localizeSpecifiers:loaded];
 
         self.recoverySpecifiers = [self recoverySpecifiersFromArray:loaded];
@@ -603,7 +603,7 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
 
     _specifiers = updatedSpecifiers;
     if (self.isViewLoaded) {
-        [self.tableView reloadData];
+        [self.table reloadData];
     }
 }
 

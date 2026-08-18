@@ -100,6 +100,17 @@ class FormalSettingsUITests(unittest.TestCase):
             self.assertEqual(identifiers.count(identifier), 1)
         self.assertIn("rebuildRecoverySection", self.controller)
         self.assertIn("removeObjectsInArray:self.recoverySpecifiers", self.controller)
+        loader_start = self.controller.index("loadSpecifiersFromPlistName:")
+        loader_end = self.controller.index("[self localizeSpecifiers:loaded]", loader_start)
+        self.assertIn(
+            "mutableCopy",
+            self.controller[loader_start:loader_end],
+            "the Preferences loader may return an immutable NSArray; make the working list mutable before removal",
+        )
+
+    def test_ios15_uses_pslistcontroller_table_getter(self):
+        self.assertNotIn("self.tableView", self.controller)
+        self.assertIn("[self.table reloadData]", self.controller)
 
     def test_no_legacy_social_rat_cycle_or_diagnostic_actions(self):
         combined = ROOT_PLIST.read_text() + self.controller + self.cells

@@ -1,7 +1,7 @@
 # 1.5.0 implementation progress
 
 Baseline: `2947f98ffb2665b000afab2c4db3ae843866d4da`
-Branch: `release/1.5.0`
+Branch: `fix/settings-ios15-table-getter`
 Target: iPhone14,3 / iOS 15.1.1 (19B81), slot 1, one present and good SIM
 
 ## Completed in working tree
@@ -30,8 +30,16 @@ Target: iPhone14,3 / iOS 15.1.1 (19B81), slot 1, one present and good SIM
 - Independent spec/safety review found no P0 and identified bounded-readback/CC pending-state improvements; those were implemented. Two proposed changes were rejected with rationale because they would weaken the shared modem interlock or invalidate legitimate post-restore crash cleanup.
 - Independent standards review found three P1 issues: arm64e minOS drift, `prerm` exiting while a timed-out setter retained the lock, and an incorrect maintainer-script mode range check. All were fixed and the same reviewer confirmed no P0/P1 remained. Its final P2 exact-minOS gate was also fixed.
 
+## Target Settings crash diagnosis and fix
+
+- The first roothide RC crashed immediately when opening its Settings page. Device report `Preferences-2026-08-18-074050`, SHA256 `dc2411ddf2ffedf98f66e7fb7ce75dc4a0ecd7411775dff31348c61138737196`, is an uncaught Objective-C `doesNotRecognizeSelector:` exception on the main thread.
+- Exact arm64e symbolization of package SHA256 `7d4b38de36f78ba1bf1ccdd90fa790fe0aa997b2046165d01994e68b3cf276d0` maps the four package frames to `viewDidLoad + 0x74`, `refreshPolicyState + 0x30`, `applyPolicySummary: + 0x2d4`, and `rebuildRecoverySection + 0x38c`.
+- The failing call is the final `self.tableView` getter in `rebuildRecoverySection`. The iOS 15.1.1 `PSListController` runtime exposes `table`, not `tableView`; the newer Theos header incorrectly made the unavailable getter compile. The controller now reloads through `[self.table reloadData]`.
+- Specifier loading also takes a defensive `mutableCopy` before removing hidden recovery rows, so runtime array mutability is no longer assumed.
+- A dedicated iOS 15 compatibility regression failed before the getter fix and passes after it. Full host suite is now 62/62; Python compile, source verifier, and `git diff --check` pass. Local rootless and roothide compile smoke checks pass, but local arm64e warnings remain non-deliverable.
+
 ## Remaining gates
 
-- Commit only after owner review, then run pinned macOS 14/Xcode 15.4 rootless and roothide cloud builds. Reject empty/fatal logs, incompatible arm64e warnings, exact-minOS/load-command/dependency drift, and maintainer-script verification failures.
+- Run pinned macOS 14/Xcode 15.4 rootless and roothide cloud builds. Reject empty/fatal logs, incompatible arm64e warnings, exact-minOS/load-command/dependency drift, and maintainer-script verification failures.
 - Perform target-device RC acceptance for enable, actual NR n78, LTE fallback, reboot, disable, crash checkpoints, timeout, uninstall, and downgrade. Rootless requires separate acceptance.
 - Do not create tag, publish, or deliver a package until those gates pass.
