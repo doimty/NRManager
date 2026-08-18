@@ -13,7 +13,64 @@
 #import <time.h>
 #import <unistd.h>
 
-#if __has_include(<roothide.h>)
+#if defined(CCNM_MAINTAINER_SCRIPT)
+
+// Maintainer scripts run inside dpkg, where libroothide.dylib is not loaded
+// and @loader_path/.jbroot does not exist. Resolve the jbroot directory
+// ourselves using the same convention as roothide Bootstrap: a directory
+// named .jbroot-<16 hex chars> under /var/containers/Bundle/Application/.
+static BOOL CCNMIsJBResourceName(const char *name) {
+    if (!name) {
+        return NO;
+    }
+    static const char prefix[] = ".jbroot-";
+    size_t prefixLength = sizeof(prefix) - 1;
+    if (strlen(name) != prefixLength + 16) {
+        return NO;
+    }
+    if (strncmp(name, prefix, prefixLength) != 0) {
+        return NO;
+    }
+    char *end = NULL;
+    unsigned long long value = strtoull(name + prefixLength, &end, 16);
+    if (!end || *end != '\0') {
+        return NO;
+    }
+    uint8_t check = (uint8_t)(value >> 8) ^ (uint8_t)(value >> 16) ^
+        (uint8_t)(value >> 24) ^ (uint8_t)(value >> 32) ^
+        (uint8_t)(value >> 40) ^ (uint8_t)(value >> 48) ^
+        (uint8_t)(value >> 56);
+    return check == (uint8_t)value;
+}
+
+static NSString *CCNMJBResourceRoot(void) {
+    static NSString *cachedRoot;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSString *applicationDirectory = @"/var/containers/Bundle/Application/";
+        NSArray *entries = [[NSFileManager defaultManager]
+            contentsOfDirectoryAtPath:applicationDirectory error:NULL];
+        for (NSString *entry in entries) {
+            if (CCNMIsJBResourceName(entry.UTF8String)) {
+                cachedRoot = [applicationDirectory stringByAppendingPathComponent:entry];
+                break;
+            }
+        }
+    });
+    return cachedRoot;
+}
+
+static NSString *CCNMPolicyRootForMaintainer(NSString *path) {
+    NSString *root = CCNMJBResourceRoot();
+    if (root.length == 0) {
+        return path;
+    }
+    return [root stringByAppendingPathComponent:path];
+}
+
+#define CCNMPolicyRoot(path) CCNMPolicyRootForMaintainer(path)
+
+#elif __has_include(<roothide.h>)
 #import <roothide.h>
 #define CCNMPolicyRoot(path) jbroot(path)
 #else
