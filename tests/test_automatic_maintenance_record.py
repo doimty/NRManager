@@ -13,6 +13,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "networkmanagerprefs" / "CCNMAutomaticMaintenanceRecord.m"
 HEADER = ROOT / "networkmanagerprefs" / "CCNMAutomaticMaintenanceRecord.h"
 READER_SOURCE = ROOT / "networkmanagerprefs" / "CCNMN78PolicyReader.m"
+SUPPORT_SOURCE = ROOT / "networkmanagerprefs" / "CCNMN78PolicySupport.m"
+DECISION_SOURCE = ROOT / "networkmanagerprefs" / "CCNMAutomaticMaintenanceDecision.c"
 HEADER_DIR = ROOT / "networkmanagerprefs"
 
 # Check if Foundation is available on this host for ObjC compilation tests.
@@ -240,6 +242,8 @@ class AutomaticMaintenanceRecordTests(unittest.TestCase):
                     str(harness),
                     str(SOURCE),
                     str(READER_SOURCE),
+                    str(SUPPORT_SOURCE),
+                    str(DECISION_SOURCE),
                     "-o", str(executable),
                 ],
                 capture_output=True,
@@ -268,6 +272,9 @@ class AutomaticMaintenanceRecordTests(unittest.TestCase):
                     "-framework", "Foundation",
                     str(harness),
                     str(SOURCE),
+                    str(READER_SOURCE),
+                    str(SUPPORT_SOURCE),
+                    str(DECISION_SOURCE),
                     "-o", str(executable),
                 ],
                 capture_output=True,
