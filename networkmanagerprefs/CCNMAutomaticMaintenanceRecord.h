@@ -109,7 +109,7 @@ FOUNDATION_EXPORT NSDictionary * _Nullable CCNMABuildRecord(NSDictionary *policy
                                                              NSUInteger policyGeneration,
                                                              NSNumber *baselineCreatedAt,
                                                              CCNMAutomaticMaintenanceDecision decision,
-                                                             NSDictionary *existingRecord);
+                                                             NSDictionary * _Nullable existingRecord);
 
 // ---------------------------------------------------------------------------
 // Persistence
@@ -136,7 +136,7 @@ FOUNDATION_EXPORT NSDictionary * _Nullable CCNMAReadStatus(void);
 // existing reader/provider.  Decision is the evaluation result.
 FOUNDATION_EXPORT NSDictionary *CCNMABuildStatus(NSDictionary *policySummary,
                                                    NSDictionary *servingSummary,
-                                                   NSDictionary *record,
+                                                   NSDictionary * _Nullable record,
                                                    CCNMAutomaticMaintenanceDecision decision,
                                                    CCNMAutomaticMaintenanceSample previous,
                                                    CCNMAutomaticMaintenanceSample current,
