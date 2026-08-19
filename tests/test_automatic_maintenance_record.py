@@ -16,15 +16,20 @@ READER_SOURCE = ROOT / "networkmanagerprefs" / "CCNMN78PolicyReader.m"
 HEADER_DIR = ROOT / "networkmanagerprefs"
 
 # Check if Foundation is available on this host for ObjC compilation tests.
-_FOUNDATION_AVAILABLE = False
-_foundation_check = subprocess.run(
-    ["clang", "-x", "objective-c", "-E", "-", "-framework", "Foundation"],
-    input="#import <Foundation/Foundation.h>\n",
-    capture_output=True,
-    text=True,
-    timeout=5,
-)
-_FOUNDATION_AVAILABLE = _foundation_check.returncode == 0
+# A bounded probe timeout means this host cannot provide a usable Foundation
+# toolchain for these optional host-side tests; package builds still compile
+# their Objective-C sources in the pinned macOS lane.
+try:
+    _foundation_check = subprocess.run(
+        ["clang", "-x", "objective-c", "-E", "-", "-framework", "Foundation"],
+        input="#import <Foundation/Foundation.h>\n",
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    _FOUNDATION_AVAILABLE = _foundation_check.returncode == 0
+except subprocess.TimeoutExpired:
+    _FOUNDATION_AVAILABLE = False
 
 skip_unless_foundation = unittest.skipIf(
     not _FOUNDATION_AVAILABLE,
