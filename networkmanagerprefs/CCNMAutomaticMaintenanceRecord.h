@@ -102,14 +102,14 @@ FOUNDATION_EXPORT NSString *CCNMARATName(CCNMAutomaticMaintenanceRAT rat);
 
 // Build a new or updated record from the current daemon state.
 // Returns nil if the input is invalid (no boot session, etc.).
-FOUNDATION_EXPORT NSDictionary *CCNMABuildRecord(NSDictionary *policySummary,
-                                                   NSDictionary *identity,
-                                                   CCNMAutomaticMaintenanceSample previous,
-                                                   CCNMAutomaticMaintenanceSample current,
-                                                   NSUInteger policyGeneration,
-                                                   NSNumber *baselineCreatedAt,
-                                                   CCNMAutomaticMaintenanceDecision decision,
-                                                   NSDictionary *existingRecord);
+FOUNDATION_EXPORT NSDictionary * _Nullable CCNMABuildRecord(NSDictionary *policySummary,
+                                                             NSDictionary *identity,
+                                                             CCNMAutomaticMaintenanceSample previous,
+                                                             CCNMAutomaticMaintenanceSample current,
+                                                             NSUInteger policyGeneration,
+                                                             NSNumber *baselineCreatedAt,
+                                                             CCNMAutomaticMaintenanceDecision decision,
+                                                             NSDictionary *existingRecord);
 
 // ---------------------------------------------------------------------------
 // Persistence

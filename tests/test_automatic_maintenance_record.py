@@ -160,9 +160,9 @@ int main(void) {
     if (CCNMAValidateRecord(bad)) return 24;
     // CCNMAValidateStatus
     NSDictionary *emptyServing = @{
-        CCNMServingSummaryStateKey: @"",
-        CCNMServingSummaryBandKey: @0,
-        CCNMServingSummarySuccessKey: @NO
+        @"state": @"",
+        @"band": @0,
+        @"success": @NO
     };
     CCNMAutomaticMaintenanceSample empty = {0};
     NSDictionary *status = CCNMABuildStatus(policy, emptyServing, record3,
