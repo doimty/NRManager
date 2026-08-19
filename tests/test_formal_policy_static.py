@@ -88,6 +88,21 @@ class FormalPolicyStaticTests(unittest.TestCase):
         self.assertIn("CCNMN78PolicyBaselinePath", disable)
         self.assertIn("CCNMRecoveryStateEnabledWithBaseline", self.source)
 
+    def test_transaction_baseline_binds_capability_and_owned_fields(self):
+        for token in (
+            '"deviceModel"',
+            '"systemVersion"',
+            '"systemBuild"',
+            '"supportedBands"',
+            '"modifiedBandKeys"',
+            "CCNMValidateBaselineCompatibility",
+        ):
+            self.assertIn(token, self.source)
+        self.assertIn("baseline[@\"supportedBands\"]", self.source)
+        self.assertIn("modifiedBandKeys.count == 1", self.source)
+        self.assertIn("ownedKeys.count == 1", self.source)
+        self.assertIn("CCNMNRKey", self.source)
+
     def test_readback_has_attempt_and_monotonic_wall_clock_bounds(self):
         self.assertIn("CCNMReadBackMaximumAttempts = 31", self.source)
         self.assertIn("CCNMReadBackDeadlineSeconds = 30.0", self.source)

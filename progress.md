@@ -1,7 +1,7 @@
 # 1.5.0 implementation progress
 
 Baseline: `2947f98ffb2665b000afab2c4db3ae843866d4da`
-Branch: `fix/settings-ios15-table-getter`
+Branch: `prototype/livecc-readonly`
 Target: iPhone14,3 / iOS 15.1.1 (19B81), slot 1, one present and good SIM
 
 ## Completed in working tree
@@ -93,3 +93,48 @@ Target: iPhone14,3 / iOS 15.1.1 (19B81), slot 1, one present and good SIM
 - Implementation checkpoint: responsive confirmation and diagnostic NR-negative status are independent. Provider accepts only a complete `responsiveStableServing` report with a valid `confirmedServingCell` and second-copy timestamp; it never falls back to earlier observed cells. Winning-tier selection is NR > LTE > other, rejects invalid/conflicting cells without falling through, and treats NR and NRNSA as distinct identities. LiveCC generation/suppression state prevents superseded completions and Darwin cache notifications from repainting a pre-handover result.
 - Current evidence: focused responsive red test failed on all three baseline symptoms and is green after the change; LiveCC 12/12, root 100/100, source verifier, Python compile, `git diff --check`, local rootless compile/package, and local roothide compile/package smoke checks pass. Local roothide remains non-deliverable; pinned cloud and target timing/NSA/handover acceptance are pending.
 - The first 0.0.4 cloud artifact was withdrawn before acceptance after a final mixed-version review. LiveCC and the stable installed package must not share the serving cache/notification namespace while their ordering semantics differ. Version 0.0.5 uses an isolated LiveCC cache, notification, and publication lock; serializes revision read-increment-write; never publishes lock-contention as a false-safe state; and clears pending/debounce state across visibility sessions.
+
+## Automatic n78 preference maintenance, first safe slice
+
+- The product goal is an opt-in n78 preference maintenance mode, not a guaranteed band lock. Serving evidence, allowed-band policy, and recovery state remain separate domains.
+- Added `docs/automatic-n78-preference-maintenance.md` as the source of truth for two-step correction, one-attempt/cooldown behavior, unsafe-latch handling, non-portable transaction baselines, and portable policy intent.
+- Transaction baselines now retain device model, system version/build, complete `supportedBands`, and `modifiedBandKeys` alongside the original active-band snapshot. Legacy baselines remain readable through the existing accepted-target gate.
+- Restore now validates an enriched baseline against the current device/system identity, RAT-key shape, supported capability, and owned fields before any modem setter. Drift fails closed into recovery-required state.
+- Added `CCNMAutomaticMaintenanceDecision.[ch]`, a side-effect-free state machine shared by the Control Center and settings bundles. Executable host tests cover unknown/stale/flapping evidence, stable n78, LTE/other-NR drops, unsafe and incompatible states, verification, one-attempt exhaustion, cooldown, busy state, and disabled policy.
+- The current schema now requires `modifiedBandKeys` to be exactly the NR RAT key. Records cannot claim ownership of unrelated RAT arrays while the restore payload only restores NR.
+- Automatic correction is not wired to a background writer. SpringBoard remains read-only; the next slice needs a non-SpringBoard owner plus durable attempt/cooldown evidence before a one-shot setter path can be enabled.
+- Final evidence for this slice: 103/103 host tests pass; Python compilation, release source verification, and `git diff --check` pass; local rootless arm64/arm64e package compilation succeeds. The local arm64e linker emits the known incompatible-ABI warning, so the generated debug package is compile evidence only and must not be delivered.
+- An independent review attempt timed out without findings and is not counted as approval. The primary review verified identity population on every restore path and tightened `modifiedBandKeys` from “contains NR” to exactly the NR key.
+- Execution ownership is now fixed in `docs/automatic-maintenance-execution-owner.md`: a root, policy-scoped launch daemon guarded by launchd `KeepAlive/PathState`. SpringBoard and Settings remain non-automatic writers. The daemon is read-only unless the exact verified enabled state and matching baseline exist; a future correction persists attempt intent before any setter and never retries the same drop.
+- Added a manually invoked, read-only `networkmanager-maintenance --daemon` skeleton under `/usr/libexec`. It reuses the validated policy reader and responsive provider, requires the exact stable-enabled state, keeps two independent serving summaries, and evaluates the shared decision module. Its entry source has hard gates against policy write APIs and durable-record writers.
+- The monitor tool compiles for arm64/arm64e, but no launchd plist or package lifecycle activation exists, so it cannot start automatically. It has no setter path and persists no maintenance state.
+- Evidence after this slice: 110/110 host tests, Python compilation, release source verification, and `git diff --check` pass; the full local package including the monitor tool compiles successfully. Local arm64e warnings remain compile-only evidence.
+- iOS 15.1.1/roothide `PathState`, rewritten executable path, lifecycle, wakeups, and battery behavior still require controlled device validation before activation.
+
+## Read-only policy record parser extracted
+
+- `CCNMN78PolicyReader.m`/`.h` contain a self-contained copy of all read-only policy state functions (validation, loading, summary building, boot identity, band dictionary, record validation).
+- The reader exports `CCNMReadN78PolicyState()` with the same contract as the full controller, but contains no writer code: no `CCNMAcquirePolicyLock`, `CCNMCreateDurableRecord`, `CCNMBeginSetter`, `CCNMCallSetter`, `CCNMSetterUncertainLatch`, or any enable/disable/recover/recovery function.
+- The daemon `maintenance-daemon/main.m` now imports `CCNMN78PolicyReader.h` and the Makefile links `CCNMN78PolicyReader.m` instead of `CCNMN78PolicyController.m`.
+- The daemon has zero compile-time reachable writer code. Any future accidental writer call in the daemon will fail at link time.
+- Full host suite is now 117/117; new focused tests verify the daemon imports the reader (not the controller), the reader contains no forbidden writer tokens, and the reader header exports the correct read-only API.
+
+## Durable maintenance record and status plist
+
+- `CCNMAutomaticMaintenanceRecord.m`/`.h` define the record schema (version, owner, boot identity, device/system/SIM fingerprint, previous/current sample, drop generation, attempt consumption, cooldown, last decision) and the status plist (bounded external-observation format).
+- The daemon now persists both the record (`CCNMAWriteRecord`) and the status (`CCNMAWriteStatus`) after every refresh, including when the policy is disabled.
+- The record carries forward drop state across restarts on the same boot. A new boot session resets the drop state. Identity drift (different device model, system version, or build) is detectable via `CCNMARecordMatchesCurrentIdentity`.
+- The daemon imports `CCNMAutomaticMaintenanceRecord.h` and the Makefile links the new module. The record module contains no writer code (no setter, no lock, no durable policy write).
+- New focused suite `tests/test_automatic_maintenance_record.py` (7 tests: record building, validation, status construction, decision names, identity drift, Makefile linkage, source code integrity).
+
+## P1 identity and capability gate
+
+- Hypothesis: `baselineValid` alone is insufficient. A daemon can only evaluate automatic maintenance when the live slot-1 SIM UUID, device model, system product version/build, supported RAT shape, supported NR bands, and active NR policy domain are freshly observed and consistent with the retained baseline.
+- Implemented a read-only `getBandInfo:error:` query in `CCNMServingStatusProvider.m` with runtime ABI validation. The provider now publishes capability read success, supported/active NR arrays, exact supported RAT keys, n78 presence, capability sample time, and the real subscription UUID.
+- Replaced the daemon's `input.capabilityCompatible = [latestPolicy[@"baselineValid"] boolValue]` placeholder with a fail-closed baseline comparison. It requires both live supported and active n78, exact device/system/SIM identity, matching supported RAT shape, a baseline-owned NR set still supported, and a valid baseline capability snapshot.
+- Extended the maintenance record/status schema with the capability snapshot. Drop state is carried only when boot, device, system, SIM, and capability values all match; identity or capability drift starts a fresh generation and cannot replay the old evidence.
+- Success criteria: no baseline-only capability decision, missing UUID/capability cannot produce compatibility, and no setter/writer symbol enters the daemon or provider. Independent failure signals: ABI mismatch, malformed BandInfo, missing n78, missing UUID, baseline shape drift, or unsupported baseline-owned NR band.
+- Focused host checks pass for the serving provider, daemon read-only contract, and record source contract. Foundation-dependent Objective-C execution remains skipped on Linux pending Apple SDK/cloud build.
+- Local Theos compile caught and fixed Objective-C-only issues missed by host tests: missing `@` dictionary keys, a stale unimplemented method declaration, nested nullability in the reader header, reader static helper forward declarations, unused orphan-only reader helpers, record-local serving keys, and missing shared support constant linkage.
+- Extracted shared policy/serving/error constants into `networkmanagerprefs/CCNMN78PolicySupport.m`, linked by the Control Center bundle, PreferenceBundle, read-only daemon, and both maintainer-script tools. The complete aggregate `make` now compiles, links, merges, and signs all targets for arm64/arm64e. Local arm64e ABI warnings remain compile-only evidence and block delivery.
+- Current host evidence: 118/118 tests pass with 3 Foundation-dependent tests skipped, Python compilation and `git diff --check` pass. No writer symbols are present in the daemon, provider, record, or reader source paths.

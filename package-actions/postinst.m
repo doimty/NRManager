@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 #import <unistd.h>
 
+#import "CCNMMaintainerEnvironment.h"
 #import "../networkmanagerprefs/CCNMN78PolicyController.h"
 
 typedef NS_ENUM(int, CCNMPostinstExitCode) {
@@ -35,6 +36,14 @@ int main(int argc, const char *argv[]) {
             fprintf(stderr,
                 "NetworkManagerReborn: installation guard could not be cleared safely (error=%s).\n",
                 errorCode.UTF8String);
+            return CCNMPostinstBlocked;
+        }
+
+        NSError *launchdError = nil;
+        if (!CCNMRegisterMaintenanceLaunchd(&launchdError)) {
+            fprintf(stderr,
+                "NetworkManagerReborn: maintenance owner could not be registered safely (%s).\n",
+                launchdError.localizedDescription.UTF8String ?: "unknown");
             return CCNMPostinstBlocked;
         }
         return CCNMInstallAllowed;

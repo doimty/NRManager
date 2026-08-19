@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>DISABLE_TWEAKS</key>
+    <string>1</string>
+  </dict>
+  <key>KeepAlive</key>
+  <dict>
+    <key>PathState</key>
+    <dict>
+      <key>@JBROOT@/var/mobile/Library/Preferences/me.nixuge.networkmanager.n78-policy.baseline.plist</key>
+      <true/>
+    </dict>
+  </dict>
+  <key>Label</key>
+  <string>me.nixuge.networkmanager.maintenance</string>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>@JBROOT@/usr/libexec/networkmanager-maintenance</string>
+    <string>--daemon</string>
+  </array>
+  <key>StandardErrorPath</key>
+  <string>/dev/null</string>
+  <key>StandardOutPath</key>
+  <string>/dev/null</string>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <key>UserName</key>
+  <string>root</string>
+</dict>
+</plist>

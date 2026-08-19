@@ -93,6 +93,13 @@ static NSString *CCNMJBResourceRoot(void) {
 }
 
 static NSString *CCNMPolicyRootForMaintainer(NSString *path) {
+#if defined(THEOS_PACKAGE_INSTALL_PREFIX)
+    const char *compiledPrefix = THEOS_PACKAGE_INSTALL_PREFIX;
+    if (compiledPrefix && compiledPrefix[0] != '\0') {
+        NSString *rootlessRoot = [NSString stringWithUTF8String:compiledPrefix];
+        return [rootlessRoot stringByAppendingPathComponent:path];
+    }
+#endif
     NSString *root = CCNMJBResourceRoot();
     if (root.length == 0) {
         return [@"/.networkmanager-invalid-jbroot" stringByAppendingPathComponent:path];
@@ -108,56 +115,6 @@ static NSString *CCNMPolicyRootForMaintainer(NSString *path) {
 #else
 #define CCNMPolicyRoot(path) (path)
 #endif
-
-CCNMRequestedMode const CCNMRequestedModeSystemDefault = @"systemDefault";
-CCNMRequestedMode const CCNMRequestedModeN78Preferred = @"n78Preferred";
-
-CCNMAppliedPolicy const CCNMAppliedPolicyUnknown = @"unknown";
-CCNMAppliedPolicy const CCNMAppliedPolicyApplying = @"applying";
-CCNMAppliedPolicy const CCNMAppliedPolicyVerifiedSystemDefault = @"verifiedSystemDefault";
-CCNMAppliedPolicy const CCNMAppliedPolicyVerifiedN78Only = @"verifiedN78Only";
-CCNMAppliedPolicy const CCNMAppliedPolicyDiverged = @"diverged";
-CCNMAppliedPolicy const CCNMAppliedPolicyRecoveryRequired = @"recoveryRequired";
-
-CCNMServingState const CCNMServingStateNRN78 = @"nrN78";
-CCNMServingState const CCNMServingStateNROther = @"nrOther";
-CCNMServingState const CCNMServingStateLTE = @"lteBand";
-CCNMServingState const CCNMServingStateOther = @"other";
-CCNMServingState const CCNMServingStateUnknown = @"unknown";
-
-CCNMRecoveryState const CCNMRecoveryStateClean = @"clean";
-CCNMRecoveryState const CCNMRecoveryStateEnablePending = @"enablePending";
-CCNMRecoveryState const CCNMRecoveryStateEnabledWithBaseline = @"enabledWithBaseline";
-CCNMRecoveryState const CCNMRecoveryStateRestorePending = @"restorePending";
-CCNMRecoveryState const CCNMRecoveryStateRebootRequired = @"rebootRequired";
-CCNMRecoveryState const CCNMRecoveryStateRecoveryFailed = @"recoveryFailed";
-
-CCNMN78PolicyErrorCode const CCNMN78PolicyErrorNone = @"none";
-CCNMN78PolicyErrorCode const CCNMN78PolicyErrorBusy = @"busy";
-CCNMN78PolicyErrorCode const CCNMN78PolicyErrorUnsupportedTarget = @"unsupportedTarget";
-CCNMN78PolicyErrorCode const CCNMN78PolicyErrorUnsafeSubscription = @"unsafeSubscription";
-CCNMN78PolicyErrorCode const CCNMN78PolicyErrorInvalidBandInfo = @"invalidBandInfo";
-CCNMN78PolicyErrorCode const CCNMN78PolicyErrorN78Unavailable = @"n78Unavailable";
-CCNMN78PolicyErrorCode const CCNMN78PolicyErrorInvalidRecords = @"invalidRecords";
-CCNMN78PolicyErrorCode const CCNMN78PolicyErrorUUIDDrift = @"uuidDrift";
-CCNMN78PolicyErrorCode const CCNMN78PolicyErrorPersistence = @"persistence";
-CCNMN78PolicyErrorCode const CCNMN78PolicyErrorSetterFailed = @"setterFailed";
-CCNMN78PolicyErrorCode const CCNMN78PolicyErrorSetterUncertain = @"setterUncertain";
-CCNMN78PolicyErrorCode const CCNMN78PolicyErrorReadBackMismatch = @"readBackMismatch";
-CCNMN78PolicyErrorCode const CCNMN78PolicyErrorRecoveryRequired = @"recoveryRequired";
-
-NSString *const CCNMN78PolicySummarySuccessKey = @"success";
-NSString *const CCNMN78PolicySummaryOperationKey = @"operation";
-NSString *const CCNMN78PolicySummaryStateKey = @"state";
-NSString *const CCNMN78PolicySummaryRequestedModeKey = @"requestedMode";
-NSString *const CCNMN78PolicySummaryAppliedPolicyKey = @"appliedPolicy";
-NSString *const CCNMN78PolicySummaryRecoveryStateKey = @"recoveryState";
-NSString *const CCNMN78PolicySummaryErrorCodeKey = @"errorCode";
-NSString *const CCNMN78PolicySummaryErrorKey = @"error";
-NSString *const CCNMN78PolicySummaryRequiresRebootKey = @"requiresReboot";
-NSString *const CCNMN78PolicySummaryMayWriteKey = @"mayWrite";
-NSString *const CCNMN78PolicySummaryMayUninstallKey = @"mayUninstall";
-NSString *const CCNMN78PolicyDidChangeDarwinNotification = @"me.nixuge.networkmanager/n78-policy-changed";
 
 static NSString *const CCNMPolicyOwner = @"me.nixuge.networkmanager.n78-policy";
 static NSString *const CCNMNRKey = @"kCTRegistrationRadioAccessTechnologyNR";
@@ -983,14 +940,27 @@ static BOOL CCNMValidateRemovalGuardRecord(NSDictionary *guard, NSString **failu
 }
 
 static NSDictionary *CCNMBuildBaselineRecord(NSDictionary *active,
+                                              NSDictionary *supported,
+                                              NSArray<NSString *> *modifiedBandKeys,
+                                              NSDictionary *identity,
                                               NSString *subscriptionUUID,
                                               NSUInteger generation,
                                               NSString **failure) {
     NSString *bootSession = CCNMBootSessionIdentity();
     NSString *uuid = CCNMCanonicalUUIDString(subscriptionUUID);
-    if (!bootSession || !uuid || !CCNMValidateBandDictionary(active, failure)) {
+    NSString *deviceModel = [identity[@"deviceModel"] isKindOfClass:NSString.class]
+        ? identity[@"deviceModel"] : nil;
+    NSString *systemVersion = [identity[@"systemVersion"] isKindOfClass:NSString.class]
+        ? identity[@"systemVersion"] : nil;
+    NSString *systemBuild = [identity[@"systemBuild"] isKindOfClass:NSString.class]
+        ? identity[@"systemBuild"] : nil;
+    BOOL ownedFieldsValid = [modifiedBandKeys isKindOfClass:NSArray.class] &&
+        modifiedBandKeys.count == 1 && [modifiedBandKeys.firstObject isEqual:CCNMNRKey];
+    if (!bootSession || !uuid || !deviceModel.length || !systemVersion.length || !systemBuild.length ||
+        !CCNMValidateBandDictionary(active, failure) || !CCNMValidateBandDictionary(supported, failure) ||
+        !ownedFieldsValid) {
         if (failure && !*failure) {
-            *failure = @"A baseline requires valid boot and subscription identities.";
+            *failure = @"A baseline requires valid identity, capability, and owned-band evidence.";
         }
         return nil;
     }
@@ -1003,7 +973,12 @@ static NSDictionary *CCNMBuildBaselineRecord(NSDictionary *active,
         @"operationGeneration": @(generation),
         @"slotID": @1,
         @"subscriptionUUID": uuid,
-        @"activeBands": active
+        @"deviceModel": deviceModel,
+        @"systemVersion": systemVersion,
+        @"systemBuild": systemBuild,
+        @"activeBands": active,
+        @"supportedBands": supported,
+        @"modifiedBandKeys": [modifiedBandKeys copy]
     };
 }
 
@@ -1013,6 +988,17 @@ static BOOL CCNMValidateBaselineRecord(NSDictionary *baseline, NSString **failur
     BOOL hasEvidenceDigest = baseline[@"evidenceSHA256"] != nil;
     BOOL provenanceValid = (!hasRecoverySource && !hasEvidenceDigest) ||
         CCNMKnownOrphanBaselineMatchesEvidence(baseline);
+    BOOL hasCapabilitySnapshot = baseline[@"deviceModel"] != nil ||
+        baseline[@"systemVersion"] != nil || baseline[@"systemBuild"] != nil ||
+        baseline[@"supportedBands"] != nil || baseline[@"modifiedBandKeys"] != nil;
+    BOOL capabilitySnapshotValid = !hasCapabilitySnapshot ||
+        ([baseline[@"deviceModel"] isKindOfClass:NSString.class] && [baseline[@"deviceModel"] length] > 0 &&
+         [baseline[@"systemVersion"] isKindOfClass:NSString.class] && [baseline[@"systemVersion"] length] > 0 &&
+         [baseline[@"systemBuild"] isKindOfClass:NSString.class] && [baseline[@"systemBuild"] length] > 0 &&
+         CCNMValidateBandDictionary(baseline[@"supportedBands"], failure) &&
+         [baseline[@"modifiedBandKeys"] isKindOfClass:NSArray.class] &&
+         [baseline[@"modifiedBandKeys"] count] == 1 &&
+         [baseline[@"modifiedBandKeys"][0] isEqual:CCNMNRKey]);
     BOOL valid = [baseline isKindOfClass:[NSDictionary class]] &&
         [baseline[@"schemaVersion"] isEqual:@1] &&
         [baseline[@"owner"] isEqual:CCNMPolicyOwner] &&
@@ -1022,11 +1008,59 @@ static BOOL CCNMValidateBaselineRecord(NSDictionary *baseline, NSString **failur
         CCNMNSNumberIsInteger(baseline[@"operationGeneration"]) && [baseline[@"operationGeneration"] unsignedIntegerValue] > 0 &&
         [baseline[@"slotID"] isEqual:@1] &&
         CCNMCanonicalUUIDString(baseline[@"subscriptionUUID"]) != nil && provenanceValid &&
-        CCNMValidateBandDictionary(bands, failure);
+        capabilitySnapshotValid && CCNMValidateBandDictionary(bands, failure);
     if (!valid && failure && !*failure) {
-        *failure = @"The durable policy baseline is malformed, foreign, or has invalid recovery provenance.";
+        *failure = @"The durable policy baseline is malformed, foreign, or has invalid capability evidence.";
     }
     return valid;
+}
+
+static BOOL CCNMValidateBaselineCompatibility(NSDictionary *baseline,
+                                               NSDictionary *currentSupportedBands,
+                                               NSDictionary *identity,
+                                               NSString **failure) {
+    BOOL hasCapabilitySnapshot = baseline[@"deviceModel"] != nil ||
+        baseline[@"systemVersion"] != nil || baseline[@"systemBuild"] != nil ||
+        baseline[@"supportedBands"] != nil || baseline[@"modifiedBandKeys"] != nil;
+    if (!hasCapabilitySnapshot) {
+        // Legacy baselines are accepted only through the current target gate.
+        return YES;
+    }
+    BOOL sameIdentity = [baseline[@"deviceModel"] isEqual:identity[@"deviceModel"]] &&
+        [baseline[@"systemVersion"] isEqual:identity[@"systemVersion"]] &&
+        [baseline[@"systemBuild"] isEqual:identity[@"systemBuild"]];
+    NSDictionary *savedSupported = baseline[@"supportedBands"];
+    BOOL sameCapabilityShape = [savedSupported isKindOfClass:NSDictionary.class] &&
+        [currentSupportedBands isKindOfClass:NSDictionary.class] &&
+        [[NSSet setWithArray:savedSupported.allKeys] isEqualToSet:
+            [NSSet setWithArray:currentSupportedBands.allKeys]];
+    NSArray *ownedKeys = baseline[@"modifiedBandKeys"];
+    BOOL ownedFieldsValid = [ownedKeys isKindOfClass:NSArray.class] &&
+        ownedKeys.count == 1 && [ownedKeys.firstObject isEqual:CCNMNRKey];
+    if (!sameIdentity || !sameCapabilityShape || !ownedFieldsValid) {
+        if (failure) {
+            *failure = @"The retained baseline belongs to a different device, system capability shape, or owned-band set.";
+        }
+        return NO;
+    }
+    for (NSString *key in ownedKeys) {
+        if (![savedSupported[key] isKindOfClass:NSArray.class] ||
+            ![currentSupportedBands[key] isKindOfClass:NSArray.class]) {
+            if (failure) {
+                *failure = @"The retained baseline capability for an owned RAT is unavailable on this system.";
+            }
+            return NO;
+        }
+        for (NSNumber *band in savedSupported[key]) {
+            if (![currentSupportedBands[key] containsObject:band]) {
+                if (failure) {
+                    *failure = @"The retained baseline contains an owned band unsupported by the current system.";
+                }
+                return NO;
+            }
+        }
+    }
+    return YES;
 }
 
 static NSDictionary *CCNMBuildIntentRecord(NSString *operation,
@@ -2333,7 +2367,9 @@ static BOOL CCNMIsVerifiedRestoreCleanupCheckpoint(NSDictionary *state) {
             return CCNMErrorSummary(@"enable", code, failure, details);
         }
 
-        baseline = CCNMBuildBaselineRecord(initial[@"activeBands"], subscriptionUUID, generation, &failure);
+        baseline = CCNMBuildBaselineRecord(
+            initial[@"activeBands"], initial[@"supportedBands"], @[ CCNMNRKey ], details,
+            subscriptionUUID, generation, &failure);
         if (!baseline || !CCNMCreateDurableRecord(baseline, CCNMN78PolicyBaselinePath(), &failure)) {
             // Only create a recovery state when durable baseline evidence actually
             // remains. A serialization/write failure that left no file made no
@@ -2495,9 +2531,13 @@ static BOOL CCNMIsVerifiedRestoreCleanupCheckpoint(NSDictionary *state) {
                 @"A valid boot identity and operation generation are required.", details);
         }
 
+        if (!CCNMValidateTarget(details, &failure)) {
+            return CCNMErrorSummary(@"knownOrphanRecovery", CCNMN78PolicyErrorUnsupportedTarget,
+                failure, details);
+        }
         NSDictionary *builtBaseline = CCNMBuildBaselineRecord(
-            CCNMKnownOrphanHistoricalOriginalBands(), CCNMKnownOrphanSubscriptionUUID,
-            generation, &failure);
+            CCNMKnownOrphanHistoricalOriginalBands(), CCNMKnownOrphanHistoricalSupportedBands(),
+            @[ CCNMNRKey ], details, CCNMKnownOrphanSubscriptionUUID, generation, &failure);
         NSMutableDictionary *baselineDraft = [builtBaseline mutableCopy];
         baselineDraft[@"recoverySource"] = CCNMKnownOrphanRecoverySource;
         baselineDraft[@"evidenceSHA256"] = CCNMKnownOrphanEvidenceSHA256;
@@ -2704,6 +2744,13 @@ static BOOL CCNMIsVerifiedRestoreCleanupCheckpoint(NSDictionary *state) {
                 generation, subscriptionUUID, CCNMN78PolicyErrorInvalidBandInfo,
                 failure, baseline, YES);
             return CCNMErrorSummary(operation, CCNMN78PolicyErrorInvalidBandInfo, failure, details);
+        }
+        if (!CCNMValidateBaselineCompatibility(baseline, fresh[@"supportedBands"], details, &failure)) {
+            CCNMMarkRecovery(state[@"requestedMode"] ?: CCNMRequestedModeN78Preferred,
+                CCNMAppliedPolicyRecoveryRequired, CCNMRecoveryStateRebootRequired,
+                generation, subscriptionUUID, CCNMN78PolicyErrorUUIDDrift,
+                failure, baseline, YES);
+            return CCNMErrorSummary(operation, CCNMN78PolicyErrorUUIDDrift, failure, details);
         }
         if (enforceKnownOrphanGuard &&
             !CCNMKnownOrphanBandInfoMatches(fresh, CCNMKnownOrphanHistoricalActiveBands()) &&

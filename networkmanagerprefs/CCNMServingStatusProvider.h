@@ -17,6 +17,15 @@ FOUNDATION_EXPORT NSString *const CCNMServingSummaryErrorKey;
 FOUNDATION_EXPORT NSString *const CCNMServingSummarySuccessKey;
 FOUNDATION_EXPORT NSString *const CCNMServingSummarySamplingStatusKey;
 FOUNDATION_EXPORT NSString *const CCNMServingSummaryUnsafeOutstandingKey;
+FOUNDATION_EXPORT NSString *const CCNMServingSummarySubscriptionUUIDKey;
+FOUNDATION_EXPORT NSString *const CCNMServingSummaryCapabilityReadSuccessKey;
+FOUNDATION_EXPORT NSString *const CCNMServingSummaryCapabilityN78SupportedKey;
+FOUNDATION_EXPORT NSString *const CCNMServingSummaryCapabilityN78ActiveKey;
+FOUNDATION_EXPORT NSString *const CCNMServingSummaryCapabilitySupportedNRBandsKey;
+FOUNDATION_EXPORT NSString *const CCNMServingSummaryCapabilityActiveNRBandsKey;
+FOUNDATION_EXPORT NSString *const CCNMServingSummaryCapabilitySupportedRATKeysKey;
+FOUNDATION_EXPORT NSString *const CCNMServingSummaryCapabilitySampledAtMillisecondsKey;
+FOUNDATION_EXPORT NSString *const CCNMServingSummaryCapabilityErrorKey;
 FOUNDATION_EXPORT NSString *const CCNMServingStatusDidChangeDarwinNotification;
 
 // The UI receives only this compact typed summary. Full sampler evidence stays

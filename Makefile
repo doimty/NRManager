@@ -5,7 +5,7 @@ export ARCHS = arm64 arm64e
 
 BUNDLE_NAME = NetworkManager
 NetworkManager_BUNDLE_EXTENSION = bundle
-NetworkManager_FILES = CCNetworkManager.x networkmanagerprefs/CCNMN78PolicyController.m networkmanagerprefs/CCNMServingStatusProvider.m networkmanagerprefs/CCNMServingCellSampler.m
+NetworkManager_FILES = CCNetworkManager.x networkmanagerprefs/CCNMN78PolicySupport.m networkmanagerprefs/CCNMN78PolicyController.m networkmanagerprefs/CCNMServingStatusProvider.m networkmanagerprefs/CCNMServingCellSampler.m networkmanagerprefs/CCNMAutomaticMaintenanceDecision.c
 NetworkManager_FRAMEWORKS = CoreTelephony Foundation UIKit
 NetworkManager_INSTALL_PATH = /Library/ControlCenter/Bundles
 
@@ -28,5 +28,11 @@ after-install::
 
 include $(THEOS_MAKE_PATH)/bundle.mk
 SUBPROJECTS += networkmanagerprefs
+SUBPROJECTS += maintenance-daemon
 SUBPROJECTS += package-actions
 include $(THEOS_MAKE_PATH)/aggregate.mk
+
+before-package::
+	$(ECHO_NOTHING)python3 "$(THEOS_PROJECT_DIR)/scripts/patch-maintenance-launchd.py" \
+		--scheme "$(THEOS_PACKAGE_SCHEME)" \
+		--staging-dir "$(THEOS_STAGING_DIR)"$(ECHO_END)

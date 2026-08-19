@@ -116,6 +116,12 @@ int main(void) {
         self.assertIn("flock(descriptor, LOCK_EX)", source)
         self.assertIn("CCNMServingReadCachedSummary", source)
         self.assertIn("CCNMServingPersistCachedSummary", source)
+        self.assertIn("getBandInfo:error:", source)
+        self.assertIn("CCNMServingValidateBandInfoABI", source)
+        self.assertIn("CCNMServingReadCapability", source)
+        self.assertIn("CCNMServingSummaryCapabilityN78SupportedKey", header + source)
+        self.assertIn("CCNMServingSummaryCapabilityN78ActiveKey", header + source)
+        self.assertIn("CCNMServingSummarySubscriptionUUIDKey", header + source)
         self.assertIn("writeToFile:CCNMServingCachePath() atomically:YES", source)
         self.assertIn("CCNMServingStatusDidChangeDarwinNotification", header + source)
         self.assertIn("CFNotificationCenterPostNotification", source)
@@ -154,6 +160,14 @@ int main(void) {
         self.assertNotIn("latestOther", source)
         self.assertIn("CCNMServingCellRATTier", sampler)
         self.assertIn("invalidWinningTier", sampler)
+
+    def test_capability_gate_is_read_only_and_requires_both_domains(self):
+        source = SOURCE.read_text()
+        self.assertIn("CCNMServingSummaryCapabilityReadSuccessKey", source)
+        self.assertIn("[supportedNR containsObject:@78]", source)
+        self.assertIn("[activeNR containsObject:@78]", source)
+        self.assertIn("CCNMServingCapabilityFailure", source)
+        self.assertNotIn("setActiveBandInfo", source)
 
 
 if __name__ == "__main__":

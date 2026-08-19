@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ACTIONS_MAKEFILE = ROOT / "package-actions/Makefile"
 PRERM_SOURCE = ROOT / "package-actions/prerm.m"
 POSTINST_SOURCE = ROOT / "package-actions/postinst.m"
+MAINTAINER_SOURCE = ROOT / "package-actions/CCNMMaintainerEnvironment.m"
 ROOT_MAKEFILE = ROOT / "Makefile"
 POLICY_SOURCE = ROOT / "networkmanagerprefs/CCNMN78PolicyController.m"
 SCRIPTS = ROOT / "scripts"
@@ -27,17 +28,24 @@ class UninstallGuardTests(unittest.TestCase):
         self.assertIn("TOOL_NAME = postinst prerm", makefile)
         self.assertIn("postinst_INSTALL_PATH = /DEBIAN", makefile)
         self.assertIn("prerm_INSTALL_PATH = /DEBIAN", makefile)
+        self.assertIn("../networkmanagerprefs/CCNMN78PolicySupport.m", makefile)
         self.assertIn("../networkmanagerprefs/CCNMN78PolicyController.m", makefile)
+        self.assertIn("CCNMMaintainerEnvironment.m", makefile)
         self.assertIn("postinst_OBJCFLAGS += -fno-modules -fno-implicit-modules", makefile)
         self.assertIn("prerm_OBJCFLAGS += -fno-modules -fno-implicit-modules", makefile)
         self.assertIn("-DCCNM_MAINTAINER_SCRIPT", makefile)
         self.assertNotIn("-lroothide", makefile)
         self.assertIn("SUBPROJECTS += package-actions", root_makefile)
 
-    def test_remove_upgrade_and_downgrade_path_all_restore_first(self):
+    def test_remove_upgrade_and_downgrade_path_stops_daemon_then_restores(self):
         source = PRERM_SOURCE.read_text()
         for action in ('@"remove"', '@"upgrade"', '@"deconfigure"', '@"failed-upgrade"'):
             self.assertIn(action, source)
+        stop = source.index("CCNMStopMaintenanceLaunchd(&launchdError)")
+        read = source.index("CCNMReadN78PolicyState()")
+        recover = source.index("CCNMRecoverN78Preference")
+        self.assertLess(stop, read)
+        self.assertLess(read, recover)
         self.assertIn("CCNMReadN78PolicyState()", source)
         self.assertIn("CCNMRecoverN78Preference", source)
         self.assertIn("CCNMN78PolicySummaryMayUninstallKey", source)
@@ -95,7 +103,34 @@ class UninstallGuardTests(unittest.TestCase):
         self.assertIn("matches.count == 1", source)
         self.assertIn('@"/.networkmanager-invalid-jbroot"', source)
         self.assertIn('".jbroot-"', source)
+        self.assertIn("THEOS_PACKAGE_INSTALL_PREFIX", source)
         self.assertNotIn("#import <roothide.h>", source.split("#elif __has_include(<roothide.h>)")[0])
+
+    def test_postinst_registers_only_after_guard_cleanup(self):
+        source = POSTINST_SOURCE.read_text()
+        clear = source.index("CCNMClearN78PolicyRemovalGuardIfSafe()")
+        cleared_check = source.index("if (!cleared)")
+        register = source.index("CCNMRegisterMaintenanceLaunchd(&launchdError)")
+        self.assertLess(clear, cleared_check)
+        self.assertLess(cleared_check, register)
+        self.assertIn("return CCNMPostinstBlocked", source[register:])
+
+    def test_launchd_owner_is_fail_closed_and_scheme_aware(self):
+        source = MAINTAINER_SOURCE.read_text()
+        for token in (
+            "CCNMCompiledInstallPrefix",
+            "CCNMUniqueScannedJBRoot",
+            "matches.count == 1",
+            "CCNMPrepareMaintenanceLaunchd",
+            "CCNMRunLaunchctl(@[@\"bootout\", target]",
+            "CCNMRunLaunchctl(@[@\"bootstrap\", @\"system\", plistPath]",
+            "CCNMRunLaunchctl(@[@\"kickstart\", @\"-k\", target]",
+            "CCNMJobIsLoaded()",
+            "DISABLE_TWEAKS",
+            "SuccessfulExit",
+        ):
+            self.assertIn(token, source)
+        self.assertNotIn("|| true", source)
 
     def test_missing_baseline_only_cleans_a_verified_restore_checkpoint(self):
         source = POLICY_SOURCE.read_text()

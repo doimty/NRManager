@@ -28,6 +28,15 @@ NSString *const CCNMServingSummaryErrorKey = @"error";
 NSString *const CCNMServingSummarySuccessKey = @"success";
 NSString *const CCNMServingSummarySamplingStatusKey = @"samplingStatus";
 NSString *const CCNMServingSummaryUnsafeOutstandingKey = @"unsafeOutstanding";
+NSString *const CCNMServingSummarySubscriptionUUIDKey = @"subscriptionUUID";
+NSString *const CCNMServingSummaryCapabilityReadSuccessKey = @"capabilityReadSuccess";
+NSString *const CCNMServingSummaryCapabilityN78SupportedKey = @"capabilityN78Supported";
+NSString *const CCNMServingSummaryCapabilityN78ActiveKey = @"capabilityN78Active";
+NSString *const CCNMServingSummaryCapabilitySupportedNRBandsKey = @"capabilitySupportedNRBands";
+NSString *const CCNMServingSummaryCapabilityActiveNRBandsKey = @"capabilityActiveNRBands";
+NSString *const CCNMServingSummaryCapabilitySupportedRATKeysKey = @"capabilitySupportedRATKeys";
+NSString *const CCNMServingSummaryCapabilitySampledAtMillisecondsKey = @"capabilitySampledAtMilliseconds";
+NSString *const CCNMServingSummaryCapabilityErrorKey = @"capabilityError";
 #if CCNM_SERVING_USE_LIVECC_NAMESPACE
 NSString *const CCNMServingStatusDidChangeDarwinNotification =
     @"me.nixuge.networkmanager.livecc.serving-status-changed";
@@ -108,6 +117,12 @@ static BOOL CCNMServingPersistCachedSummary(NSDictionary *summary) {
 @protocol CCNMServingCoreTelephonyClient <NSObject>
 - (instancetype)initWithQueue:(dispatch_queue_t)queue;
 - (id)getSubscriptionInfoWithError:(NSError **)error;
+- (id)getBandInfo:(id)context error:(NSError **)error;
+@end
+
+@protocol CCNMServingBandInfo <NSObject>
+- (NSDictionary *)activeBands;
+- (NSDictionary *)supportedBands;
 @end
 
 @protocol CCNMServingSubscriptionInfo <NSObject>
@@ -155,24 +170,48 @@ static const char *CCNMServingSkipTypeQualifiers(const char *type) {
     return type;
 }
 
-static BOOL CCNMServingValidateSubscriptionABI(id client, NSString **failure) {
-    SEL selector = @selector(getSubscriptionInfoWithError:);
+static BOOL CCNMServingValidateObjectErrorABI(id client,
+                                                SEL selector,
+                                                NSUInteger objectArgumentCount,
+                                                NSString *unavailableMessage,
+                                                NSString *abiMessage,
+                                                NSString **failure) {
     if (!client || ![client respondsToSelector:selector]) {
         if (failure) {
-            *failure = @"The subscription query is unavailable.";
+            *failure = unavailableMessage;
         }
         return NO;
     }
     NSMethodSignature *signature = [client methodSignatureForSelector:selector];
     const char *returnType = signature ? CCNMServingSkipTypeQualifiers(signature.methodReturnType) : NULL;
-    const char *errorType = signature && signature.numberOfArguments > 2
-        ? CCNMServingSkipTypeQualifiers([signature getArgumentTypeAtIndex:2]) : NULL;
-    BOOL valid = signature && signature.numberOfArguments == 3 &&
+    NSUInteger errorIndex = 2 + objectArgumentCount;
+    const char *errorType = signature && signature.numberOfArguments > errorIndex
+        ? CCNMServingSkipTypeQualifiers([signature getArgumentTypeAtIndex:errorIndex]) : NULL;
+    BOOL valid = signature && signature.numberOfArguments == errorIndex + 1 &&
         returnType && returnType[0] == '@' && errorType && errorType[0] == '^' && errorType[1] == '@';
+    for (NSUInteger index = 0; valid && index < objectArgumentCount; index++) {
+        const char *argumentType = CCNMServingSkipTypeQualifiers(
+            [signature getArgumentTypeAtIndex:2 + index]);
+        valid = argumentType && argumentType[0] == '@';
+    }
     if (!valid && failure) {
-        *failure = @"The subscription query has an unexpected private ABI.";
+        *failure = abiMessage;
     }
     return valid;
+}
+
+static BOOL CCNMServingValidateSubscriptionABI(id client, NSString **failure) {
+    return CCNMServingValidateObjectErrorABI(
+        client, @selector(getSubscriptionInfoWithError:), 0,
+        @"The subscription query is unavailable.",
+        @"The subscription query has an unexpected private ABI.", failure);
+}
+
+static BOOL CCNMServingValidateBandInfoABI(id client, NSString **failure) {
+    return CCNMServingValidateObjectErrorABI(
+        client, @selector(getBandInfo:error:), 1,
+        @"The BandInfo query is unavailable.",
+        @"The BandInfo query has an unexpected private ABI.", failure);
 }
 
 static BOOL CCNMServingValidateTarget(NSString **failure) {
@@ -366,6 +405,118 @@ static NSNumber *CCNMIntegerNumber(id value) {
     return [scanner scanLongLong:&number] && scanner.isAtEnd ? @(number) : nil;
 }
 
+static NSArray<NSString *> *CCNMServingRequiredRATKeys(void) {
+    return @[
+        @"kCTRegistrationRadioAccessTechnologyCDMAHybrid",
+        @"kCTRegistrationRadioAccessTechnologyGSM",
+        @"kCTRegistrationRadioAccessTechnologyLTE",
+        @"kCTRegistrationRadioAccessTechnologyNR",
+        @"kCTRegistrationRadioAccessTechnologyTDSCDMA",
+        @"kCTRegistrationRadioAccessTechnologyUTRAN"
+    ];
+}
+
+static NSArray<NSNumber *> *CCNMServingNormalizedBandArray(id value) {
+    if (![value isKindOfClass:NSArray.class]) {
+        return nil;
+    }
+    NSMutableArray<NSNumber *> *bands = [NSMutableArray array];
+    for (id rawBand in (NSArray *)value) {
+        NSNumber *band = CCNMBandNumber(rawBand);
+        if (!band || [bands containsObject:band]) {
+            return nil;
+        }
+        [bands addObject:band];
+    }
+    [bands sortUsingComparator:^NSComparisonResult(NSNumber *left, NSNumber *right) {
+        return [left compare:right];
+    }];
+    return [bands copy];
+}
+
+static NSDictionary *CCNMServingNormalizedBandDictionary(id value) {
+    if (![value isKindOfClass:NSDictionary.class]) {
+        return nil;
+    }
+    NSArray *requiredKeys = CCNMServingRequiredRATKeys();
+    NSDictionary *dictionary = (NSDictionary *)value;
+    if (![[NSSet setWithArray:dictionary.allKeys] isEqualToSet:
+          [NSSet setWithArray:requiredKeys]]) {
+        return nil;
+    }
+    NSMutableDictionary *normalized = [NSMutableDictionary dictionaryWithCapacity:requiredKeys.count];
+    for (NSString *key in requiredKeys) {
+        NSArray *bands = CCNMServingNormalizedBandArray(value[key]);
+        if (!bands) {
+            return nil;
+        }
+        normalized[key] = bands;
+    }
+    return [normalized copy];
+}
+
+static NSDictionary *CCNMServingCapabilityFailure(NSString *error) {
+    return @{
+        CCNMServingSummaryCapabilityReadSuccessKey: @NO,
+        CCNMServingSummaryCapabilityN78SupportedKey: @NO,
+        CCNMServingSummaryCapabilityN78ActiveKey: @NO,
+        CCNMServingSummaryCapabilitySupportedNRBandsKey: @[],
+        CCNMServingSummaryCapabilityActiveNRBandsKey: @[],
+        CCNMServingSummaryCapabilitySupportedRATKeysKey: @[],
+        CCNMServingSummaryCapabilitySampledAtMillisecondsKey: @0,
+        CCNMServingSummaryCapabilityErrorKey: error ?: @"Current BandInfo capability is unavailable."
+    };
+}
+
+static NSDictionary *CCNMServingReadCapability(id<CCNMServingCoreTelephonyClient> client,
+                                                 id context,
+                                                 NSString **failure) {
+    NSString *abiFailure = nil;
+    if (!CCNMServingValidateBandInfoABI(client, &abiFailure)) {
+        if (failure) *failure = abiFailure;
+        return CCNMServingCapabilityFailure(abiFailure);
+    }
+    NSError *error = nil;
+    id<CCNMServingBandInfo> info = nil;
+    @try {
+        info = [client getBandInfo:context error:&error];
+    } @catch (NSException *exception) {
+        NSString *message = [NSString stringWithFormat:@"BandInfo query raised %@: %@",
+            exception.name, exception.reason ?: @"(no reason)"];
+        if (failure) *failure = message;
+        return CCNMServingCapabilityFailure(message);
+    }
+    NSDictionary *active = [info respondsToSelector:@selector(activeBands)] ? info.activeBands : nil;
+    NSDictionary *supported = [info respondsToSelector:@selector(supportedBands)] ? info.supportedBands : nil;
+    NSArray *requiredKeys = CCNMServingRequiredRATKeys();
+    NSDictionary *normalizedActive = CCNMServingNormalizedBandDictionary(active);
+    NSDictionary *normalizedSupported = CCNMServingNormalizedBandDictionary(supported);
+    if (error || !normalizedActive || !normalizedSupported) {
+        NSString *message = error.localizedDescription ?: @"BandInfo capability shape is incomplete.";
+        if (failure) *failure = message;
+        return CCNMServingCapabilityFailure(message);
+    }
+
+    NSArray<NSNumber *> *activeNR = normalizedActive[@"kCTRegistrationRadioAccessTechnologyNR"];
+    NSArray<NSNumber *> *supportedNR = normalizedSupported[@"kCTRegistrationRadioAccessTechnologyNR"];
+    if (!activeNR || !supportedNR) {
+        NSString *message = @"BandInfo NR capability arrays are invalid.";
+        if (failure) *failure = message;
+        return CCNMServingCapabilityFailure(message);
+    }
+    NSMutableDictionary *result = [@{
+        CCNMServingSummaryCapabilityReadSuccessKey: @YES,
+        CCNMServingSummaryCapabilityN78SupportedKey: @([supportedNR containsObject:@78]),
+        CCNMServingSummaryCapabilityN78ActiveKey: @([activeNR containsObject:@78]),
+        CCNMServingSummaryCapabilitySupportedNRBandsKey: supportedNR,
+        CCNMServingSummaryCapabilityActiveNRBandsKey: activeNR,
+        CCNMServingSummaryCapabilitySupportedRATKeysKey: [requiredKeys sortedArrayUsingSelector:@selector(compare:)],
+        CCNMServingSummaryCapabilitySampledAtMillisecondsKey: @(CCNMServingUnixMilliseconds()),
+        CCNMServingSummaryCapabilityErrorKey: @""
+    } mutableCopy];
+    return [result copy];
+}
+
 static CCNMCellMonitorRATKind CCNMRATKind(NSString *rat) {
     if ([rat isEqual:@"kCTCellMonitorRadioAccessTechnologyNR"] ||
         [rat isEqual:@"kCTCellMonitorRadioAccessTechnologyNRNSA"]) {
@@ -389,6 +540,15 @@ NSDictionary<NSString *, id> *CCNMServingStatusEmptySummary(void) {
         CCNMServingSummaryErrorKey: @"No fresh serving-cell sample is available.",
         CCNMServingSummarySamplingStatusKey: @"notStarted",
         CCNMServingSummaryUnsafeOutstandingKey: @NO,
+        CCNMServingSummarySubscriptionUUIDKey: @"",
+        CCNMServingSummaryCapabilityReadSuccessKey: @NO,
+        CCNMServingSummaryCapabilityN78SupportedKey: @NO,
+        CCNMServingSummaryCapabilityN78ActiveKey: @NO,
+        CCNMServingSummaryCapabilitySupportedNRBandsKey: @[],
+        CCNMServingSummaryCapabilityActiveNRBandsKey: @[],
+        CCNMServingSummaryCapabilitySupportedRATKeysKey: @[],
+        CCNMServingSummaryCapabilitySampledAtMillisecondsKey: @0,
+        CCNMServingSummaryCapabilityErrorKey: @"Current BandInfo capability is unavailable."
     };
 }
 
@@ -441,7 +601,7 @@ static NSDictionary *CCNMServingSummaryFromReport(NSDictionary *report,
     summary[CCNMServingSummaryStaleKey] = @(!success);
     summary[CCNMServingSummarySamplingStatusKey] = report[@"cellMonitorSamplingStatus"] ?: @"failed";
     summary[CCNMServingSummaryUnsafeOutstandingKey] = @(unsafeOutstanding);
-    summary[@"subscriptionUUID"] = subscriptionUUID ?: @"";
+    summary[CCNMServingSummarySubscriptionUUIDKey] = subscriptionUUID ?: @"";
     for (NSString *telemetryKey in @[
         @"cellMonitorSamplingMode",
         @"cellMonitorStopReason",
@@ -629,6 +789,8 @@ static NSDictionary *CCNMServingSummaryFromReport(NSDictionary *report,
             }
 
             NSDictionary *report = nil;
+            NSDictionary *capability = CCNMServingCapabilityFailure(
+                @"Current BandInfo capability was not sampled.");
             NSString *subscriptionUUID = nil;
             void *frameworkHandle = NULL;
             id<CCNMServingCoreTelephonyClient> client = nil;
@@ -639,6 +801,12 @@ static NSDictionary *CCNMServingSummaryFromReport(NSDictionary *report,
                 } else {
                     client = CCNMServingCreateClient(&frameworkHandle, &failure);
                     context = client ? CCNMServingTargetContext(client, &subscriptionUUID, &failure) : nil;
+                    if (context) {
+                        // Read capability before the Cell Monitor sampler so a
+                        // late sampler callback never shares the client with a
+                        // second CoreTelephony query.
+                        capability = CCNMServingReadCapability(client, context, &failure);
+                    }
                     report = context
                         ? CCNMRunResponsiveServingCellSampler(client, context, frameworkHandle)
                         : @{ @"cellMonitorSamplingFailure": failure ?: @"The data-line context is unavailable." };
@@ -647,11 +815,16 @@ static NSDictionary *CCNMServingSummaryFromReport(NSDictionary *report,
                 failure = [NSString stringWithFormat:@"Serving refresh raised %@: %@",
                     exception.name, exception.reason ?: @"(no reason)"];
                 report = @{ @"cellMonitorSamplingFailure": failure };
+                capability = CCNMServingCapabilityFailure(failure);
             }
 
             BOOL unsafeOutstanding = CCNMServingCellSamplerHasUnsafeOutstandingAttempt();
-            NSDictionary *summary = CCNMServingSummaryFromReport(report ?: @{}, subscriptionUUID, unsafeOutstanding);
-            [self publishSummary:summary evidence:report ?: @{}];
+            NSMutableDictionary *summary = [CCNMServingSummaryFromReport(
+                report ?: @{}, subscriptionUUID, unsafeOutstanding) mutableCopy];
+            [summary addEntriesFromDictionary:capability ?: @{}];
+            NSMutableDictionary *evidence = [report mutableCopy] ?: [NSMutableDictionary dictionary];
+            evidence[@"capability"] = capability ?: @{};
+            [self publishSummary:[summary copy] evidence:[evidence copy]];
             if (unsafeOutstanding) {
                 self.retainedSamplerLockDescriptor = lockDescriptor;
                 self.retainedSamplerClient = client;

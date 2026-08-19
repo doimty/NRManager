@@ -2,6 +2,7 @@
 #import <dispatch/dispatch.h>
 #import <unistd.h>
 
+#import "CCNMMaintainerEnvironment.h"
 #import "../networkmanagerprefs/CCNMN78PolicyController.h"
 
 typedef NS_ENUM(int, CCNMPrermExitCode) {
@@ -51,6 +52,14 @@ int main(int argc, const char *argv[]) {
         }
         if (geteuid() != 0) {
             fprintf(stderr, "NetworkManagerReborn: removal guard must run as root.\n");
+            return CCNMPrermBlocked;
+        }
+
+        NSError *launchdError = nil;
+        if (!CCNMStopMaintenanceLaunchd(&launchdError)) {
+            fprintf(stderr,
+                "NetworkManagerReborn: removal blocked; maintenance owner is still active (%s).\n",
+                launchdError.localizedDescription.UTF8String ?: "unknown");
             return CCNMPrermBlocked;
         }
 
