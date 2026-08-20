@@ -147,94 +147,87 @@ NSString *CCNMMaintainerRootedPath(NSString *path) {
 
 // launchctl lookup.
 //
-// This has now failed twice on a real roothide device while the same bare path
-// was executable from the user's shell, which means the interesting variable is
-// not the candidate list but the filesystem *view* the maintainer script runs
-// in. The ordering therefore lives in CCNMLaunchctlProbe.c, where it is host
-// testable, and this file only performs the access() probes and reports them.
+// The shipped probe table settled this. Two candidates came back with errno 1
+// (EPERM), not 2 (ENOENT):
 //
-// A lookup failure must be diagnosable from the dpkg log alone instead of
-// costing another build round, so every probe is recorded with its errno.
+//   <jbroot>/bin/launchctl(errno 1)      the relative symlink
+//   <jbroot>/usr/bin/launchctl(errno 1)  the real 113664-byte binary
+//
+// The binary exists and access(X_OK) refuses to answer for it. On this platform
+// the X_OK check is routed through an exec-authorization hook, so it can fail
+// for a binary that spawns perfectly well; it is not a usable oracle. Every
+// bare-root candidate was ENOENT, which separately proves the maintainer
+// script's `/` is not the jbroot even though the user's shell sees it that way,
+// so jbroot-relative probing is required.
+//
+// Therefore: stat(2) answers only "is this definitively absent", and the real
+// arbiter for "can I run it" is the operation itself. Candidates are spawned in
+// order until one execs. A failed spawn runs nothing, so trying is free of side
+// effects, and each failure is recorded with its errno so a future failure is
+// still diagnosable from the dpkg log alone.
 
 // Bounds both the probe table and the reported list so one failed lookup cannot
 // flood dpkg output. PATH contributes at most a handful of directories.
 static const size_t CCNMLaunchctlProbeCapacity = 64;
 static const NSUInteger CCNMLaunchctlReportLimit = 24;
 
-static NSArray<NSString *> *CCNMLaunchctlProbeOrder(void) {
-    char **buffer = calloc(CCNMLaunchctlProbeCapacity, sizeof(char *));
-    if (!buffer) {
-        return @[];
-    }
-    NSString *root = CCNMMaintainerJailbreakRoot();
-    size_t count = CCNMBuildLaunchctlProbeOrder(
-        root.length > 0 ? root.fileSystemRepresentation : NULL,
-        getenv("PATH"), buffer, CCNMLaunchctlProbeCapacity);
-    NSMutableArray<NSString *> *paths = [NSMutableArray arrayWithCapacity:count];
-    for (size_t index = 0; index < count; index++) {
-        NSString *candidate = [NSString stringWithUTF8String:buffer[index]];
-        if (candidate) {
-            [paths addObject:candidate];
-        }
-        free(buffer[index]);
-    }
-    free(buffer);
-    return paths;
-}
+// Index into the probe order at which PATH-derived candidates begin. PATH is
+// inherited from dpkg, so those candidates are held to a stricter trust standard
+// than the known prefixes: a root process must not exec a binary that a non-root
+// user could have replaced.
+static NSUInteger CCNMLaunchctlPathSourcedFrom;
 
-static NSString *CCNMLaunchctlResolution(NSString **report) {
-    static NSString *resolved;
-    static NSString *probeReport;
+static NSArray<NSString *> *CCNMLaunchctlProbeOrder(void) {
+    static NSArray<NSString *> *order;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        NSArray<NSString *> *order = CCNMLaunchctlProbeOrder();
-        NSMutableArray<NSString *> *failures = [NSMutableArray array];
-        for (NSString *candidate in order) {
-            errno = 0;
-            if (access(candidate.fileSystemRepresentation, X_OK) == 0) {
-                resolved = candidate;
-                break;
-            }
-            if (failures.count < CCNMLaunchctlReportLimit) {
-                [failures addObject:[NSString stringWithFormat:@"%@(errno %d)",
-                    candidate, errno]];
-            }
+        char **buffer = calloc(CCNMLaunchctlProbeCapacity, sizeof(char *));
+        if (!buffer) {
+            order = @[];
+            return;
         }
-        if (!resolved) {
-            NSString *suffix = order.count > failures.count
-                ? [NSString stringWithFormat:@" and %lu more",
-                       (unsigned long)(order.count - failures.count)]
-                : @"";
-            probeReport = [NSString stringWithFormat:@"probed %@%@",
-                [failures componentsJoinedByString:@", "], suffix];
+        NSString *root = CCNMMaintainerJailbreakRoot();
+        size_t pathSourcedFrom = 0;
+        size_t count = CCNMBuildLaunchctlProbeOrder(
+            root.length > 0 ? root.fileSystemRepresentation : NULL,
+            getenv("PATH"), buffer, CCNMLaunchctlProbeCapacity,
+            &pathSourcedFrom);
+        NSMutableArray<NSString *> *paths =
+            [NSMutableArray arrayWithCapacity:count];
+        BOOL boundaryRecorded = NO;
+        for (size_t index = 0; index < count; index++) {
+            NSString *candidate = [NSString stringWithUTF8String:buffer[index]];
+            if (candidate) {
+                if (!boundaryRecorded && index >= pathSourcedFrom) {
+                    CCNMLaunchctlPathSourcedFrom = paths.count;
+                    boundaryRecorded = YES;
+                }
+                [paths addObject:candidate];
+            }
+            free(buffer[index]);
         }
+        if (!boundaryRecorded) {
+            // PATH contributed nothing, so no candidate is PATH-sourced.
+            CCNMLaunchctlPathSourcedFrom = paths.count;
+        }
+        free(buffer);
+        order = paths;
     });
-    if (report) {
-        *report = probeReport;
-    }
-    return resolved;
+    return order;
 }
 
-static NSString *CCNMLaunchctlPath(void) {
-    return CCNMLaunchctlResolution(NULL);
-}
-
-// Builds the user-facing message for a failed lookup, including the probe table.
-static NSString *CCNMLaunchctlUnavailableMessage(void) {
-    NSString *report = nil;
-    (void)CCNMLaunchctlResolution(&report);
-    return [NSString stringWithFormat:
-        @"launchctl was not found in any known location; %@.",
-        report.length > 0 ? report : @"no candidate path was probed"];
-}
-
-static int CCNMRunLaunchctl(NSArray<NSString *> *arguments, BOOL quiet) {
-    NSString *launchctl = CCNMLaunchctlPath();
-    if (!launchctl) {
-        return -1;
-    }
+// Spawns one candidate and waits for it. Returns the exit status, and reports
+// the exec failure separately: a nonzero exit means launchctl ran and answered,
+// while a nonzero spawnErrno means this path is not runnable and the next
+// candidate should be tried.
+static int CCNMSpawnLaunchctl(NSString *launchctl,
+                              NSArray<NSString *> *arguments,
+                              BOOL quiet,
+                              int *spawnErrno) {
+    *spawnErrno = 0;
     char **argv = calloc(arguments.count + 2, sizeof(char *));
     if (!argv) {
+        *spawnErrno = ENOMEM;
         return -1;
     }
     argv[0] = (char *)launchctl.fileSystemRepresentation;
@@ -256,6 +249,9 @@ static int CCNMRunLaunchctl(NSArray<NSString *> *arguments, BOOL quiet) {
     }
 
     pid_t pid = 0;
+    // On Darwin posix_spawn is a single syscall, so exec failures are returned
+    // here rather than surfacing as a child that exits nonzero. That is what
+    // makes the spawn attempt usable as the authoritative runnability check.
     int spawnResult = posix_spawn(&pid, launchctl.fileSystemRepresentation,
         actionsPointer, NULL, argv, environ);
     if (actionsInitialized) {
@@ -263,6 +259,7 @@ static int CCNMRunLaunchctl(NSArray<NSString *> *arguments, BOOL quiet) {
     }
     free(argv);
     if (spawnResult != 0) {
+        *spawnErrno = spawnResult;
         return -1;
     }
     int status = 0;
@@ -272,6 +269,82 @@ static int CCNMRunLaunchctl(NSArray<NSString *> *arguments, BOOL quiet) {
         }
     }
     return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+
+// The candidate that successfully execed, and the failure table from the
+// resolving attempt. Resolution is cached both ways: a maintainer script is
+// short-lived and nothing on disk changes underneath it, so re-probing would
+// only repeat the spawn attempts and rebuild the same report.
+static NSString *CCNMLaunchctlResolved;
+static NSString *CCNMLaunchctlProbeReport;
+static BOOL CCNMLaunchctlResolutionFailed;
+
+static int CCNMRunLaunchctl(NSArray<NSString *> *arguments, BOOL quiet) {
+    if (CCNMLaunchctlResolved) {
+        int spawnErrno = 0;
+        int status = CCNMSpawnLaunchctl(CCNMLaunchctlResolved, arguments,
+            quiet, &spawnErrno);
+        return spawnErrno == 0 ? status : -1;
+    }
+    if (CCNMLaunchctlResolutionFailed) {
+        return -1;
+    }
+
+    NSArray<NSString *> *order = CCNMLaunchctlProbeOrder();
+    NSMutableArray<NSString *> *failures = [NSMutableArray array];
+    NSUInteger position = 0;
+    for (NSString *candidate in order) {
+        BOOL pathSourced = position >= CCNMLaunchctlPathSourcedFrom;
+        position++;
+        int probeErrno = 0;
+        if (CCNMLaunchctlCandidateIsUnusable(
+                candidate.fileSystemRepresentation, pathSourced, &probeErrno)) {
+            if (failures.count < CCNMLaunchctlReportLimit) {
+                [failures addObject:[NSString stringWithFormat:
+                    @"%@(stat errno %d)", candidate, probeErrno]];
+            }
+            continue;
+        }
+        int spawnErrno = 0;
+        int status = CCNMSpawnLaunchctl(candidate, arguments, quiet, &spawnErrno);
+        if (spawnErrno == 0) {
+            CCNMLaunchctlResolved = candidate;
+            CCNMLaunchctlProbeReport = nil;
+            return status;
+        }
+        if (failures.count < CCNMLaunchctlReportLimit) {
+            [failures addObject:[NSString stringWithFormat:
+                @"%@(spawn errno %d)", candidate, spawnErrno]];
+        }
+    }
+
+    NSString *suffix = order.count > failures.count
+        ? [NSString stringWithFormat:@" and %lu more",
+               (unsigned long)(order.count - failures.count)]
+        : @"";
+    CCNMLaunchctlProbeReport = [NSString stringWithFormat:@"probed %@%@",
+        [failures componentsJoinedByString:@", "], suffix];
+    CCNMLaunchctlResolutionFailed = YES;
+    return -1;
+}
+
+// Availability check. `version` is side-effect free, so this can resolve the
+// binary before any real command is issued. Only the exec result matters, not
+// the exit status: an unrecognized subcommand still proves the binary runs.
+static BOOL CCNMLaunchctlIsUsable(void) {
+    if (!CCNMLaunchctlResolved && !CCNMLaunchctlResolutionFailed) {
+        (void)CCNMRunLaunchctl(@[@"version"], YES);
+    }
+    return CCNMLaunchctlResolved != nil;
+}
+
+// Builds the user-facing message for a failed lookup, including the probe table.
+static NSString *CCNMLaunchctlUnavailableMessage(void) {
+    (void)CCNMLaunchctlIsUsable();
+    return [NSString stringWithFormat:
+        @"launchctl could not be run from any known location; %@.",
+        CCNMLaunchctlProbeReport.length > 0
+            ? CCNMLaunchctlProbeReport : @"no candidate path was probed"];
 }
 
 static BOOL CCNMJobIsLoaded(void) {
@@ -337,21 +410,20 @@ BOOL CCNMPrepareMaintenanceLaunchd(NSError **error) {
         return CCNMSetError(error, CCNMMaintainerErrorRoot,
             @"The active jailbreak root could not be resolved uniquely.");
     }
-    NSString *launchctl = CCNMLaunchctlPath();
     NSString *plistPath = CCNMMaintainerRootedPath(
         CCNMMaintenanceLaunchdRelativePath);
     NSString *executablePath = CCNMMaintainerRootedPath(
         CCNMMaintenanceExecutableRelativePath);
     NSString *baselinePath = CCNMMaintainerRootedPath(
         CCNMMaintenanceBaselineRelativePath);
+    // Deliberately no launchctl requirement here. This function's whole job is
+    // to leave a correct plist on disk, and that is what makes the job loadable
+    // at the next boot. Demanding launchctl would throw away the durable part of
+    // the work just because the immediate load is impossible.
+    //
     // Report the failing item individually. A single combined message cannot be
-    // acted on: the four inputs fail for unrelated reasons (missing launchctl,
-    // unresolvable rooted path, unpacked-but-not-executable helper) and each
-    // needs a different fix on the device.
-    if (!launchctl) {
-        return CCNMSetError(error, CCNMMaintainerErrorLaunchctl,
-            CCNMLaunchctlUnavailableMessage());
-    }
+    // acted on: these inputs fail for unrelated reasons (unresolvable rooted
+    // path, unpacked-but-not-executable helper) and each needs a different fix.
     if (!plistPath || !executablePath || !baselinePath) {
         return CCNMSetError(error, CCNMMaintainerErrorPath,
             @"A required maintenance path could not be resolved against the jailbreak root.");
@@ -408,7 +480,7 @@ BOOL CCNMPrepareMaintenanceLaunchd(NSError **error) {
 }
 
 BOOL CCNMStopMaintenanceLaunchd(NSError **error) {
-    if (!CCNMLaunchctlPath()) {
+    if (!CCNMLaunchctlIsUsable()) {
         return CCNMSetError(error, CCNMMaintainerErrorLaunchctl,
             CCNMLaunchctlUnavailableMessage());
     }
@@ -423,18 +495,28 @@ BOOL CCNMStopMaintenanceLaunchd(NSError **error) {
     return YES;
 }
 
-BOOL CCNMRegisterMaintenanceLaunchd(NSError **error) {
-    if (!CCNMPrepareMaintenanceLaunchd(error) ||
-        !CCNMStopMaintenanceLaunchd(error)) {
-        return NO;
+CCNMMaintenanceRegistration CCNMRegisterMaintenanceLaunchd(NSError **error) {
+    // The plist must be correct regardless of whether launchctl can run, so it
+    // is written first and its failure is the only hard failure.
+    if (!CCNMPrepareMaintenanceLaunchd(error)) {
+        return CCNMMaintenanceRegistrationFailed;
+    }
+    if (!CCNMLaunchctlIsUsable()) {
+        (void)CCNMSetError(error, CCNMMaintainerErrorLaunchctl,
+            CCNMLaunchctlUnavailableMessage());
+        return CCNMMaintenanceRegistrationDeferred;
+    }
+    if (!CCNMStopMaintenanceLaunchd(error)) {
+        return CCNMMaintenanceRegistrationFailed;
     }
     NSString *plistPath = CCNMMaintainerRootedPath(
         CCNMMaintenanceLaunchdRelativePath);
     if (CCNMRunLaunchctl(@[@"bootstrap", @"system", plistPath], NO) != 0 ||
         !CCNMJobIsLoaded()) {
         (void)CCNMStopMaintenanceLaunchd(NULL);
-        return CCNMSetError(error, CCNMMaintainerErrorLaunchctl,
+        (void)CCNMSetError(error, CCNMMaintainerErrorLaunchctl,
             @"The maintenance launchd job could not be registered and verified.");
+        return CCNMMaintenanceRegistrationFailed;
     }
     NSString *baselinePath = CCNMMaintainerRootedPath(
         CCNMMaintenanceBaselineRelativePath);
@@ -444,9 +526,10 @@ BOOL CCNMRegisterMaintenanceLaunchd(NSError **error) {
         if (CCNMRunLaunchctl(@[@"kickstart", @"-k", target], NO) != 0 ||
             !CCNMJobIsLoaded()) {
             (void)CCNMStopMaintenanceLaunchd(NULL);
-            return CCNMSetError(error, CCNMMaintainerErrorLaunchctl,
+            (void)CCNMSetError(error, CCNMMaintainerErrorLaunchctl,
                 @"The policy-scoped maintenance job could not be started.");
+            return CCNMMaintenanceRegistrationFailed;
         }
     }
-    return YES;
+    return CCNMMaintenanceRegistrationActive;
 }

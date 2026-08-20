@@ -226,16 +226,16 @@ class UninstallGuardTests(unittest.TestCase):
 
     def test_prepare_reports_each_missing_input_separately(self):
         # One combined "launchctl, plist, executable, or policy path" message is
-        # not actionable; the four inputs fail for unrelated reasons and each
-        # needs a different fix on the device.
+        # not actionable; these inputs fail for unrelated reasons and each needs
+        # a different fix on the device. launchctl is deliberately not among them
+        # anymore: preparing the plist does not need it, and requiring it would
+        # discard the durable work. See tests/test_launchctl_probe_order.py.
         source = MAINTAINER_SOURCE.read_text()
         body = source[source.index("BOOL CCNMPrepareMaintenanceLaunchd"):
                       source.index("BOOL CCNMStopMaintenanceLaunchd")]
         self.assertNotIn(
             "A required launchctl, plist, executable, or policy path is unavailable.",
             body)
-        self.assertIn("CCNMMaintainerErrorLaunchctl", body)
-        self.assertIn("CCNMLaunchctlUnavailableMessage()", body)
         self.assertIn("could not be resolved against the jailbreak root", body)
         self.assertIn("is not readable at %@", body)
         self.assertIn("is not executable at %@", body)

@@ -1,7 +1,9 @@
 #include "CCNMLaunchctlProbe.h"
 
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 static const char *const CCNMLaunchctlBasenames[] = {
     // roothide keeps its jbroot-aware launchctl in basebin, outside the usual
@@ -68,7 +70,11 @@ static void CCNMAppendPrefix(const char *prefix, size_t prefixLength,
 size_t CCNMBuildLaunchctlProbeOrder(const char *jbroot,
                                     const char *envPath,
                                     char **out,
-                                    size_t capacity) {
+                                    size_t capacity,
+                                    size_t *pathSourcedFrom) {
+    if (pathSourcedFrom) {
+        *pathSourcedFrom = 0;
+    }
     if (!out || capacity == 0) {
         return 0;
     }
@@ -82,6 +88,9 @@ size_t CCNMBuildLaunchctlProbeOrder(const char *jbroot,
     CCNMAppendPrefix("/rootfs", strlen("/rootfs"), out, &count, capacity);
     CCNMAppendPrefix("/var/jb", strlen("/var/jb"), out, &count, capacity);
 
+    if (pathSourcedFrom) {
+        *pathSourcedFrom = count;
+    }
     if (envPath && envPath[0] != '\0') {
         const char *cursor = envPath;
         while (*cursor != '\0') {
@@ -100,4 +109,62 @@ size_t CCNMBuildLaunchctlProbeOrder(const char *jbroot,
         }
     }
     return count;
+}
+
+int CCNMLaunchctlCandidateIsUnusable(const char *path,
+                                    int requireRootOwned,
+                                    int *statErrno) {
+    if (statErrno) {
+        *statErrno = 0;
+    }
+    if (!path || path[0] == '\0') {
+        if (statErrno) {
+            *statErrno = EINVAL;
+        }
+        return 1;
+    }
+    struct stat info;
+    // stat(2) follows symlinks, which is what we want: a dangling link is
+    // reported as absent, and a live link is judged by its target.
+    if (stat(path, &info) != 0) {
+        if (statErrno) {
+            *statErrno = errno;
+        }
+        // Only a definitive "this path does not resolve" justifies skipping.
+        // Anything else (notably EPERM/EACCES) is inconclusive on this platform
+        // and the spawn attempt remains the authority.
+        switch (errno) {
+        case ENOENT:
+        case ENOTDIR:
+        case ENAMETOOLONG:
+        case ELOOP:
+            return 1;
+        default:
+            return 0;
+        }
+    }
+    if (!S_ISREG(info.st_mode)) {
+        if (statErrno) {
+            // Portable stand-in for "not an executable file"; this module is
+            // also compiled on Linux for host tests, so BSD-only EFTYPE is out.
+            *statErrno = ENOEXEC;
+        }
+        return 1;
+    }
+    if (requireRootOwned) {
+        if (info.st_uid != 0) {
+            if (statErrno) {
+                *statErrno = EPERM;
+            }
+            return 1;
+        }
+        if (info.st_mode & (S_IWGRP | S_IWOTH)) {
+            if (statErrno) {
+                *statErrno = EACCES;
+            }
+            return 1;
+        }
+    }
+    // Executability is deliberately not judged here; see the header.
+    return 0;
 }

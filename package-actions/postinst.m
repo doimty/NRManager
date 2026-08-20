@@ -51,12 +51,26 @@ int main(int argc, const char *argv[]) {
         }
 
         NSError *launchdError = nil;
-        if (!CCNMRegisterMaintenanceLaunchd(&launchdError)) {
+        switch (CCNMRegisterMaintenanceLaunchd(&launchdError)) {
+        case CCNMMaintenanceRegistrationActive:
+            break;
+        case CCNMMaintenanceRegistrationDeferred:
+            // The plist is correct on disk, so launchd will pick the job up at
+            // the next boot. Only the immediate load was impossible.
+            fprintf(stderr,
+                "NetworkManagerReborn: notice — the maintenance owner is installed but not\n"
+                "  running yet (%s).\n"
+                "  It will start automatically after the next reboot. Band policy changes\n"
+                "  work now; only automatic serving-state monitoring waits for that.\n",
+                launchdError.localizedDescription.UTF8String ?: "unknown");
+            break;
+        case CCNMMaintenanceRegistrationFailed:
             fprintf(stderr,
                 "NetworkManagerReborn: warning — maintenance owner could not be registered (%s).\n"
                 "  The package works without it, but automatic serving-state monitoring\n"
                 "  will be unavailable.\n",
                 launchdError.localizedDescription.UTF8String ?: "unknown");
+            break;
         }
         return CCNMInstallAllowed;
     }

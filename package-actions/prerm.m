@@ -97,9 +97,14 @@ int main(int argc, const char *argv[]) {
 
         NSError *launchdError = nil;
         if (!CCNMStopMaintenanceLaunchd(&launchdError)) {
+            // dpkg removes the plist with the package either way, so a job that
+            // cannot be booted out now also cannot come back after a reboot. The
+            // only live risk is a currently-running instance, which is why this
+            // is still reported.
             fprintf(stderr,
                 "NetworkManagerReborn: warning — maintenance owner could not be stopped (%s).\n"
-                "  Proceeding with removal; the stale launchd entry can be cleaned up manually.\n",
+                "  Proceeding with removal. The launchd plist is removed with the package,\n"
+                "  so the job will not return after a reboot.\n",
                 launchdError.localizedDescription.UTF8String ?: "unknown");
         }
 
