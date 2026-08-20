@@ -338,6 +338,26 @@ class PostinstRootlessTests(ShellScriptBase):
         self.assertEqual(environment["install"], str(self.prefix))
         self.assertEqual(environment["launchd"], str(self.prefix))
 
+    def test_a_binary_plist_with_no_placeholder_needs_no_plutil(self):
+        # The release-blocking false failure. Theos converts every staged plist
+        # to binary1 in internal-package, after before-package, so this lane
+        # ships a binary plist with the prefix already baked in and nothing to
+        # substitute. Asking about the format before asking whether a rewrite is
+        # needed warned about a completely correct plist, and on a bootstrap
+        # without plutil that warning was unavoidable and permanent.
+        self.assertEqual(self.plist.read_bytes()[:8], b"bplist00")
+        (self.bin / "plutil").unlink()
+        (self.bin / "jbroot").unlink()
+        before = self.plist.read_bytes()
+        result = self.run_script("configure")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNoWarning(result)
+        # Untouched, because no substitution was required.
+        self.assertEqual(self.plist.read_bytes(), before)
+        self.assertEqual(self.read_plist()["ProgramArguments"][0],
+                         f"{self.prefix}{patcher.PROGRAM_RELATIVE}")
+        self.assertTrue(self.guard_log.exists())
+
 
 class PostinstDiagnosticTests(ShellScriptBase):
     def test_a_missing_plist_names_every_prefix_it_tried(self):
@@ -431,9 +451,13 @@ class PostinstDiagnosticTests(ShellScriptBase):
         # file at all, and every later check passes because the placeholder
         # really is gone. Unsubstituted is recoverable; corrupt-and-report-success
         # is not.
+        #
+        # This is the roothide lane, so a substitution really is required, which
+        # is what makes the format load-bearing here and irrelevant on rootless.
         self.stub("plutil", "#!/bin/sh\nexit 1\n")
         before = self.plist.read_bytes()
         self.assertEqual(before[:8], b"bplist00")
+        self.assertIn(b"@JBROOT@", before)
         result = self.run_script("configure")
         self.assertIn("is not XML", result.stderr)
         self.assertNotIn("wrote the jailbreak root", result.stderr)
@@ -442,6 +466,15 @@ class PostinstDiagnosticTests(ShellScriptBase):
         # Still not an install failure: the daemon is the optional part.
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(self.guard_log.exists())
+
+    def test_the_format_is_only_questioned_when_a_rewrite_is_needed(self):
+        # Order-of-checks regression. The placeholder question comes first because
+        # Theos ships binary1 on both lanes, so a format gate ahead of it fires on
+        # a plist that needs no rewrite at all.
+        script = self.render().read_text()
+        body = script[script.index("patch_jbroot() {"):]
+        self.assertLess(body.index("placeholder_status="), body.index("xml_status="))
+        self.assertLess(body.index("placeholder_status="), body.index("plutil -convert"))
 
     def test_an_unreadable_plist_is_not_read_as_already_substituted(self):
         # grep's status is three-valued: 0 match, 1 no match, 2+ error. Used as a

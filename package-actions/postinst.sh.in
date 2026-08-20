@@ -164,45 +164,31 @@ patch_jbroot() {
     plist="$RESOLVED_PATH"
     note "resolved the launchd plist under $(describe_prefix "$RESOLVED_PREFIX")."
 
-    # Theos stages this as a binary plist and the substitution below is textual,
-    # so the conversion has to happen first. Apple's plutil spells it
-    # -convert xml1 and the bootstrap's spells it -xml; try both. The packaging
-    # step already ships XML for both lanes, so this is defence in depth, not the
-    # load-bearing conversion.
-    plutil -convert xml1 "$plist" >/dev/null 2>&1 ||
-        plutil -xml "$plist" >/dev/null 2>&1 || true
-
-    # The conversion is not allowed to be best-effort, because the placeholder
-    # check below cannot tell XML from binary: grep -a matches @JBROOT@ inside a
-    # binary plist too. sed would then rewrite 8 bytes to a longer path inside a
-    # length-prefixed string and leave the trailer's offset table stale, giving
-    # launchd a file it cannot parse at all — while every later check passes,
-    # because the placeholder really is gone. Leaving the plist unsubstituted is
-    # recoverable by reinstalling; corrupting it and reporting success is not.
+    # Ask whether a substitution is needed *before* asking about the format.
     #
-    # Confirmed positively with grep, which is already required below. Sniffing
-    # the magic bytes would mean depending on head or dd as well, and every tool
-    # this script needs is one more thing that can be absent on a given bootstrap.
-    grep -qa '<?xml' "$plist"
-    xml_status=$?
-    if [ "$xml_status" -eq 1 ]; then
-        warn "${plist} is not XML, so plutil is unavailable or failed; refusing to run a textual substitution over it. The @JBROOT@ placeholder remains and launchd cannot start the daemon."
-        return 1
-    fi
-    if [ "$xml_status" -ne 0 ]; then
-        warn "could not read ${plist} to confirm it is XML (grep exit ${xml_status}); refusing to rewrite it. The @JBROOT@ placeholder remains and launchd cannot start the daemon."
-        return 1
-    fi
+    # This order matters and getting it backwards produced a release-blocking
+    # false failure. Theos converts every staged plist to binary1 in its
+    # FINALPACKAGE internal-package step, which runs after before-package, so
+    # both lanes ship a binary plist no matter what the packaging script wrote.
+    # A format gate placed ahead of this check therefore fires on the rootless
+    # lane, which has no placeholder and needs no rewrite at all, and warns
+    # about a plist that is completely correct.
+    #
+    # grep -a answers this question on either format: the placeholder is 8 plain
+    # bytes and is findable inside a binary plist too. That property is exactly
+    # why the format still has to be settled below before sed runs.
+    #
     # grep's exit status is three-valued: 0 match, 1 no match, 2 or more error.
-    # Used as a boolean, an unreadable plist or a missing grep is indistinguishable
-    # from "already substituted", which would leave the placeholder in place and
-    # put nothing in the install log to say so.
+    # Used as a boolean, an unreadable plist or a missing grep is
+    # indistinguishable from "already substituted", which is the success branch,
+    # so the placeholder would survive with a clean install log.
     grep -qa '@JBROOT@' "$plist"
     placeholder_status=$?
     if [ "$placeholder_status" -eq 1 ]; then
-        # Already substituted, by an earlier run of this script or at package
-        # time for the rootless lane. Idempotent by design: dpkg reruns postinst
-        # on reconfigure and on a repeated install.
+        # Nothing to substitute. Two ways to get here, both correct and both
+        # silent: the rootless lane, whose prefix is baked in at package time,
+        # and a rerun of this script on roothide. dpkg reruns postinst on
+        # reconfigure and on a repeated install.
         return 0
     fi
     if [ "$placeholder_status" -ne 0 ]; then
@@ -212,6 +198,35 @@ patch_jbroot() {
 
     if [ -z "$JBROOT_PREFIX" ]; then
         warn "the jailbreak root ${JBROOT_STATUS}, so ${plist} still contains the @JBROOT@ placeholder and launchd cannot start the daemon."
+        return 1
+    fi
+
+    # A substitution is genuinely required, so the format now has to be settled.
+    # Theos ships binary1 and the rewrite below is textual sed. Apple's plutil
+    # spells the conversion -convert xml1 and the bootstrap's spells it -xml; try
+    # both, and treat neither working as fatal to the rewrite.
+    plutil -convert xml1 "$plist" >/dev/null 2>&1 ||
+        plutil -xml "$plist" >/dev/null 2>&1 || true
+
+    # The conversion is not allowed to be best-effort, because the check above
+    # cannot tell XML from binary. sed would rewrite 8 bytes to a longer path
+    # inside a length-prefixed string and leave the trailer's offset table stale,
+    # giving launchd a file it cannot parse at all — while every later check
+    # passes, because the placeholder really is gone. Leaving the plist
+    # unsubstituted is recoverable by reinstalling; corrupting it and reporting
+    # success is not.
+    #
+    # Confirmed positively with grep, which is already required above. Sniffing
+    # the magic bytes would mean depending on head or dd as well, and every tool
+    # this script needs is one more thing that can be absent on a given bootstrap.
+    grep -qa '<?xml' "$plist"
+    xml_status=$?
+    if [ "$xml_status" -eq 1 ]; then
+        warn "${plist} still contains the @JBROOT@ placeholder but is not XML, so plutil is unavailable or failed; refusing to run a textual substitution over it. launchd cannot start the daemon."
+        return 1
+    fi
+    if [ "$xml_status" -ne 0 ]; then
+        warn "could not read ${plist} to confirm it is XML (grep exit ${xml_status}); refusing to rewrite it. The @JBROOT@ placeholder remains and launchd cannot start the daemon."
         return 1
     fi
 

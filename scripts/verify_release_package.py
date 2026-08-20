@@ -383,9 +383,14 @@ def verify_launchd_plist(payload_root: Path, lane: str, failures: List[str]) -> 
     The mirror case matters too. A rootless-prefixed plist in a roothide package
     points launchd at /var/jb, which does not exist there.
 
-    XML is required for the roothide lane specifically: the on-device
-    substitution is textual sed, so a binary plist would leave the placeholder
-    unmatched.
+    Format is recorded but not required. Theos runs convert_xml_plist.sh in its
+    FINALPACKAGE internal-package step, which is after before-package, so every
+    staged plist reaches the .deb as binary1 regardless of what the packaging
+    script wrote. Requiring XML here therefore failed a correct package. What the
+    on-device sed actually needs is that the placeholder be findable as plain
+    bytes, which holds in a binary plist too, and that the device convert to XML
+    before rewriting - which the postinst does, and refuses to rewrite if it
+    cannot.
     """
     evidence: Dict[str, object] = {"lane": lane}
     failure_count_before = len(failures)
@@ -406,10 +411,15 @@ def verify_launchd_plist(payload_root: Path, lane: str, failures: List[str]) -> 
 
     expected_prefix = ROOTHIDE_PLACEHOLDER if lane == "roothide" else ROOTLESS_PREFIX
     evidence["expected_prefix"] = expected_prefix
-    if lane == "roothide" and not evidence["xml"]:
-        failures.append(
-            "roothide launchd plist must be XML so the on-device sed can match @JBROOT@"
-        )
+    # The device substitution is textual, so the placeholder has to survive as
+    # plain bytes whatever the container format is.
+    if lane == "roothide":
+        evidence["placeholder_bytes_present"] = ROOTHIDE_PLACEHOLDER.encode() in raw
+        if not evidence["placeholder_bytes_present"]:
+            failures.append(
+                "roothide launchd plist does not contain %s as plain bytes, so the "
+                "on-device sed cannot substitute it" % ROOTHIDE_PLACEHOLDER
+            )
 
     arguments = payload.get("ProgramArguments")
     program = arguments[0] if isinstance(arguments, list) and arguments else None

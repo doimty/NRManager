@@ -115,7 +115,24 @@ class PackageEndToEndTests(unittest.TestCase):
             # Exactly what the top-level Makefile's before-package rule runs.
             patcher.patch_launchd_plist(payload_root, patcher.plist_prefix(lane))
             patcher.render_maintainer_scripts(root, REPO / "package-actions", lane)
+
+        # Theos's own internal-package step, which runs *after* before-package and
+        # converts every staged plist back to binary1
+        # (theos/bin/convert_xml_plist.sh, gated on FINALPACKAGE). Omitting this
+        # is what let an XML-requiring gate pass here and fail the real build: the
+        # packaging script writes XML, Theos binarizes it, and the .deb ships
+        # binary on both lanes either way.
+        self.binarize_staged_plists(payload_root)
         return root
+
+    @staticmethod
+    def binarize_staged_plists(payload_root: Path) -> None:
+        for path in payload_root.rglob("*.plist"):
+            raw = path.read_bytes()
+            if raw[:8] == b"bplist00":
+                continue
+            path.write_bytes(plistlib.dumps(plistlib.loads(raw),
+                                            fmt=plistlib.FMT_BINARY))
 
     def verify(self, lane: str, run_before_package: bool = True) -> dict:
         with tempfile.TemporaryDirectory() as directory:
@@ -144,6 +161,15 @@ class PackageEndToEndTests(unittest.TestCase):
                 self.assertEqual(report["status"], "passed")
                 self.assertEqual(report["maintainer_scripts"]["status"], "passed")
                 self.assertEqual(report["launchd_plist"]["status"], "passed")
+                # Binary is what actually ships, and it must not be a failure.
+                self.assertFalse(report["launchd_plist"]["xml"])
+
+    def test_the_roothide_placeholder_ships_as_plain_bytes(self) -> None:
+        # The property the on-device textual sed depends on, asserted against the
+        # package as Theos really leaves it rather than against the XML the
+        # packaging script wrote.
+        report = self.verify("roothide")
+        self.assertTrue(report["launchd_plist"]["placeholder_bytes_present"])
 
     def test_each_lane_ships_its_own_launchd_prefix(self) -> None:
         self.assertEqual(
