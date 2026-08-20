@@ -58,9 +58,9 @@ int main(int argc, const char *argv[]) {
         NSError *launchdError = nil;
         if (!CCNMStopMaintenanceLaunchd(&launchdError)) {
             fprintf(stderr,
-                "NetworkManagerReborn: removal blocked; maintenance owner is still active (%s).\n",
+                "NetworkManagerReborn: warning — maintenance owner could not be stopped (%s).\n"
+                "  Proceeding with removal; the stale launchd entry can be cleaned up manually.\n",
                 launchdError.localizedDescription.UTF8String ?: "unknown");
-            return CCNMPrermBlocked;
         }
 
         NSDictionary<NSString *, id> *current = CCNMReadN78PolicyState();

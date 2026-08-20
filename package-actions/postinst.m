@@ -42,9 +42,11 @@ int main(int argc, const char *argv[]) {
         NSError *launchdError = nil;
         if (!CCNMRegisterMaintenanceLaunchd(&launchdError)) {
             fprintf(stderr,
-                "NetworkManagerReborn: maintenance owner could not be registered safely (%s).\n",
+                "NetworkManagerReborn: warning — maintenance owner could not be registered (%s).\n"
+                "  The package will work without the maintenance daemon, but automatic\n"
+                "  serving-state monitoring will be unavailable. The registration can be\n"
+                "  retried by reinstalling or running the postinst manually.\n",
                 launchdError.localizedDescription.UTF8String ?: "unknown");
-            return CCNMPostinstBlocked;
         }
         return CCNMInstallAllowed;
     }
