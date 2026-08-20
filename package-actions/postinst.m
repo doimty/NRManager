@@ -28,24 +28,34 @@ int main(int argc, const char *argv[]) {
         }
 
         NSDictionary<NSString *, id> *summary = CCNMClearN78PolicyRemovalGuardIfSafe();
-        BOOL cleared = [summary[CCNMN78PolicySummarySuccessKey] boolValue] &&
-            ![summary[@"removalGuardPresent"] boolValue];
-        if (!cleared) {
+        // CCNMClearN78PolicyRemovalGuardIfSafe reports the whole policy summary,
+        // and that summary carries success=NO whenever the live policy needs
+        // recovery — including the case where no guard exists at all. Keying the
+        // decision on the success flag therefore failed configure for a state
+        // this script is not responsible for and cannot repair. Only a guard
+        // that is still present is meaningful here.
+        if ([summary[@"removalGuardPresent"] boolValue]) {
             NSString *errorCode = [summary[CCNMN78PolicySummaryErrorCodeKey] isKindOfClass:NSString.class]
                 ? summary[CCNMN78PolicySummaryErrorCodeKey] : @"unknown";
+            // An armed guard cannot cause harm from here: it forces mayWrite to
+            // NO, so no modem write can happen, and mayUninstall still requires
+            // a verified system-default state, so removal stays gated. Blocking
+            // configure would only strand the package half-configured and take
+            // away the Settings UI that performs the recovery this needs.
             fprintf(stderr,
-                "NetworkManagerReborn: installation guard could not be cleared safely (error=%s).\n",
+                "NetworkManagerReborn: warning — the package-removal guard is still armed (error=%s).\n"
+                "  Band policy changes stay disabled while it is armed, and removal still\n"
+                "  requires a verified restore. Recover the NR configuration in Settings,\n"
+                "  then reinstall to retire the guard.\n",
                 errorCode.UTF8String);
-            return CCNMPostinstBlocked;
         }
 
         NSError *launchdError = nil;
         if (!CCNMRegisterMaintenanceLaunchd(&launchdError)) {
             fprintf(stderr,
                 "NetworkManagerReborn: warning — maintenance owner could not be registered (%s).\n"
-                "  The package will work without the maintenance daemon, but automatic\n"
-                "  serving-state monitoring will be unavailable. The registration can be\n"
-                "  retried by reinstalling or running the postinst manually.\n",
+                "  The package works without it, but automatic serving-state monitoring\n"
+                "  will be unavailable.\n",
                 launchdError.localizedDescription.UTF8String ?: "unknown");
         }
         return CCNMInstallAllowed;

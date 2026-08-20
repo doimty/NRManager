@@ -11,7 +11,7 @@ postinst_FRAMEWORKS = Foundation CoreFoundation
 postinst_CFLAGS = -fobjc-arc -fvisibility=hidden -DCCNM_MAINTAINER_SCRIPT
 postinst_OBJCFLAGS += -fno-modules -fno-implicit-modules
 
-prerm_FILES = prerm.m CCNMMaintainerEnvironment.m ../networkmanagerprefs/CCNMN78PolicySupport.m ../networkmanagerprefs/CCNMN78PolicyController.m
+prerm_FILES = prerm.m CCNMDpkgVersion.c CCNMMaintainerEnvironment.m ../networkmanagerprefs/CCNMN78PolicySupport.m ../networkmanagerprefs/CCNMN78PolicyController.m
 prerm_INSTALL_PATH = /DEBIAN
 prerm_FRAMEWORKS = Foundation CoreFoundation
 prerm_CFLAGS = -fobjc-arc -fvisibility=hidden -DCCNM_MAINTAINER_SCRIPT

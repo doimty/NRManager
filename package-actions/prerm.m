@@ -2,6 +2,7 @@
 #import <dispatch/dispatch.h>
 #import <unistd.h>
 
+#import "CCNMDpkgVersion.h"
 #import "CCNMMaintainerEnvironment.h"
 #import "../networkmanagerprefs/CCNMN78PolicyController.h"
 
@@ -15,6 +16,44 @@ static BOOL CCNMActionRequiresRestore(NSString *action) {
         [action isEqual:@"upgrade"] ||
         [action isEqual:@"deconfigure"] ||
         [action isEqual:@"failed-upgrade"];
+}
+
+// Only a departure of the code itself can strand a modified modem. On remove
+// and deconfigure the restore implementation goes away, so an unverified
+// restore must stay fail-closed.
+//
+// upgrade and failed-upgrade are different in kind. The successor package
+// ships the same baseline path and the same restore implementation, and the
+// durable policy records live outside the package payload, so there is nothing
+// to strand. Worse, attempting the restore here is not side-effect free: every
+// failure path inside the recovery routine durably marks the policy state as
+// recoveryRequired/rebootRequired. That marker then keeps the removal guard
+// armed, so a single failed restore attempt turns every later install into a
+// half-configured package with no working Settings UI to perform the recovery
+// the error message demands.
+//
+// The exemption is not unconditional. dpkg invokes `old-prerm upgrade
+// <new-version>`, and a downgrade uses the same action, so a downgrade to a
+// build that predates the policy controller really would orphan the baseline.
+// The floor below is the first release that can restore it.
+static NSString *const CCNMFirstRestoreCapableVersion = @"1.5.0";
+
+static BOOL CCNMActionKeepsRestoreCapabilityInstalled(NSString *action,
+                                                      NSString *versionArgument) {
+    // `new-prerm failed-upgrade <old-version>`: this binary belongs to the
+    // incoming package, so the restore implementation is the one taking over.
+    if ([action isEqual:@"failed-upgrade"]) {
+        return YES;
+    }
+    if (![action isEqual:@"upgrade"]) {
+        return NO;
+    }
+    // `old-prerm upgrade <new-version>`.
+    if (![versionArgument isKindOfClass:NSString.class]) {
+        return NO;
+    }
+    return CCNMDpkgVersionIsAtLeast(versionArgument.UTF8String,
+        CCNMFirstRestoreCapableVersion.UTF8String);
 }
 
 static BOOL CCNMSummaryIsClean(NSDictionary<NSString *, id> *summary) {
@@ -47,6 +86,7 @@ static void CCNMExitWhenSetterSettled(CCNMPrermExitCode exitCode) {
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         NSString *action = argc > 1 ? [NSString stringWithUTF8String:argv[1]] : @"";
+        NSString *versionArgument = argc > 2 ? [NSString stringWithUTF8String:argv[2]] : @"";
         if (!CCNMActionRequiresRestore(action)) {
             return CCNMRemovalAllowed;
         }
@@ -61,6 +101,15 @@ int main(int argc, const char *argv[]) {
                 "NetworkManagerReborn: warning — maintenance owner could not be stopped (%s).\n"
                 "  Proceeding with removal; the stale launchd entry can be cleaned up manually.\n",
                 launchdError.localizedDescription.UTF8String ?: "unknown");
+        }
+
+        // Upgrade to a restore-capable version keeps the recovery path
+        // installed, so this script must not touch policy state at all: no
+        // restore attempt, no recovery marker, no guard arming. Whatever the
+        // current policy is, the successor package reads the same records and
+        // the Settings UI stays able to disable and recover.
+        if (CCNMActionKeepsRestoreCapabilityInstalled(action, versionArgument)) {
+            return CCNMRemovalAllowed;
         }
 
         NSDictionary<NSString *, id> *current = CCNMReadN78PolicyState();
@@ -95,7 +144,7 @@ int main(int argc, const char *argv[]) {
 
         fprintf(stderr,
             "NetworkManagerReborn: restoring and verifying the original NR configuration before %s.\n",
-            [action isEqual:@"upgrade"] ? "upgrade/downgrade" : action.UTF8String);
+            action.UTF8String);
         fflush(stderr);
 
         CCNMRecoverN78Preference(^(NSDictionary<NSString *, id> *summary) {

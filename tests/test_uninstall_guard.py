@@ -106,17 +106,29 @@ class UninstallGuardTests(unittest.TestCase):
         self.assertIn("THEOS_PACKAGE_INSTALL_PREFIX", source)
         self.assertNotIn("#import <roothide.h>", source.split("#elif __has_include(<roothide.h>)")[0])
 
-    def test_postinst_registers_only_after_guard_cleanup(self):
+    def test_postinst_attempts_guard_cleanup_before_registration(self):
         source = POSTINST_SOURCE.read_text()
         clear = source.index("CCNMClearN78PolicyRemovalGuardIfSafe()")
-        cleared_check = source.index("if (!cleared)")
+        guard_check = source.index('[summary[@"removalGuardPresent"] boolValue]')
         register = source.index("CCNMRegisterMaintenanceLaunchd(&launchdError)")
-        self.assertLess(clear, cleared_check)
-        self.assertLess(cleared_check, register)
-        # Policy-state safety stays fail-closed: an uncleared removal guard must
-        # still block configure, because leaving it armed would let the modem
-        # policy be enabled while the package believes removal was approved.
-        self.assertIn("return CCNMPostinstBlocked", source[cleared_check:register])
+        self.assertLess(clear, guard_check)
+        self.assertLess(guard_check, register)
+
+    def test_postinst_never_blocks_configure_on_policy_state(self):
+        # postinst owns nothing that can strand a modified modem: an armed guard
+        # already forces mayWrite=NO and removal still requires a verified
+        # restore. Failing configure only produces a half-installed package
+        # whose Settings UI — the only way to run the recovery the error asks
+        # for — is unavailable.
+        source = POSTINST_SOURCE.read_text()
+        clear = source.index("CCNMClearN78PolicyRemovalGuardIfSafe()")
+        self.assertNotIn("return CCNMPostinstBlocked", source[clear:])
+        # Root is still required, and that check precedes any policy work.
+        self.assertIn("geteuid() != 0", source)
+        self.assertLess(source.index("geteuid() != 0"), clear)
+        self.assertLess(source.index("return CCNMPostinstBlocked"), clear)
+        # A still-armed guard must be reported rather than silently ignored.
+        self.assertIn("package-removal guard is still armed", source)
 
     def test_postinst_launchd_registration_is_non_fatal(self):
         # The maintenance daemon only provides automatic serving-state
@@ -129,6 +141,47 @@ class UninstallGuardTests(unittest.TestCase):
         self.assertNotIn("return CCNMPostinstBlocked", tail)
         self.assertIn("warning", tail)
         self.assertIn("return CCNMInstallAllowed", tail)
+        # Do not promise a retry remedy for a deterministic lookup failure.
+        self.assertNotIn("retried by reinstalling", tail)
+
+    def test_upgrade_does_not_touch_policy_state(self):
+        # Every failure path inside the recovery routine durably marks the state
+        # recoveryRequired/rebootRequired. Attempting a restore during upgrade
+        # therefore converts a transient read failure into a permanent install
+        # blocker, while protecting nothing: the successor package ships the
+        # same baseline path and the same restore implementation.
+        source = PRERM_SOURCE.read_text()
+        early = source.index("CCNMActionKeepsRestoreCapabilityInstalled(action",
+                             source.index("int main("))
+        self.assertLess(early, source.index("CCNMReadN78PolicyState()"))
+        self.assertLess(early, source.index("CCNMReadKnownOrphanedN78RemovalSafety()"))
+        self.assertLess(early, source.index("CCNMArmN78PolicyRemovalGuard()"))
+        self.assertLess(early, source.index("CCNMRecoverN78Preference"))
+        guard_body = source[early:source.index("CCNMReadN78PolicyState()")]
+        self.assertIn("return CCNMRemovalAllowed", guard_body)
+        # Only upgrade paths are exempt; remove and deconfigure stay gated.
+        predicate = source[source.index("static BOOL CCNMActionKeepsRestoreCapabilityInstalled"):
+                           source.index("static BOOL CCNMSummaryIsClean")]
+        self.assertIn('@"upgrade"', predicate)
+        self.assertIn('@"failed-upgrade"', predicate)
+        self.assertNotIn('@"remove"', predicate)
+        self.assertNotIn('@"deconfigure"', predicate)
+
+    def test_upgrade_exemption_is_gated_on_the_peer_version(self):
+        # dpkg uses `upgrade` for downgrades too, so exempting the action alone
+        # would silently orphan the baseline when downgrading to a build that
+        # predates the restore implementation.
+        source = PRERM_SOURCE.read_text()
+        self.assertIn("argv[2]", source)
+        self.assertIn("versionArgument", source)
+        self.assertIn("CCNMDpkgVersionIsAtLeast", source)
+        predicate = source[source.index("static BOOL CCNMActionKeepsRestoreCapabilityInstalled"):
+                           source.index("static BOOL CCNMSummaryIsClean")]
+        # The version floor must gate `upgrade`, not `failed-upgrade`, which
+        # runs from the incoming package.
+        self.assertLess(predicate.index('@"failed-upgrade"'),
+                        predicate.index("CCNMDpkgVersionIsAtLeast"))
+        self.assertIn("CCNMDpkgVersion.c", ACTIONS_MAKEFILE.read_text())
 
     def test_prerm_launchd_stop_is_non_fatal(self):
         # Stopping the daemon is best-effort for the same reason. Removal must
