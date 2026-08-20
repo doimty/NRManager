@@ -144,15 +144,33 @@ NSString *CCNMMaintainerRootedPath(NSString *path) {
 }
 
 static NSString *CCNMLaunchctlPath(void) {
-    NSString *root = CCNMMaintainerJailbreakRoot();
-    if (root.length == 0) {
-        return nil;
-    }
-    for (NSString *relative in @[
+    // launchctl is an Apple-signed system binary. A jailbreak root may ship a
+    // wrapper that translates jbroot paths, so prefer it when present, but the
+    // real-root system copy is the authoritative fallback: a procursus-style
+    // bootstrap is not required to provide launchctl at all, and treating its
+    // absence as fatal previously broke maintenance registration entirely.
+    static NSString *const relativeCandidates[] = {
+        // roothide keeps its jbroot-aware launchctl in basebin, outside the
+        // usual bin/sbin layout, so probe it before the bootstrap paths.
+        @"/basebin/launchctl",
         @"/bin/launchctl", @"/sbin/launchctl",
         @"/usr/bin/launchctl", @"/usr/sbin/launchctl"
-    ]) {
-        NSString *candidate = [root stringByAppendingPathComponent:relative];
+    };
+    static const size_t candidateCount =
+        sizeof(relativeCandidates) / sizeof(relativeCandidates[0]);
+
+    NSString *root = CCNMMaintainerJailbreakRoot();
+    if (root.length > 0) {
+        for (size_t index = 0; index < candidateCount; index++) {
+            NSString *candidate =
+                [root stringByAppendingPathComponent:relativeCandidates[index]];
+            if (access(candidate.fileSystemRepresentation, X_OK) == 0) {
+                return candidate;
+            }
+        }
+    }
+    for (size_t index = 0; index < candidateCount; index++) {
+        NSString *candidate = relativeCandidates[index];
         if (access(candidate.fileSystemRepresentation, X_OK) == 0) {
             return candidate;
         }
@@ -276,10 +294,29 @@ BOOL CCNMPrepareMaintenanceLaunchd(NSError **error) {
         CCNMMaintenanceExecutableRelativePath);
     NSString *baselinePath = CCNMMaintainerRootedPath(
         CCNMMaintenanceBaselineRelativePath);
-    if (!launchctl || !plistPath || !executablePath || !baselinePath ||
-        access(executablePath.fileSystemRepresentation, X_OK) != 0) {
+    // Report the failing item individually. A single combined message cannot be
+    // acted on: the four inputs fail for unrelated reasons (missing launchctl,
+    // unresolvable rooted path, unpacked-but-not-executable helper) and each
+    // needs a different fix on the device.
+    if (!launchctl) {
+        return CCNMSetError(error, CCNMMaintainerErrorLaunchctl,
+            @"launchctl was not found under the jailbreak root or the system paths.");
+    }
+    if (!plistPath || !executablePath || !baselinePath) {
         return CCNMSetError(error, CCNMMaintainerErrorPath,
-            @"A required launchctl, plist, executable, or policy path is unavailable.");
+            @"A required maintenance path could not be resolved against the jailbreak root.");
+    }
+    if (access(plistPath.fileSystemRepresentation, R_OK) != 0) {
+        return CCNMSetError(error, CCNMMaintainerErrorPath,
+            [NSString stringWithFormat:
+                @"The launchd plist is not readable at %@ (errno %d).",
+                plistPath, errno]);
+    }
+    if (access(executablePath.fileSystemRepresentation, X_OK) != 0) {
+        return CCNMSetError(error, CCNMMaintainerErrorPath,
+            [NSString stringWithFormat:
+                @"The maintenance helper is not executable at %@ (errno %d).",
+                executablePath, errno]);
     }
 
     NSDictionary *source = [NSDictionary dictionaryWithContentsOfFile:plistPath];

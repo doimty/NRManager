@@ -159,6 +159,47 @@ class UninstallGuardTests(unittest.TestCase):
             self.assertIn(token, source)
         self.assertNotIn("|| true", source)
 
+    def test_launchctl_lookup_falls_back_to_system_paths(self):
+        # A jailbreak bootstrap is not obligated to ship launchctl under its
+        # own root. Resolving only rooted candidates made registration fail on
+        # real devices, so the Apple-signed system copy must remain reachable.
+        source = MAINTAINER_SOURCE.read_text()
+        body = source[source.index("static NSString *CCNMLaunchctlPath(void)"):
+                      source.index("static int CCNMRunLaunchctl")]
+        self.assertIn("stringByAppendingPathComponent:relativeCandidates[index]", body)
+        # roothide's jbroot-aware launchctl lives in basebin, not bin/sbin.
+        self.assertIn('@"/basebin/launchctl"', body)
+        self.assertLess(body.index('@"/basebin/launchctl"'),
+                        body.index('@"/bin/launchctl"'))
+        # The rooted lookup must not be able to abort the search early.
+        self.assertNotIn("return nil;\n    }\n    for", body)
+        rooted = body.index("stringByAppendingPathComponent:relativeCandidates[index]")
+        bare = body.index("NSString *candidate = relativeCandidates[index];")
+        self.assertLess(rooted, bare, "rooted launchctl must be preferred over system")
+        self.assertEqual(body.count("access(candidate.fileSystemRepresentation, X_OK) == 0"), 2)
+
+    def test_prepare_reports_each_missing_input_separately(self):
+        # One combined "launchctl, plist, executable, or policy path" message is
+        # not actionable; the four inputs fail for unrelated reasons and each
+        # needs a different fix on the device.
+        source = MAINTAINER_SOURCE.read_text()
+        body = source[source.index("BOOL CCNMPrepareMaintenanceLaunchd"):
+                      source.index("BOOL CCNMStopMaintenanceLaunchd")]
+        self.assertNotIn(
+            "A required launchctl, plist, executable, or policy path is unavailable.",
+            body)
+        self.assertIn("CCNMMaintainerErrorLaunchctl", body)
+        self.assertIn("launchctl was not found", body)
+        self.assertIn("could not be resolved against the jailbreak root", body)
+        self.assertIn("is not readable at %@", body)
+        self.assertIn("is not executable at %@", body)
+        # Diagnostics must name the path and errno so a device report is enough.
+        self.assertIn("plistPath, errno", body)
+        self.assertIn("executablePath, errno", body)
+        # The plist contract checks stay after the path checks.
+        self.assertLess(body.index("is not executable at %@"),
+                        body.index("CCNMMaintainerErrorPlist"))
+
     def test_missing_baseline_only_cleans_a_verified_restore_checkpoint(self):
         source = POLICY_SOURCE.read_text()
         self.assertIn("CCNMIsVerifiedRestoreCleanupCheckpoint", source)
