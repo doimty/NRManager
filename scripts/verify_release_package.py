@@ -386,11 +386,14 @@ def verify_launchd_plist(payload_root: Path, lane: str, failures: List[str]) -> 
     Format is recorded but not required. Theos runs convert_xml_plist.sh in its
     FINALPACKAGE internal-package step, which is after before-package, so every
     staged plist reaches the .deb as binary1 regardless of what the packaging
-    script wrote. Requiring XML here therefore failed a correct package. What the
-    on-device sed actually needs is that the placeholder be findable as plain
-    bytes, which holds in a binary plist too, and that the device convert to XML
-    before rewriting - which the postinst does, and refuses to rewrite if it
-    cannot.
+    script wrote. Requiring XML here therefore failed a correct package.
+
+    What is required instead is that @JBROOT@ be present in the roothide plist as
+    plain bytes. That is a necessary condition for the device flow whichever
+    format ships: the postinst converts to XML with plutil and only then
+    substitutes, and a placeholder that is absent from the file cannot survive a
+    format conversion. It is deliberately not asserted through the parsed payload
+    alone, because the parsed value is what the prefix checks below already cover.
     """
     evidence: Dict[str, object] = {"lane": lane}
     failure_count_before = len(failures)
@@ -411,8 +414,8 @@ def verify_launchd_plist(payload_root: Path, lane: str, failures: List[str]) -> 
 
     expected_prefix = ROOTHIDE_PLACEHOLDER if lane == "roothide" else ROOTLESS_PREFIX
     evidence["expected_prefix"] = expected_prefix
-    # The device substitution is textual, so the placeholder has to survive as
-    # plain bytes whatever the container format is.
+    # The device substitution is textual, and the placeholder has to be in the
+    # file for the conversion-then-sed flow to have anything to find.
     if lane == "roothide":
         evidence["placeholder_bytes_present"] = ROOTHIDE_PLACEHOLDER.encode() in raw
         if not evidence["placeholder_bytes_present"]:

@@ -400,24 +400,23 @@ class LaunchdPlistLaneTests(unittest.TestCase):
         # Theos converts every staged plist to binary1 in internal-package, which
         # runs after before-package, so a binary plist is what actually ships. An
         # XML requirement here failed a completely correct package. The device
-        # postinst converts before rewriting and refuses if it cannot.
+        # postinst converts with plutil before rewriting and refuses if it cannot.
         self.assertEqual(self.check("roothide", self.staged("@JBROOT@"),
                                     plistlib.FMT_BINARY), [])
         self.assertEqual(self.check("rootless", self.staged("/var/jb"),
                                     plistlib.FMT_BINARY), [])
 
-    def test_the_placeholder_must_survive_as_plain_bytes(self) -> None:
-        # What the on-device sed actually needs. plistlib gives no way to hide a
-        # string from a byte scan, so this is asserted directly on the file the
-        # verifier reads, in both formats.
+    def test_the_roothide_placeholder_must_be_present_as_plain_bytes(self) -> None:
+        # Necessary for the device flow in either format: plutil converts, then
+        # sed substitutes, and a placeholder missing from the file cannot survive
+        # a conversion. Asserted on the bytes the verifier reads, both formats.
         for fmt in (plistlib.FMT_XML, plistlib.FMT_BINARY):
-            with tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
-                self.write(root, self.staged("@JBROOT@"), fmt)
-                raw = (root / self.RELATIVE).read_bytes()
-                self.assertIn(b"@JBROOT@", raw)
-        failures = self.check("roothide", self.staged("@JBROOT@"))
-        self.assertEqual(failures, [])
+            with self.subTest(fmt=fmt):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    self.write(root, self.staged("@JBROOT@"), fmt)
+                    self.assertIn(b"@JBROOT@", (root / self.RELATIVE).read_bytes())
+                self.assertEqual(self.check("roothide", self.staged("@JBROOT@"), fmt), [])
 
     def test_the_reviewed_contract_fields_are_enforced(self) -> None:
         payload = self.staged("@JBROOT@")

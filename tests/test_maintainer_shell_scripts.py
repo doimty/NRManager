@@ -51,6 +51,41 @@ open(path, 'wb').write(plistlib.dumps(data, fmt=plistlib.FMT_XML, sort_keys=Fals
 PY
 """
 
+# macOS grep reports no match for a pattern that is demonstrably present in a
+# binary plist, while GNU grep -a finds it. That is not a guess: the Ubuntu
+# host-tests job passed while both macOS packaging jobs failed eight tests, and
+# the split is exact. Every failing test pre-wrote a binary plist; every
+# grep-dependent test that passed pre-wrote XML.
+#
+# The discriminator is UTF-8 validity, verified locally against the real staged
+# plist: the binary form's first invalid byte is at offset 8, the placeholder is
+# present as contiguous bytes in both forms, and there is no NUL between the
+# preceding newline and the pattern, so line/NUL truncation is ruled out. The
+# likely cause is BSD grep decoding input as multibyte characters under a UTF-8
+# locale and giving up on invalid sequences; that mechanism is not verifiable
+# from Linux, so this stub is pinned to the observed behaviour rather than to the
+# explanation.
+GREP_THAT_CANNOT_READ_BINARY_FILES = """#!/bin/sh
+pattern=""
+file=""
+for argument in "$@"; do
+    case "$argument" in
+        -*) ;;
+        *) if [ -z "$pattern" ]; then pattern="$argument"; else file="$argument"; fi ;;
+    esac
+done
+exec python3 -c '
+import sys
+with open(sys.argv[2], "rb") as handle:
+    data = handle.read()
+try:
+    text = data.decode("utf-8")
+except UnicodeDecodeError:
+    sys.exit(1)
+sys.exit(0 if sys.argv[1] in text else 1)
+' "$pattern" "$file"
+"""
+
 
 def staged_plist(prefix):
     """The plist as the packaging step leaves it: XML, prefix applied."""
@@ -90,6 +125,11 @@ class ShellScriptBase(unittest.TestCase):
             path.mkdir(parents=True, exist_ok=True)
         self.set_jbroot(str(self.prefix))
         self.stub("plutil", PLUTIL_STUB)
+        # Which grep flavour the device has is not knowable, and the two disagree
+        # about binary files. NMR_SHELL_TEST_GREP=binary-blind reruns this whole module
+        # against the stricter one; see GrepFlavourSweepTests at the bottom.
+        if os.environ.get("NMR_SHELL_TEST_GREP") == "binary-blind":
+            self.stub("grep", GREP_THAT_CANNOT_READ_BINARY_FILES)
         self.guard_log = self.dir / "guard.log"
         self.install_guard(0)
         self.plist = self.prefix / PLIST_RELATIVE
@@ -467,14 +507,36 @@ class PostinstDiagnosticTests(ShellScriptBase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(self.guard_log.exists())
 
-    def test_the_format_is_only_questioned_when_a_rewrite_is_needed(self):
-        # Order-of-checks regression. The placeholder question comes first because
-        # Theos ships binary1 on both lanes, so a format gate ahead of it fires on
-        # a plist that needs no rewrite at all.
+    def test_the_lane_decides_whether_a_rewrite_is_needed_not_the_file(self):
+        # Regression on the order of questions. Reading the file to decide this is
+        # not portable: GNU grep -a finds @JBROOT@ inside a binary plist and the
+        # grep on the macOS runners reports no match, and "not found" is the
+        # success branch. The lane is known at package time, so it decides.
         script = self.render().read_text()
         body = script[script.index("patch_jbroot() {"):]
-        self.assertLess(body.index("placeholder_status="), body.index("xml_status="))
-        self.assertLess(body.index("placeholder_status="), body.index("plutil -convert"))
+        gate = body.index('[ -z "$NEEDS_JBROOT" ]')
+        self.assertLess(gate, body.index("plutil -convert"))
+        self.assertLess(gate, body.index("xml_status="))
+        self.assertLess(gate, body.index("placeholder_status="))
+        # And the format is settled before the placeholder is looked for, so that
+        # question is only ever asked of text.
+        self.assertLess(body.index("xml_status="), body.index("placeholder_status="))
+
+    def test_a_grep_that_cannot_see_into_a_binary_plist_still_substitutes(self):
+        # The portability failure CI caught. The grep on the macOS runners reports
+        # no match for a placeholder that is demonstrably present in a binary
+        # plist; this stub reproduces that. The roothide lane must still convert
+        # and substitute, because nothing asks the binary file a question whose
+        # "no" means success.
+        self.stub("grep", GREP_THAT_CANNOT_READ_BINARY_FILES)
+        self.assertEqual(self.plist.read_bytes()[:8], b"bplist00")
+        result = self.run_script("configure")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNoWarning(result)
+        self.assertIn("wrote the jailbreak root", result.stderr)
+        self.assertNotIn(b"@JBROOT@", self.plist.read_bytes())
+        self.assertEqual(self.read_plist()["ProgramArguments"][0],
+                         f"{self.prefix}{patcher.PROGRAM_RELATIVE}")
 
     def test_an_unreadable_plist_is_not_read_as_already_substituted(self):
         # grep's status is three-valued: 0 match, 1 no match, 2+ error. Used as a
@@ -675,6 +737,58 @@ class TemplateContractTests(unittest.TestCase):
                                             capture_output=True, text=True)
                     self.assertEqual(result.returncode, 0,
                                      f"{scheme}/{path.name}: {result.stderr}")
+
+
+class GrepFlavourHarnessTests(ShellScriptBase):
+    """Prove the sweep is really running against the binary-blind grep.
+
+    Without this, breaking the NMR_SHELL_TEST_GREP wiring would silently turn the
+    sweep into a second GNU-grep run: still green, and no longer testing anything.
+    Skipped in the default run, so it only ever asserts inside the sweep.
+    """
+
+    @unittest.skipUnless(os.environ.get("NMR_SHELL_TEST_GREP") == "binary-blind",
+                         "only meaningful inside the grep-flavour sweep")
+    def test_the_stubbed_grep_cannot_see_into_a_binary_plist(self):
+        stub = self.bin / "grep"
+        self.assertTrue(stub.exists(),
+                        "the sweep did not install its grep stub, so every case in "
+                        "this module just ran against the host grep again")
+        self.assertEqual(self.plist.read_bytes()[:8], b"bplist00")
+        self.assertIn(b"@JBROOT@", self.plist.read_bytes())
+        result = subprocess.run([str(stub), "-qa", "@JBROOT@", str(self.plist)],
+                                capture_output=True)
+        # 1 is "no match": the answer that would have hidden the placeholder.
+        self.assertEqual(result.returncode, 1)
+        # And it is not simply broken: it still answers correctly about text.
+        self.write_plist(staged_plist("@JBROOT@"), binary=False)
+        result = subprocess.run([str(stub), "-qa", "@JBROOT@", str(self.plist)],
+                                capture_output=True)
+        self.assertEqual(result.returncode, 0)
+
+
+class GrepFlavourSweepTests(unittest.TestCase):
+    """Rerun every test in this module against the binary-blind grep.
+
+    Which flavour the device has is not knowable, and the two disagree about
+    binary files in a way that decides whether the roothide substitution happens
+    at all. A single hand-written case covers the path that broke; this covers the
+    rest, including every diagnostic that asserts on a specific warning.
+
+    A subprocess rather than a fixture, because the flavour has to be chosen in
+    setUp before any script runs, and mixing both flavours inside one process
+    would make the module's own results depend on test order.
+    """
+
+    @unittest.skipIf(os.environ.get("NMR_SHELL_TEST_GREP") == "binary-blind",
+                     "already inside the grep-flavour sweep")
+    def test_the_whole_module_passes_with_a_binary_blind_grep(self):
+        result = subprocess.run(
+            [sys.executable, "-m", "unittest", "-q",
+             "tests.test_maintainer_shell_scripts"],
+            cwd=REPO, capture_output=True, text=True,
+            env=dict(os.environ, NMR_SHELL_TEST_GREP="binary-blind"))
+        self.assertEqual(result.returncode, 0, result.stderr[-4000:])
 
 
 if __name__ == "__main__":
