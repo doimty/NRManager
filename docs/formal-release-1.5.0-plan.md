@@ -205,7 +205,7 @@ Before implementation, add red tests for:
 - stale/foreign/missing records;
 - LTE fallback reported truthfully;
 - requested/applied/serving states never conflated;
-- diagnostic actions and forbidden strings absent from formal source/package;
+- diagnostic actions and forbidden strings absent from formal source/package. The scan selects files by extension, so any change to a shipped file's shape must be reflected there: the maintainer scripts moved from `postinst.m`/`prerm.m` to `postinst.sh.in`/`prerm.sh.in`, which silently removed them from the scan until `.in`/`.sh` were added;
 - Chinese and English localization key parity;
 - original/current repository URLs present exactly once;
 - uninstall/downgrade cannot strand NR `[78]`.
@@ -243,18 +243,22 @@ CI must fail on:
 
 For each accepted artifact record source SHA, run ID, artifact ID, size, SHA256, control fields, file manifest, plist parse, and signature parse.
 
-Roothide requires both bundles and both compiled maintainer guards to have:
+Roothide requires both bundles, both policy guards, and the maintenance helper to have:
 
 - arm64 + arm64e;
 - arm64e subtype `ARM64 E USR00`;
 - minimum iOS 14.0 and SDK 17.5;
 - `LC_DYLD_INFO_ONLY` and `LC_CODE_SIGNATURE`;
 - no `LC_DYLD_CHAINED_FIXUPS`;
-- `@loader_path/.jbroot/usr/lib/libroothide.dylib` where the binary uses roothide APIs;
+- `@loader_path/.jbroot/usr/lib/libroothide.dylib` where the binary uses roothide APIs. The two policy guards deliberately do not link it: `roothideinit.dylib` derives the jbroot from its own load path and asserts on `@loader_path/.jbroot`, which does not exist beside an installed helper, so linking it would abort at load time. They therefore carry `LC_DYLD_CHAINED_FIXUPS` and are exempt from the prohibition above.
 - normalized load-command and dependency sets matching device-working run `30166854314`, with the formal Settings bundle's explicit public CoreGraphics dependency recorded;
 - ldid-readable signatures. Apple `codesign --verify` is report-only because ldid signatures are not Apple CodeSign objects.
 
-Rootless requires both bundles and both compiled maintainer guards to have arm64 + arm64e, arm64e `ARM64 E USR00`, exact minOS 14.0, the pinned SDK, `LC_CODE_SIGNATURE`, and either supported dyld fixup format. The roothide-only chained-fixup prohibition does not apply to the rootless lane.
+Rootless requires both bundles, both policy guards, and the maintenance helper to have arm64 + arm64e, arm64e `ARM64 E USR00`, exact minOS 14.0, the pinned SDK, `LC_CODE_SIGNATURE`, and either supported dyld fixup format. The roothide-only chained-fixup prohibition does not apply to the rootless lane.
+
+`DEBIAN/postinst` and `DEBIAN/prerm` are verified as the inverse: they must be `#!/bin/sh` text, mode 755, free of unrendered `@PREFIX@` / `@NEEDS_JBROOT@` placeholders, and must delegate to their guard. A Mach-O maintainer script is a hard failure. On roothide a compiled maintainer script runs without the `bootstrap.dylib` injection: it can stat and read inside the jailbreak root but gets `EPERM` on every write and every child exec, and does not see the root mapped at `/`. That is the defect this shape exists to prevent, so the gate is stated as a prohibition rather than a preference.
+
+The staged launchd plist is verified per lane, not merely parsed. Roothide must hold `@JBROOT@` plus the relative program and baseline paths and must be XML so the on-device `sed` can match; rootless must hold `/var/jb` and must not contain `@JBROOT@` anywhere. This gate exists because the repository template already carries the placeholder: a `before-package` step that silently does not run leaves the roothide package accidentally correct and the rootless package holding a literal `@JBROOT@` program path that nothing on that lane ever substitutes, so the daemon could never start. Every per-stage check passes in that state, which is why the end-to-end test carries an explicit negative control that stages with the patch step skipped and requires both lanes to fail.
 
 ## Device acceptance
 

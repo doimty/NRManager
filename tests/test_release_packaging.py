@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import importlib.util
+import plistlib
 import re
 import sys
 import tempfile
@@ -53,6 +55,30 @@ class ReleaseMetadataTests(unittest.TestCase):
             findings = verify_release_source.scan_forbidden_strings(root)
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0]["category"], "diagnostic action")
+
+    def test_the_shell_maintainer_templates_are_inside_the_diagnostic_gate(self) -> None:
+        # These ship to the device. They used to be postinst.m / prerm.m, which
+        # the .m suffix already covered, so the move to shell would otherwise
+        # have silently dropped two files out of this scan.
+        repo_templates = {
+            "package-actions/postinst.sh.in",
+            "package-actions/prerm.sh.in",
+        }
+        scanned = {
+            str(path.relative_to(REPO))
+            for path in verify_release_source.iter_source_text_files(REPO)
+        }
+        self.assertLessEqual(repo_templates, scanned)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template = root / "package-actions/postinst.sh.in"
+            template.parent.mkdir(parents=True)
+            template.write_text(
+                "#!/bin/sh\n# nr78_only leftover\n", encoding="utf-8")
+            findings = verify_release_source.scan_forbidden_strings(root)
+        self.assertEqual(len(findings), 1, findings)
+        self.assertEqual(findings[0]["category"], "diagnostic operation")
 
 
 class BuildConfigurationTests(unittest.TestCase):
@@ -228,31 +254,201 @@ Load command 1
             ["/usr/lib/libobjc.A.dylib"],
         )
 
-    def test_maintainer_guard_requires_executable_macho(self) -> None:
+    def test_maintainer_scripts_must_be_shell_not_macho(self) -> None:
+        # The inverse of the old rule. A compiled maintainer script on roothide
+        # runs without the bootstrap injection and gets EPERM on every write and
+        # child exec inside the jailbreak root, which is what broke installs.
+        template = (
+            "#!/bin/sh\n"
+            "GUARD=\"/usr/libexec/networkmanager-install-guard\"\n"
+            "\"$GUARD\" \"$@\"\n"
+        )
+        removal = (
+            "#!/bin/sh\n"
+            "GUARD=\"/usr/libexec/networkmanager-removal-guard\"\n"
+            "\"$GUARD\" \"$@\"\n"
+        )
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            guards = [root / name for name in ("postinst", "prerm")]
-            for guard in guards:
-                guard.write_bytes(b"#!/bin/sh\nexit 0\n")
-                guard.chmod(0o755)
-            failures = []
-            evidence = verify_release_package.verify_maintainer_scripts(root, failures)
-            self.assertEqual(evidence["status"], "failed")
-            self.assertTrue(any("signed Mach-O guard" in failure for failure in failures))
+            (root / "postinst").write_text(template)
+            (root / "prerm").write_text(removal)
+            for name in ("postinst", "prerm"):
+                (root / name).chmod(0o755)
 
-            for guard in guards:
-                guard.write_bytes(b"\xca\xfe\xba\xbe" + b"\0" * 32)
-            failures = []
+            failures: list = []
             evidence = verify_release_package.verify_maintainer_scripts(root, failures)
-            self.assertEqual(evidence["status"], "passed")
+            self.assertEqual(evidence["status"], "passed", failures)
             self.assertEqual(failures, [])
 
-            guards[0].chmod(0o644)
+            (root / "postinst").write_bytes(b"\xca\xfe\xba\xbe" + b"\0" * 32)
+            (root / "postinst").chmod(0o755)
             failures = []
-            evidence = verify_release_package.verify_maintainer_scripts(root, failures)
-            self.assertEqual(evidence["status"], "failed")
+            verify_release_package.verify_maintainer_scripts(root, failures)
+            self.assertTrue(
+                any("must be a shell script" in failure for failure in failures), failures
+            )
+
+            (root / "postinst").write_text(template)
+            (root / "postinst").chmod(0o644)
+            failures = []
+            verify_release_package.verify_maintainer_scripts(root, failures)
             self.assertTrue(any("exact mode 755" in failure for failure in failures))
 
+    def test_an_unrendered_template_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "postinst").write_text(
+                "#!/bin/sh\nPREFIX='@PREFIX@'\nnetworkmanager-install-guard\n"
+            )
+            (root / "prerm").write_text(
+                "#!/bin/sh\nnetworkmanager-removal-guard \"$@\"\n"
+            )
+            for name in ("postinst", "prerm"):
+                (root / name).chmod(0o755)
+            failures: list = []
+            verify_release_package.verify_maintainer_scripts(root, failures)
+            self.assertTrue(
+                any("@PREFIX@ placeholder" in failure for failure in failures), failures
+            )
+
+    def test_a_script_that_does_not_delegate_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "postinst").write_text("#!/bin/sh\nexit 0\n")
+            (root / "prerm").write_text("#!/bin/sh\nexit 0\n")
+            for name in ("postinst", "prerm"):
+                (root / name).chmod(0o755)
+            failures: list = []
+            verify_release_package.verify_maintainer_scripts(root, failures)
+            self.assertTrue(
+                any("does not delegate" in failure for failure in failures), failures
+            )
+
+    def test_the_guards_and_the_launchd_plist_are_required_payload(self) -> None:
+        required = verify_release_package.REQUIRED_PAYLOAD_FILES
+        self.assertIn("usr/libexec/networkmanager-install-guard", required)
+        self.assertIn("usr/libexec/networkmanager-removal-guard", required)
+        self.assertIn("usr/libexec/networkmanager-maintenance", required)
+        self.assertIn(
+            "Library/LaunchDaemons/me.nixuge.networkmanager.maintenance.plist", required
+        )
+        # The guards are verified as Mach-O in the payload now, not in DEBIAN/.
+        self.assertIn(
+            "usr/libexec/networkmanager-install-guard",
+            verify_release_package.BINARY_PAYLOAD_FILES,
+        )
+        self.assertEqual(
+            verify_release_package.UNLINKED_ROOTHIDE_TOOLS,
+            ("networkmanager-install-guard", "networkmanager-removal-guard"),
+        )
+
+
+class LaunchdPlistLaneTests(unittest.TestCase):
+    """The repo template already contains @JBROOT@.
+
+    That makes a skipped before-package patch invisible on roothide and fatal on
+    rootless: rootless has no jbroot and its postinst has nothing to substitute,
+    so a literal @JBROOT@ path would ship and the daemon would never start.
+    """
+
+    RELATIVE = verify_release_package.LAUNCHD_PLIST_RELATIVE
+
+    def staged(self, prefix: str) -> dict:
+        return {
+            "Label": verify_release_package.LAUNCHD_LABEL,
+            "ProgramArguments": [
+                prefix + verify_release_package.MAINTENANCE_PROGRAM_RELATIVE,
+                "--daemon",
+            ],
+            "KeepAlive": {
+                "PathState": {
+                    prefix + verify_release_package.MAINTENANCE_BASELINE_RELATIVE: True
+                }
+            },
+            "UserName": "root",
+            "EnvironmentVariables": {"DISABLE_TWEAKS": "1"},
+            "ProcessType": "Background",
+            "ThrottleInterval": 30,
+        }
+
+    def write(self, root: Path, payload: dict, fmt=plistlib.FMT_XML) -> None:
+        target = root / self.RELATIVE
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(plistlib.dumps(payload, fmt=fmt))
+
+    def check(self, lane: str, payload: dict, fmt=plistlib.FMT_XML) -> list:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write(root, payload, fmt)
+            failures: list = []
+            verify_release_package.verify_launchd_plist(root, lane, failures)
+            return failures
+
+    def test_each_lane_accepts_its_own_prefix(self) -> None:
+        self.assertEqual(self.check("roothide", self.staged("@JBROOT@")), [])
+        self.assertEqual(self.check("rootless", self.staged("/var/jb")), [])
+
+    def test_an_unpatched_plist_fails_the_rootless_lane(self) -> None:
+        failures = self.check("rootless", self.staged("@JBROOT@"))
+        self.assertTrue(any("@JBROOT@" in failure for failure in failures), failures)
+
+    def test_a_rootless_prefixed_plist_fails_the_roothide_lane(self) -> None:
+        failures = self.check("roothide", self.staged("/var/jb"))
+        self.assertTrue(any("/var/jb" in failure for failure in failures), failures)
+
+    def test_a_binary_roothide_plist_is_rejected(self) -> None:
+        failures = self.check("roothide", self.staged("@JBROOT@"), plistlib.FMT_BINARY)
+        self.assertTrue(any("must be XML" in failure for failure in failures), failures)
+
+    def test_the_reviewed_contract_fields_are_enforced(self) -> None:
+        payload = self.staged("@JBROOT@")
+        payload["RunAtLoad"] = True
+        self.assertTrue(
+            any("RunAtLoad" in failure for failure in self.check("roothide", payload))
+        )
+
+        payload = self.staged("@JBROOT@")
+        payload["KeepAlive"]["SuccessfulExit"] = False
+        self.assertTrue(
+            any("SuccessfulExit" in failure for failure in self.check("roothide", payload))
+        )
+
+        payload = self.staged("@JBROOT@")
+        payload["UserName"] = "mobile"
+        self.assertTrue(
+            any("UserName" in failure for failure in self.check("roothide", payload))
+        )
+
+    def test_a_missing_plist_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            failures: list = []
+            verify_release_package.verify_launchd_plist(
+                Path(directory), "roothide", failures)
+        self.assertTrue(any("missing" in failure for failure in failures), failures)
+
+    def test_the_patcher_output_satisfies_this_gate_for_both_lanes(self) -> None:
+        # End to end against the real staged template, so the two modules cannot
+        # drift apart on what a correct plist looks like.
+        spec = importlib.util.spec_from_file_location(
+            "patch_maintenance_launchd", SCRIPTS / "patch-maintenance-launchd.py")
+        patcher = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(patcher)
+        template = (REPO / "layout" / self.RELATIVE).read_bytes()
+        for lane in ("roothide", "rootless"):
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                target = root / self.RELATIVE
+                target.parent.mkdir(parents=True)
+                # Theos stages this as a binary plist.
+                target.write_bytes(
+                    plistlib.dumps(plistlib.loads(template), fmt=plistlib.FMT_BINARY))
+                patcher.patch_launchd_plist(root, patcher.plist_prefix(lane))
+                failures: list = []
+                verify_release_package.verify_launchd_plist(root, lane, failures)
+                self.assertEqual(failures, [], (lane, failures))
+
+
+class PackageLaneMetadataTests(unittest.TestCase):
     def test_package_lane_metadata_is_distinct_but_name_is_shared(self) -> None:
         self.assertEqual(
             verify_release_package.EXPECTED_ARCHITECTURE,

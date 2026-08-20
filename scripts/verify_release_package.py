@@ -99,11 +99,20 @@ ROOTHIDE_RELEASE_DEPENDENCIES["NetworkManagerPrefs"].add(
     "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics"
 )
 
+# The policy guards moved out of DEBIAN/ and into the payload. They are no
+# longer maintainer scripts: on roothide a compiled maintainer script has no
+# jbroot redirection and no sandbox exemption, so it cannot write or exec inside
+# the jailbreak root. The shell postinst/prerm own the privileged work and
+# delegate the policy verdict to these.
+INSTALL_GUARD_RELATIVE = "usr/libexec/networkmanager-install-guard"
+REMOVAL_GUARD_RELATIVE = "usr/libexec/networkmanager-removal-guard"
+MAINTENANCE_HELPER_RELATIVE = "usr/libexec/networkmanager-maintenance"
 REQUIRED_PAYLOAD_FILES = {
     "Library/ControlCenter/Bundles/NetworkManager.bundle/Info.plist",
     "Library/ControlCenter/Bundles/NetworkManager.bundle/NetworkManager",
     "Library/ControlCenter/Bundles/NetworkManager.bundle/SettingsIcon@2x.png",
     "Library/ControlCenter/Bundles/NetworkManager.bundle/SettingsIcon@3x.png",
+    "Library/LaunchDaemons/me.nixuge.networkmanager.maintenance.plist",
     "Library/PreferenceBundles/NetworkManagerPrefs.bundle/Info.plist",
     "Library/PreferenceBundles/NetworkManagerPrefs.bundle/NetworkManagerPrefs",
     "Library/PreferenceBundles/NetworkManagerPrefs.bundle/Root.plist",
@@ -111,13 +120,25 @@ REQUIRED_PAYLOAD_FILES = {
     "Library/PreferenceBundles/NetworkManagerPrefs.bundle/en.lproj/NetworkManagerPrefs.strings",
     "Library/PreferenceBundles/NetworkManagerPrefs.bundle/zh-Hans.lproj/NetworkManagerPrefs.strings",
     "Library/PreferenceLoader/Preferences/NetworkManagerPrefs.plist",
+    INSTALL_GUARD_RELATIVE,
+    REMOVAL_GUARD_RELATIVE,
+    MAINTENANCE_HELPER_RELATIVE,
 }
 BINARY_PAYLOAD_FILES = (
     "Library/ControlCenter/Bundles/NetworkManager.bundle/NetworkManager",
     "Library/PreferenceBundles/NetworkManagerPrefs.bundle/NetworkManagerPrefs",
+    INSTALL_GUARD_RELATIVE,
+    REMOVAL_GUARD_RELATIVE,
+    MAINTENANCE_HELPER_RELATIVE,
 )
 REQUIRED_MAINTAINER_FILES = {"postinst", "prerm"}
-MAINTAINER_BINARY_FILES = ("postinst", "prerm")
+# Tools that deliberately do not link libroothide. roothideinit.dylib derives the
+# jbroot from its own load path and asserts on @loader_path/.jbroot, which does
+# not exist beside an installed helper, so linking it would abort at load time.
+UNLINKED_ROOTHIDE_TOOLS = (
+    "networkmanager-install-guard",
+    "networkmanager-removal-guard",
+)
 FORBIDDEN_LEGACY_PAYLOAD_BASENAMES = {
     "discord@2x.png",
     "discord@3x.png",
@@ -138,6 +159,16 @@ PLIST_IDENTITIES = {
         "NetworkManagerPrefs",
     ),
 }
+
+LAUNCHD_PLIST_RELATIVE = "Library/LaunchDaemons/me.nixuge.networkmanager.maintenance.plist"
+LAUNCHD_LABEL = "me.nixuge.networkmanager.maintenance"
+ROOTHIDE_PLACEHOLDER = "@JBROOT@"
+ROOTLESS_PREFIX = "/var/jb"
+MAINTENANCE_PROGRAM_RELATIVE = "/usr/libexec/networkmanager-maintenance"
+MAINTENANCE_BASELINE_RELATIVE = (
+    "/var/mobile/Library/Preferences/"
+    "me.nixuge.networkmanager.n78-policy.baseline.plist"
+)
 
 
 class CommandFailure(RuntimeError):
@@ -300,15 +331,124 @@ def verify_maintainer_scripts(control_root: Path, failures: List[str]) -> Dict[s
     missing = sorted(REQUIRED_MAINTAINER_FILES - set(files))
     if missing:
         failures.append("package control archive is missing: %s" % ", ".join(missing))
-    for name in REQUIRED_MAINTAINER_FILES:
+    # Shell, not Mach-O, and this is the load-bearing assertion. A compiled
+    # maintainer script on roothide runs without the bootstrap injection: it can
+    # stat and read inside the jailbreak root but gets EPERM on every write and
+    # child exec, and does not see the root mapped at "/". Shipping one again
+    # would silently reintroduce that failure.
+    for name in sorted(REQUIRED_MAINTAINER_FILES):
         path = control_root / name
         if not path.is_file():
             continue
         mode = path.stat().st_mode & 0o777
         if mode != 0o755:
             failures.append("maintainer script %s must have exact mode 755 (got %o)" % (name, mode))
-        if not is_macho_file(path):
-            failures.append("maintainer script %s must be a signed Mach-O guard" % name)
+        if is_macho_file(path):
+            failures.append(
+                "maintainer script %s must be a shell script, not a Mach-O binary" % name
+            )
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as error:
+            failures.append("maintainer script %s is not readable text: %s" % (name, error))
+            continue
+        if not text.startswith("#!/bin/sh\n"):
+            failures.append("maintainer script %s must start with #!/bin/sh" % name)
+        # An unrendered template would reach the device with a literal
+        # placeholder and fail at a path that does not exist.
+        for placeholder in ("@PREFIX@", "@NEEDS_JBROOT@"):
+            if placeholder in text:
+                failures.append(
+                    "maintainer script %s still contains the %s placeholder" % (name, placeholder)
+                )
+        guard = INSTALL_GUARD_RELATIVE if name == "postinst" else REMOVAL_GUARD_RELATIVE
+        if guard.rsplit("/", 1)[-1] not in text:
+            failures.append("maintainer script %s does not delegate to %s" % (name, guard))
+    evidence["status"] = "passed" if len(failures) == failure_count_before else "failed"
+    return evidence
+
+
+def verify_launchd_plist(payload_root: Path, lane: str, failures: List[str]) -> Dict[str, object]:
+    """Check the shipped launchd plist against the lane it was staged for.
+
+    This gate exists because the repo template at
+    layout/Library/LaunchDaemons/... already contains @JBROOT@. If the
+    before-package patcher does not run, the roothide package is accidentally
+    correct while the rootless package ships a literal @JBROOT@ path that no
+    on-device script ever substitutes: rootless has no jbroot and its postinst
+    has nothing to replace. The daemon would then never start, with nothing in
+    any other gate to show why.
+
+    The mirror case matters too. A rootless-prefixed plist in a roothide package
+    points launchd at /var/jb, which does not exist there.
+
+    XML is required for the roothide lane specifically: the on-device
+    substitution is textual sed, so a binary plist would leave the placeholder
+    unmatched.
+    """
+    evidence: Dict[str, object] = {"lane": lane}
+    failure_count_before = len(failures)
+    path = payload_root / LAUNCHD_PLIST_RELATIVE
+    if not path.is_file():
+        failures.append("launchd plist is missing at %s" % LAUNCHD_PLIST_RELATIVE)
+        evidence["status"] = "failed"
+        return evidence
+
+    raw = path.read_bytes()
+    evidence["xml"] = raw.lstrip().startswith(b"<?xml")
+    try:
+        payload = plistlib.loads(raw)
+    except Exception as error:
+        failures.append("launchd plist parse failed: %s" % error)
+        evidence["status"] = "failed"
+        return evidence
+
+    expected_prefix = ROOTHIDE_PLACEHOLDER if lane == "roothide" else ROOTLESS_PREFIX
+    evidence["expected_prefix"] = expected_prefix
+    if lane == "roothide" and not evidence["xml"]:
+        failures.append(
+            "roothide launchd plist must be XML so the on-device sed can match @JBROOT@"
+        )
+
+    arguments = payload.get("ProgramArguments")
+    program = arguments[0] if isinstance(arguments, list) and arguments else None
+    evidence["program"] = program
+    expected_program = expected_prefix + MAINTENANCE_PROGRAM_RELATIVE
+    if program != expected_program:
+        failures.append(
+            "launchd plist ProgramArguments[0] is %r, expected %r for the %s lane"
+            % (program, expected_program, lane)
+        )
+
+    keep_alive = payload.get("KeepAlive")
+    path_state = keep_alive.get("PathState") if isinstance(keep_alive, dict) else None
+    watched = sorted(path_state) if isinstance(path_state, dict) else []
+    evidence["watched_paths"] = watched
+    expected_baseline = expected_prefix + MAINTENANCE_BASELINE_RELATIVE
+    if watched != [expected_baseline]:
+        failures.append(
+            "launchd plist KeepAlive/PathState is %r, expected exactly %r for the %s lane"
+            % (watched, [expected_baseline], lane)
+        )
+
+    if payload.get("Label") != LAUNCHD_LABEL:
+        failures.append("launchd plist Label is %r" % payload.get("Label"))
+    if payload.get("UserName") != "root":
+        failures.append("launchd plist UserName must be root")
+    if payload.get("RunAtLoad") is not None:
+        failures.append("launchd plist must not set RunAtLoad")
+    if isinstance(keep_alive, dict) and keep_alive.get("SuccessfulExit") is not None:
+        failures.append("launchd plist must not set KeepAlive/SuccessfulExit")
+
+    # The wrong lane's prefix anywhere in the file is worth naming on its own:
+    # the checks above only look at the two paths that must match exactly.
+    other = ROOTLESS_PREFIX if lane == "roothide" else ROOTHIDE_PLACEHOLDER
+    if other.encode() in raw:
+        failures.append(
+            "launchd plist for the %s lane contains %s" % (lane, other)
+        )
+
     evidence["status"] = "passed" if len(failures) == failure_count_before else "failed"
     return evidence
 
@@ -401,7 +541,7 @@ def verify_macho_binary(
         if not has_info_only and not has_chained_fixups:
             failures.append("%s lacks both supported dyld fixup formats" % binary)
         if (lane == "roothide" and has_chained_fixups and
-                binary.name not in MAINTAINER_BINARY_FILES):
+                binary.name not in UNLINKED_ROOTHIDE_TOOLS):
             failures.append("%s contains forbidden LC_DYLD_CHAINED_FIXUPS" % binary)
         if lane == "roothide" and binary.name in ROOTHIDE_BASELINE_DEPENDENCIES and set(load_commands) != ROOTHIDE_RELEASE_LOAD_COMMANDS:
             failures.append(
@@ -416,7 +556,7 @@ def verify_macho_binary(
     if dependency_code != 0:
         failures.append("otool -L failed for %s" % binary)
     elif lane == "roothide":
-        if binary.name not in MAINTAINER_BINARY_FILES and ROOTHIDE_DYLIB not in dependencies:
+        if binary.name not in UNLINKED_ROOTHIDE_TOOLS and ROOTHIDE_DYLIB not in dependencies:
             failures.append("%s lacks the pinned roothide runtime dependency" % binary)
         forbidden_private = [
             item
@@ -614,6 +754,7 @@ def verify_package(args: argparse.Namespace) -> Dict[str, object]:
         if legacy_assets:
             failures.append("package contains removed social-link assets: %s" % ", ".join(legacy_assets))
         report["plists"] = verify_plists(payload_root, manifest, failures)
+        report["launchd_plist"] = verify_launchd_plist(payload_root, args.lane, failures)
 
         forbidden = scan_payload_for_diagnostics(extract_root)
         control_forbidden = scan_payload_for_diagnostics(control_root)
@@ -633,12 +774,6 @@ def verify_package(args: argparse.Namespace) -> Dict[str, object]:
                 binary = payload_root / relative
                 if not binary.is_file():
                     failures.append("missing Mach-O binary: %s" % relative)
-                    continue
-                macho.append(verify_macho_binary(binary, args.lane, allowed_sdks, failures))
-            for relative in MAINTAINER_BINARY_FILES:
-                binary = control_root / relative
-                if not binary.is_file():
-                    failures.append("missing maintainer Mach-O binary: %s" % relative)
                     continue
                 macho.append(verify_macho_binary(binary, args.lane, allowed_sdks, failures))
             report["macho"] = macho

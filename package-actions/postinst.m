@@ -64,6 +64,19 @@ int main(int argc, const char *argv[]) {
                 "  work now; only automatic serving-state monitoring waits for that.\n",
                 launchdError.localizedDescription.UTF8String ?: "unknown");
             break;
+        case CCNMMaintenanceRegistrationRejected:
+            // launchctl ran and launchd declined. The plist is validated and on
+            // disk, so the next boot may still load it — but launchd has already
+            // refused once, so this must not borrow the deferred wording and
+            // promise that it will.
+            fprintf(stderr,
+                "NetworkManagerReborn: warning — the maintenance owner is installed but\n"
+                "  launchd declined to load it (%s).\n"
+                "  Band policy changes work now. Automatic serving-state monitoring is\n"
+                "  unavailable until launchd accepts the job, which it may do at the next\n"
+                "  reboot.\n",
+                launchdError.localizedDescription.UTF8String ?: "unknown");
+            break;
         case CCNMMaintenanceRegistrationFailed:
             fprintf(stderr,
                 "NetworkManagerReborn: warning — maintenance owner could not be registered (%s).\n"

@@ -54,15 +54,20 @@ FORBIDDEN_DIAGNOSTIC_PATTERNS: Sequence[Tuple[str, re.Pattern]] = (
     ),
 )
 
+# .in and .sh are here because the maintainer scripts became shell templates.
+# They used to be postinst.m / prerm.m, which .m already covered, so dropping
+# them would have quietly removed two device-shipped files from this gate.
 TEXT_SUFFIXES = {
     ".c",
     ".cc",
     ".cpp",
     ".h",
+    ".in",
     ".m",
     ".mm",
     ".mk",
     ".plist",
+    ".sh",
     ".strings",
     ".swift",
     ".x",

@@ -17,7 +17,8 @@ Status: release candidate source, not yet approved for distribution.
 - Uses durable intent and in-flight records, exact subscription identity, a cross-process lock, and full read-back verification.
 - A 20-second setter deadline returns control while retaining the lock until a late private call resolves; uncertain outcomes forbid another same-boot write.
 - Disabling restores the exact original NR list while preserving current non-NR arrays.
-- Compiled `prerm` and `postinst` guards restore before removal, upgrade, or downgrade and close the post-`prerm` race with a durable removal marker.
+- Shell `postinst` and `prerm` do the privileged work, and compiled policy guards decide the verdict: restore runs before removal, or before a downgrade below 1.5.0, and a durable removal marker closes the post-`prerm` race.
+- Maintenance-daemon registration reports its outcome honestly: running now, waiting for the next boot because `launchctl` could not run, declined by launchd, or not loadable at all. Only the last means the plist is wrong, and only the second promises the next reboot will fix it.
 - Malformed, missing, foreign, or inconsistent evidence fails closed. There is no ordinary-user clear-state action.
 
 ## Compatibility
@@ -34,5 +35,5 @@ This feature is an n78 preference, not a guarantee of continuous 5G or n78 servi
 
 - Independent source/spec/safety review with no unresolved P0 or P1 findings.
 - Pinned macOS 14 / Xcode 15.4 rootless and roothide cloud builds.
-- Mach-O, dependency, signature, package-control, warning, and checksum verification for both bundles and both maintainer binaries in each lane.
+- Mach-O, dependency, signature, package-control, warning, and checksum verification for both bundles, both policy guards, and the maintenance helper in each lane, plus the shell-shape gate on `DEBIAN/postinst` and `DEBIAN/prerm` and a per-lane gate on the staged launchd plist.
 - Target-device enable, LTE fallback, reboot, disable, crash-recovery, timeout, uninstall, and downgrade acceptance.

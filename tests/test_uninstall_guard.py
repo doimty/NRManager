@@ -10,6 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 ACTIONS_MAKEFILE = ROOT / "package-actions/Makefile"
 PRERM_SOURCE = ROOT / "package-actions/prerm.m"
 POSTINST_SOURCE = ROOT / "package-actions/postinst.m"
+POSTINST_TEMPLATE = ROOT / "package-actions/postinst.sh.in"
+PRERM_TEMPLATE = ROOT / "package-actions/prerm.sh.in"
 MAINTAINER_SOURCE = ROOT / "package-actions/CCNMMaintainerEnvironment.m"
 ROOT_MAKEFILE = ROOT / "Makefile"
 POLICY_SOURCE = ROOT / "networkmanagerprefs/CCNMN78PolicyController.m"
@@ -19,23 +21,53 @@ import verify_release_package  # noqa: E402
 
 
 class UninstallGuardTests(unittest.TestCase):
-    def test_compiled_prerm_is_built_as_a_package_control_script(self):
+    def test_the_policy_guards_ship_as_payload_helpers_not_maintainer_scripts(self):
+        # dpkg's maintainer scripts are shell; the compiled code became a helper
+        # the shell calls. On roothide a compiled maintainer script runs without
+        # the bootstrap injection and gets EPERM on every write and child exec
+        # inside the jailbreak root, so it cannot do the privileged half.
         self.assertTrue(ACTIONS_MAKEFILE.exists())
         self.assertTrue(PRERM_SOURCE.exists())
         self.assertTrue(POSTINST_SOURCE.exists())
+        self.assertTrue(POSTINST_TEMPLATE.exists())
+        self.assertTrue(PRERM_TEMPLATE.exists())
         makefile = ACTIONS_MAKEFILE.read_text()
         root_makefile = ROOT_MAKEFILE.read_text()
-        self.assertIn("TOOL_NAME = postinst prerm", makefile)
-        self.assertIn("postinst_INSTALL_PATH = /DEBIAN", makefile)
-        self.assertIn("prerm_INSTALL_PATH = /DEBIAN", makefile)
+        self.assertIn(
+            "TOOL_NAME = networkmanager-install-guard networkmanager-removal-guard",
+            makefile,
+        )
+        self.assertIn("networkmanager-install-guard_INSTALL_PATH = /usr/libexec", makefile)
+        self.assertIn("networkmanager-removal-guard_INSTALL_PATH = /usr/libexec", makefile)
+        # Nothing compiled may be installed into the control archive again.
+        self.assertNotIn("/DEBIAN", makefile)
+        self.assertIn("networkmanager-install-guard_FILES = postinst.m", makefile)
+        self.assertIn("networkmanager-removal-guard_FILES = prerm.m", makefile)
         self.assertIn("../networkmanagerprefs/CCNMN78PolicySupport.m", makefile)
         self.assertIn("../networkmanagerprefs/CCNMN78PolicyController.m", makefile)
         self.assertIn("CCNMMaintainerEnvironment.m", makefile)
-        self.assertIn("postinst_OBJCFLAGS += -fno-modules -fno-implicit-modules", makefile)
-        self.assertIn("prerm_OBJCFLAGS += -fno-modules -fno-implicit-modules", makefile)
+        for tool in ("networkmanager-install-guard", "networkmanager-removal-guard"):
+            self.assertIn(
+                "%s_OBJCFLAGS += -fno-modules -fno-implicit-modules" % tool, makefile)
         self.assertIn("-DCCNM_MAINTAINER_SCRIPT", makefile)
         self.assertNotIn("-lroothide", makefile)
         self.assertIn("SUBPROJECTS += package-actions", root_makefile)
+
+    def test_the_shell_postinst_uses_the_roothide_substitution_convention(self):
+        # plutil first, because Theos stages the plist as a binary plist and a
+        # textual substitution cannot match inside one.
+        postinst = POSTINST_TEMPLATE.read_text()
+        self.assertTrue(postinst.startswith("#!/bin/sh\n"))
+        self.assertIn("plutil", postinst)
+        self.assertIn("@JBROOT@", postinst)
+        self.assertIn("jbroot", postinst)
+        self.assertLess(postinst.index("plutil"), postinst.index("sed "))
+        self.assertIn("networkmanager-install-guard", postinst)
+        prerm = PRERM_TEMPLATE.read_text()
+        self.assertTrue(prerm.startswith("#!/bin/sh\n"))
+        self.assertIn("networkmanager-removal-guard", prerm)
+        # Fail-closed: an unusable guard blocks removal rather than allowing it.
+        self.assertIn("exit 73", prerm)
 
     def test_remove_upgrade_and_downgrade_path_stops_daemon_then_restores(self):
         source = PRERM_SOURCE.read_text()
@@ -93,18 +125,86 @@ class UninstallGuardTests(unittest.TestCase):
         self.assertIn("CCNMNormalizePolicyDescriptorOwnership", write_body)
         self.assertIn("CCNMNormalizePolicyDescriptorOwnership", lock_body)
 
-    def test_maintainer_scripts_are_self_contained(self):
+    def test_the_guards_use_the_prefix_the_shell_resolved(self):
+        # The shell maintainer script already resolved which prefix exists and
+        # exports it. Re-deriving it inside the guard is not just redundant, it
+        # is wrong on roothide: the guard is invoked through a bare path, so its
+        # executable path carries no .jbroot- component, and scanning
+        # /var/containers/Bundle/Application from a redirected process looks
+        # inside the jailbreak root rather than at it.
         source = POLICY_SOURCE.read_text()
         self.assertIn("CCNM_MAINTAINER_SCRIPT", source)
-        self.assertIn("CCNMJBResourceRoot", source)
-        self.assertIn("CCNMJBResourceRootFromExecutable", source)
-        self.assertIn("_NSGetExecutablePath", source)
-        self.assertIn('@"/var/containers/Bundle/Application/"', source)
-        self.assertIn("matches.count == 1", source)
-        self.assertIn('@"/.networkmanager-invalid-jbroot"', source)
-        self.assertIn('".jbroot-"', source)
-        self.assertIn("THEOS_PACKAGE_INSTALL_PREFIX", source)
-        self.assertNotIn("#import <roothide.h>", source.split("#elif __has_include(<roothide.h>)")[0])
+        maintainer = source[source.index("#if defined(CCNM_MAINTAINER_SCRIPT)"):
+                            source.index("#elif __has_include(<roothide.h>)")]
+        self.assertIn("CCNMMaintainerInstallPrefix()", maintainer)
+        # The former self-derivation strategies must not come back.
+        for token in ("CCNMJBResourceRoot", "_NSGetExecutablePath",
+                      '@"/var/containers/Bundle/Application/"', '".jbroot-"',
+                      "THEOS_PACKAGE_INSTALL_PREFIX"):
+            self.assertNotIn(token, maintainer)
+        # An unresolved prefix must not silently degrade to a bare path: a policy
+        # read against the wrong root would look clean and could authorize
+        # removal while a forced band configuration is still applied.
+        self.assertIn('@"/.networkmanager-unresolved-install-prefix"', maintainer)
+        # Concatenation, not stringByAppendingPathComponent:, because the empty
+        # prefix must yield the original absolute path.
+        self.assertIn("stringByAppendingString:path", maintainer)
+        self.assertNotIn("stringByAppendingPathComponent:path", maintainer)
+        self.assertNotIn("#import <roothide.h>", maintainer)
+
+    def test_the_shell_exports_the_prefixes_it_resolved_to_both_guards(self):
+        for template in ("postinst.sh.in", "prerm.sh.in"):
+            text = (ROOT / "package-actions" / template).read_text()
+            with self.subTest(template=template):
+                # The install prefix may legitimately be empty, so it is always
+                # exported.
+                self.assertIn(
+                    'NETWORKMANAGER_INSTALL_PREFIX="$RESOLVED_PREFIX"', text)
+                self.assertIn("export NETWORKMANAGER_INSTALL_PREFIX", text)
+                # The launchd prefix may not be empty, so it is exported only
+                # when known; an unset variable makes the guard report that
+                # rather than compare against a path launchd would never use.
+                self.assertIn('if [ -n "$LAUNCHD_PREFIX" ]; then', text)
+                self.assertIn("export NETWORKMANAGER_LAUNCHD_PREFIX", text)
+                # Exported before the guard runs, not after.
+                self.assertLess(text.index("export NETWORKMANAGER_INSTALL_PREFIX"),
+                                text.rindex('"$@"'))
+                self.assertLess(text.index("export NETWORKMANAGER_LAUNCHD_PREFIX"),
+                                text.rindex('"$@"'))
+
+    def test_the_install_and_launchd_prefixes_are_kept_distinct(self):
+        # Conflating these was the original mistake. The install prefix is what
+        # the guard prepends to read a file, and on roothide it is empty. The
+        # launchd prefix is what must appear inside the plist, and it is never
+        # empty because launchd is not subject to the redirection.
+        source = MAINTAINER_SOURCE.read_text()
+        supplied = source[source.index("static NSString *CCNMPrefixFromEnvironment"):
+                          source.index("NSString *CCNMMaintainerInstallPrefix")]
+        self.assertIn("if (!value) {", supplied)
+        self.assertIn("emptyIsValid ? @\"\" : nil", supplied)
+        # A relative value or a trailing slash is never a usable prefix.
+        self.assertIn('hasPrefix:@"/"', supplied)
+        self.assertIn('hasSuffix:@"/"', supplied)
+        install = source[source.index("NSString *CCNMMaintainerInstallPrefix"):
+                         source.index("NSString *CCNMMaintainerLaunchdPrefix")]
+        self.assertIn("CCNMInstallPrefixVariable, YES", install)
+        launchd = source[source.index("NSString *CCNMMaintainerLaunchdPrefix"):
+                         source.index("NSString *CCNMMaintainerJailbreakRoot")]
+        self.assertIn("CCNMLaunchdPrefixVariable, NO", launchd)
+        # The jailbreak root is a third question: an empty install prefix is a
+        # valid answer there but is not a root that can be prepended.
+        root_body = source[source.index("NSString *CCNMMaintainerJailbreakRoot"):
+                           source.index("NSString *CCNMMaintainerRootedPath")]
+        self.assertIn("prefix.length > 0 ? prefix : nil", root_body)
+        rooted = source[source.index("NSString *CCNMMaintainerRootedPath"):
+                        source.index("// launchctl lookup.")]
+        self.assertIn("stringByAppendingString:path", rooted)
+        self.assertNotIn("stringByAppendingPathComponent:path", rooted)
+        # launchctl must be handed the launchd path, not ours.
+        register = source[
+            source.index("CCNMMaintenanceRegistration CCNMRegisterMaintenanceLaunchd"):]
+        bootstrap = register.index('@"bootstrap"')
+        self.assertIn("CCNMMaintainerLaunchdPath(", register[:bootstrap])
 
     def test_postinst_attempts_guard_cleanup_before_registration(self):
         source = POSTINST_SOURCE.read_text()
@@ -198,9 +298,9 @@ class UninstallGuardTests(unittest.TestCase):
     def test_launchd_owner_is_fail_closed_and_scheme_aware(self):
         source = MAINTAINER_SOURCE.read_text()
         for token in (
-            "CCNMCompiledInstallPrefix",
-            "CCNMUniqueScannedJBRoot",
-            "matches.count == 1",
+            "CCNMMaintainerInstallPrefix",
+            "CCNMMaintainerLaunchdPrefix",
+            "THEOS_PACKAGE_INSTALL_PREFIX",
             "CCNMPrepareMaintenanceLaunchd",
             "CCNMRunLaunchctl(@[@\"bootout\", target]",
             "CCNMRunLaunchctl(@[@\"bootstrap\", @\"system\", plistPath]",
@@ -211,6 +311,12 @@ class UninstallGuardTests(unittest.TestCase):
         ):
             self.assertIn(token, source)
         self.assertNotIn("|| true", source)
+        # No runtime self-derivation of the root. A guard that guesses can read a
+        # policy state that is not the live one, call it clean, and authorize
+        # removal while a forced band configuration is still applied.
+        for token in ("_NSGetExecutablePath", "/var/containers/Bundle/Application",
+                      '".jbroot-"'):
+            self.assertNotIn(token, source)
 
     def test_launchctl_lookup_covers_every_filesystem_view(self):
         # A jailbreak bootstrap is not obligated to ship launchctl under its own
@@ -236,10 +342,16 @@ class UninstallGuardTests(unittest.TestCase):
         self.assertNotIn(
             "A required launchctl, plist, executable, or policy path is unavailable.",
             body)
-        self.assertIn("could not be resolved against the jailbreak root", body)
+        self.assertIn("could not be resolved against the install prefix", body)
         self.assertIn("is not readable at %@", body)
         self.assertIn("is not executable at %@", body)
         self.assertIn("is missing at %@", body)
+        # An unset or malformed prefix is its own failure, named per variable, so
+        # the dpkg log distinguishes "the shell did not tell me" from "the file
+        # is not there".
+        self.assertIn("The install prefix could not be determined", body)
+        self.assertIn("The launchd path prefix could not be determined", body)
+        self.assertIn("not set by the maintainer script", body)
         # Diagnostics must name the path and the reason so a device report is
         # enough. access(2) is deliberately absent: on this platform
         # access(X_OK) returned EPERM for the freshly unpacked helper, so mode
@@ -267,9 +379,17 @@ class UninstallGuardTests(unittest.TestCase):
 
     def test_package_verifier_requires_and_inspects_prerm(self):
         self.assertEqual(verify_release_package.REQUIRED_MAINTAINER_FILES, {"postinst", "prerm"})
-        self.assertEqual(verify_release_package.MAINTAINER_BINARY_FILES, ("postinst", "prerm"))
+        self.assertEqual(
+            verify_release_package.UNLINKED_ROOTHIDE_TOOLS,
+            ("networkmanager-install-guard", "networkmanager-removal-guard"),
+        )
+        self.assertIn(
+            "usr/libexec/networkmanager-removal-guard",
+            verify_release_package.REQUIRED_PAYLOAD_FILES,
+        )
         verifier = (ROOT / "scripts/verify_release_package.py").read_text()
-        self.assertIn("binary.name not in MAINTAINER_BINARY_FILES", verifier)
+        self.assertIn("binary.name not in UNLINKED_ROOTHIDE_TOOLS", verifier)
+        self.assertIn("must be a shell script, not a Mach-O binary", verifier)
 
 
 if __name__ == "__main__":

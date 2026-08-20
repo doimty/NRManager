@@ -5,7 +5,6 @@
 #import <dlfcn.h>
 #import <errno.h>
 #import <fcntl.h>
-#import <mach-o/dyld.h>
 #import <pwd.h>
 #import <string.h>
 #import <sys/file.h>
@@ -15,96 +14,32 @@
 #import <unistd.h>
 
 #if defined(CCNM_MAINTAINER_SCRIPT)
+#import "../package-actions/CCNMMaintainerEnvironment.h"
 
-// Maintainer scripts run inside dpkg, where libroothide.dylib is not loaded
-// and @loader_path/.jbroot does not exist. Resolve the jbroot directory
-// ourselves using the same convention as roothide Bootstrap: a directory
-// named .jbroot-<16 hex chars> under /var/containers/Bundle/Application/.
-static BOOL CCNMIsJBResourceName(const char *name) {
-    if (!name) {
-        return NO;
-    }
-    static const char prefix[] = ".jbroot-";
-    size_t prefixLength = sizeof(prefix) - 1;
-    if (strlen(name) != prefixLength + 16) {
-        return NO;
-    }
-    if (strncmp(name, prefix, prefixLength) != 0) {
-        return NO;
-    }
-    char *end = NULL;
-    unsigned long long value = strtoull(name + prefixLength, &end, 16);
-    if (!end || *end != '\0') {
-        return NO;
-    }
-    uint8_t check = (uint8_t)(value >> 8) ^ (uint8_t)(value >> 16) ^
-        (uint8_t)(value >> 24) ^ (uint8_t)(value >> 32) ^
-        (uint8_t)(value >> 40) ^ (uint8_t)(value >> 48) ^
-        (uint8_t)(value >> 56);
-    return check == (uint8_t)value;
-}
-
-static NSString *CCNMJBResourceRootFromExecutable(void) {
-    uint32_t size = 0;
-    (void)_NSGetExecutablePath(NULL, &size);
-    if (size == 0) {
-        return nil;
-    }
-    char *buffer = calloc(1, size);
-    if (!buffer) {
-        return nil;
-    }
-    NSString *root = nil;
-    if (_NSGetExecutablePath(buffer, &size) == 0) {
-        NSString *executablePath = [NSString stringWithUTF8String:buffer];
-        NSMutableArray<NSString *> *prefix = [NSMutableArray array];
-        for (NSString *component in executablePath.pathComponents) {
-            [prefix addObject:component];
-            if (CCNMIsJBResourceName(component.UTF8String)) {
-                root = [NSString pathWithComponents:prefix];
-                break;
-            }
-        }
-    }
-    free(buffer);
-    return root;
-}
-
-static NSString *CCNMJBResourceRootByScan(void) {
-    NSString *applicationDirectory = @"/var/containers/Bundle/Application/";
-    NSArray *entries = [[NSFileManager defaultManager]
-        contentsOfDirectoryAtPath:applicationDirectory error:NULL];
-    NSMutableArray<NSString *> *matches = [NSMutableArray array];
-    for (NSString *entry in entries) {
-        if (CCNMIsJBResourceName(entry.UTF8String)) {
-            [matches addObject:[applicationDirectory stringByAppendingPathComponent:entry]];
-        }
-    }
-    return matches.count == 1 ? matches.firstObject : nil;
-}
-
-static NSString *CCNMJBResourceRoot(void) {
-    static NSString *cachedRoot;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        cachedRoot = CCNMJBResourceRootFromExecutable() ?: CCNMJBResourceRootByScan();
-    });
-    return cachedRoot;
-}
-
+// The install guards run as helpers invoked by the shell maintainer scripts.
+// libroothide.dylib is not loaded there and @loader_path/.jbroot does not exist
+// beside an installed helper, so jbroot() is unavailable.
+//
+// The prefix is not re-derived here. The shell already resolved it, and on
+// roothide re-deriving it is not merely redundant but wrong: the guard is
+// invoked through a bare path, so the executable path carries no .jbroot-
+// component, and scanning /var/containers/Bundle/Application from a redirected
+// process looks inside the jailbreak root rather than at it. Both former
+// strategies would therefore fail or, worse, silently pick a wrong directory.
+//
+// An empty prefix is the normal roothide answer and means bare paths already
+// resolve correctly, so it must not be treated as a failure.
 static NSString *CCNMPolicyRootForMaintainer(NSString *path) {
-#if defined(THEOS_PACKAGE_INSTALL_PREFIX)
-    const char *compiledPrefix = THEOS_PACKAGE_INSTALL_PREFIX;
-    if (compiledPrefix && compiledPrefix[0] != '\0') {
-        NSString *rootlessRoot = [NSString stringWithUTF8String:compiledPrefix];
-        return [rootlessRoot stringByAppendingPathComponent:path];
+    NSString *prefix = CCNMMaintainerInstallPrefix();
+    if (!prefix) {
+        // Deliberately unusable rather than falling back to a bare path: a
+        // policy read that silently targets the wrong root would be reported as
+        // a clean state and could authorize removal of a package that still
+        // holds a forced band configuration.
+        return [@"/.networkmanager-unresolved-install-prefix" stringByAppendingString:path];
     }
-#endif
-    NSString *root = CCNMJBResourceRoot();
-    if (root.length == 0) {
-        return [@"/.networkmanager-invalid-jbroot" stringByAppendingPathComponent:path];
-    }
-    return [root stringByAppendingPathComponent:path];
+    // Plain concatenation, so an empty prefix yields the original absolute path.
+    return [prefix stringByAppendingString:path];
 }
 
 #define CCNMPolicyRoot(path) CCNMPolicyRootForMaintainer(path)

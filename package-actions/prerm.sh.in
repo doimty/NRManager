@@ -1,0 +1,173 @@
+#!/bin/sh
+# Generated from package-actions/prerm.sh.in by
+# scripts/patch-maintenance-launchd.py. Do not edit the installed copy.
+#
+# The removal gate is fail-closed: a forced NR band configuration must not be
+# left behind with no installed way to restore it. A guard that cannot be started
+# is therefore not an implicit approval, because an unverified modem state is
+# exactly the case the gate exists for. The manual override is named in every
+# blocking message so a broken guard can never make the package unremovable.
+#
+# Shell rather than a compiled maintainer script for the same reason as postinst:
+# on roothide a compiled maintainer script observably runs without the bootstrap
+# injection and gets EPERM on child exec, which would have turned every removal
+# into a permanent block.
+
+SCHEME_PREFIX='@PREFIX@'
+NEEDS_JBROOT='@NEEDS_JBROOT@'
+
+GUARD_RELATIVE='/usr/libexec/networkmanager-removal-guard'
+OVERRIDE_RELATIVE='/var/lib/dpkg/info/me.nixuge.networkmanager.prerm'
+
+# jbroot's output is an external input. An implausible but non-empty value must
+# not become PREFIX_FALLBACK: a bogus prefix that happens to hold a stale copy of
+# the guard would let a wrong binary answer a question this gate is fail-closed
+# about. Rejecting it leaves PREFIX_FALLBACK empty, which blocks unless the bare
+# path resolves — the correct conservative outcome.
+validate_jbroot() {
+    case "$1" in
+        '')
+            printf 'jbroot produced no output'
+            return 1
+            ;;
+        *'
+'*)
+            printf 'jbroot produced more than one line'
+            return 1
+            ;;
+        /*)
+            ;;
+        *)
+            printf 'jbroot produced a relative path'
+            return 1
+            ;;
+    esac
+    if [ ! -d "$1" ]; then
+        printf 'jbroot named a path that is not a directory'
+        return 1
+    fi
+    return 0
+}
+
+JBROOT_PREFIX=''
+JBROOT_STATUS='not applicable to this install scheme'
+if [ -n "$NEEDS_JBROOT" ]; then
+    _jbroot="$(jbroot 2>/dev/null)"
+    while :; do
+        case "$_jbroot" in
+            */) _jbroot="${_jbroot%/}" ;;
+            *) break ;;
+        esac
+        [ -n "$_jbroot" ] || break
+    done
+    if _reason="$(validate_jbroot "$_jbroot")"; then
+        JBROOT_PREFIX="$_jbroot"
+        JBROOT_STATUS="$JBROOT_PREFIX"
+    else
+        JBROOT_STATUS="could not be resolved; ${_reason}"
+    fi
+    PREFIX_PRIMARY=''
+    PREFIX_FALLBACK="$JBROOT_PREFIX"
+    LAUNCHD_PREFIX="$JBROOT_PREFIX"
+else
+    PREFIX_PRIMARY="$SCHEME_PREFIX"
+    PREFIX_FALLBACK=''
+    LAUNCHD_PREFIX="$SCHEME_PREFIX"
+fi
+
+describe_prefix() {
+    if [ -z "$1" ]; then
+        printf 'the redirected root (bare paths)'
+    else
+        printf '%s' "$1"
+    fi
+}
+
+candidate_list() {
+    describe_prefix "$PREFIX_PRIMARY"
+    if [ -n "$PREFIX_FALLBACK" ]; then
+        printf ' and %s' "$PREFIX_FALLBACK"
+    fi
+}
+
+# Not called in a command substitution: that would run in a subshell and lose
+# RESOLVED_PREFIX, so the override path printed on failure would be wrong.
+RESOLVED_PATH=''
+RESOLVED_PREFIX=''
+resolve() {
+    _relative="$1"
+    RESOLVED_PATH=''
+    RESOLVED_PREFIX=''
+    if [ -e "${PREFIX_PRIMARY}${_relative}" ]; then
+        RESOLVED_PREFIX="$PREFIX_PRIMARY"
+    elif [ -n "$PREFIX_FALLBACK" ] && [ -e "${PREFIX_FALLBACK}${_relative}" ]; then
+        RESOLVED_PREFIX="$PREFIX_FALLBACK"
+    else
+        return 1
+    fi
+    RESOLVED_PATH="${RESOLVED_PREFIX}${_relative}"
+    return 0
+}
+
+# Where the override actually lives. dpkg's own info directory is inside the
+# jailbreak root, so the bare path is only correct for a redirected shell. The
+# user reading this message is already blocked, so name the path that exists
+# rather than the one that happens to be shortest.
+#
+# Does its own -e tests instead of calling resolve(): this is used inside a
+# command substitution, where resolve()'s global assignments would be lost.
+override_hint() {
+    if [ -e "${PREFIX_PRIMARY}${OVERRIDE_RELATIVE}" ]; then
+        printf '%s' "${PREFIX_PRIMARY}${OVERRIDE_RELATIVE}"
+    elif [ -n "$PREFIX_FALLBACK" ] &&
+         [ -e "${PREFIX_FALLBACK}${OVERRIDE_RELATIVE}" ]; then
+        printf '%s' "${PREFIX_FALLBACK}${OVERRIDE_RELATIVE}"
+    elif [ -n "$PREFIX_FALLBACK" ]; then
+        printf '%s or %s' \
+            "${PREFIX_PRIMARY}${OVERRIDE_RELATIVE}" \
+            "${PREFIX_FALLBACK}${OVERRIDE_RELATIVE}"
+    else
+        printf '%s' "${PREFIX_PRIMARY}${OVERRIDE_RELATIVE}"
+    fi
+}
+
+block() {
+    printf 'NetworkManagerReborn: removal blocked; %s\n' "$1" >&2
+    printf '  Reinstall the package to restore the guard, or delete %s and retry to override.\n' \
+        "$(override_hint)" >&2
+    exit 73
+}
+
+if ! resolve "$GUARD_RELATIVE"; then
+    block "the removal guard was not found under $(candidate_list), so the live band configuration cannot be proven clean. jbroot: ${JBROOT_STATUS}."
+fi
+
+guard="$RESOLVED_PATH"
+
+# Hand both prefixes over rather than letting the guard re-derive them. On
+# roothide the guard is invoked through a bare path, so its own executable path
+# carries no .jbroot- component and a scan would look inside the jailbreak root
+# instead of at it. A guard reading the wrong root would report a clean policy
+# state and authorize removal of a package that still holds a forced band
+# configuration, which is exactly what this gate exists to prevent.
+#
+# The install prefix may legitimately be empty; the launchd prefix may not, so it
+# is exported only when known.
+NETWORKMANAGER_INSTALL_PREFIX="$RESOLVED_PREFIX"
+export NETWORKMANAGER_INSTALL_PREFIX
+if [ -n "$LAUNCHD_PREFIX" ]; then
+    NETWORKMANAGER_LAUNCHD_PREFIX="$LAUNCHD_PREFIX"
+    export NETWORKMANAGER_LAUNCHD_PREFIX
+fi
+
+"$guard" "$@"
+status=$?
+
+# 126 and 127 are the shell's own "found but not executable" and "not found"
+# codes. They are the shapes an exec refusal takes here, and they are not a
+# verdict from the guard, so they must not be reported as one.
+if [ "$status" -eq 126 ] || [ "$status" -eq 127 ]; then
+    block "the removal guard at ${guard} could not be started (exit ${status}), so the live band configuration cannot be proven clean."
+fi
+
+exit $status

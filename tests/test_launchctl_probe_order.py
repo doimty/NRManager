@@ -30,6 +30,7 @@ coverage, not wording.
 import errno
 import os
 import pathlib
+import re
 import subprocess
 import tempfile
 import unittest
@@ -458,7 +459,68 @@ class LaunchctlDiagnosticsTests(unittest.TestCase):
         self.assertNotIn(
             "will be unavailable.\\n\",\n                launchdError", postinst[
                 postinst.index("CCNMMaintenanceRegistrationDeferred"):
-                postinst.index("CCNMMaintenanceRegistrationFailed")])
+                postinst.index("CCNMMaintenanceRegistrationRejected")])
+
+    def test_only_a_failed_plist_may_report_failed(self):
+        # Failed is documented as "will not load now or later", which is a claim
+        # about the plist. Once prepare has succeeded the plist is validated and
+        # on disk, so every later return has to be Deferred or Rejected. Reusing
+        # Failed there told the user the daemon would never run while the durable
+        # half of the work was intact, and it collapsed "launchctl is missing"
+        # together with "launchd looked at the job and said no" -- two states with
+        # different remedies.
+        source = MAINTAINER_SOURCE.read_text()
+        register = source[
+            source.index("CCNMMaintenanceRegistration CCNMRegisterMaintenanceLaunchd"):]
+        prepare_guard = register.index("CCNMPrepareMaintenanceLaunchd(error)")
+        failures = [match.start() for match in re.finditer(
+            r"return CCNMMaintenanceRegistrationFailed;", register)]
+        self.assertEqual(len(failures), 1, register)
+        self.assertLess(failures[0], register.index("CCNMLaunchctlIsUsable()"))
+        self.assertGreater(failures[0], prepare_guard)
+        # And the post-launchctl failures are all Rejected: bootout, bootstrap,
+        # kickstart, plus the unreachable prefix guard.
+        self.assertEqual(register.count("return CCNMMaintenanceRegistrationRejected;"), 4)
+
+    def test_a_rejected_registration_does_not_promise_the_next_boot(self):
+        # Deferred means launchd never saw the job, so the next boot is a real
+        # prediction. Rejected means it saw it and declined, so the same sentence
+        # would be an unsupported promise.
+        postinst = (ROOT / "package-actions" / "postinst.m").read_text()
+        rejected = postinst[postinst.index("case CCNMMaintenanceRegistrationRejected"):
+                            postinst.index("case CCNMMaintenanceRegistrationFailed")]
+        self.assertIn("declined", rejected)
+        self.assertNotIn("will start automatically", rejected)
+        deferred = postinst[postinst.index("case CCNMMaintenanceRegistrationDeferred"):
+                            postinst.index("case CCNMMaintenanceRegistrationRejected")]
+        self.assertIn("will start automatically after the next reboot", deferred)
+        # Every enum case is handled, so a new one cannot fall through silently.
+        for case in ("Active", "Deferred", "Rejected", "Failed"):
+            self.assertIn(f"case CCNMMaintenanceRegistration{case}:", postinst)
+
+    def test_an_already_correct_plist_is_not_rewritten(self):
+        # The shell postinst does the substitution, so this function only reads,
+        # parses and asserts. Writing was also the one thing the process could
+        # not do: on the reporting device every read succeeded and every write
+        # returned EPERM, so keeping a write here would have made a healthy
+        # install fail on a step that has nothing left to change.
+        source = MAINTAINER_SOURCE.read_text()
+        prepare = source[source.index("BOOL CCNMPrepareMaintenanceLaunchd"):
+                         source.index("BOOL CCNMStopMaintenanceLaunchd")]
+        self.assertNotIn("CCNMWritePlist", prepare)
+        self.assertNotIn("mutableCopy", prepare)
+        self.assertNotIn("CCNMWritePlist", source)
+        # Exact comparison, not hasSuffix:. A surviving @JBROOT@ placeholder and
+        # a doubled prefix both end with the correct relative path, and both
+        # leave a job launchd cannot start.
+        self.assertIn("isEqualToString:expectedProgram", prepare)
+        self.assertIn("isEqualToString:expectedBaseline", prepare)
+        self.assertNotIn("hasSuffix:CCNMMaintenanceExecutableRelativePath", prepare)
+        self.assertNotIn("hasSuffix:CCNMMaintenanceBaselineRelativePath", prepare)
+        # The mismatch message has to name both sides, since it is the only
+        # evidence in the dpkg log that the substitution did not happen.
+        self.assertIn("does not point at this install", prepare)
+        self.assertIn("expected %@ and %@", prepare)
 
     def test_prerm_does_not_advise_manual_launchd_cleanup(self):
         # dpkg removes the plist with the package, so there is no stale entry to

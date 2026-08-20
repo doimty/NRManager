@@ -1,12 +1,10 @@
 #import "CCNMMaintainerEnvironment.h"
 
 #import "CCNMLaunchctlProbe.h"
-#import "CCNMPlistWrite.h"
 
 #import <dispatch/dispatch.h>
 #import <errno.h>
 #import <fcntl.h>
-#import <mach-o/dyld.h>
 #import <spawn.h>
 #import <stdint.h>
 #import <stdlib.h>
@@ -48,102 +46,132 @@ static BOOL CCNMSetError(NSError **error,
     return NO;
 }
 
-static BOOL CCNMIsJBRootName(const char *name) {
-    if (!name) {
-        return NO;
-    }
-    static const char prefix[] = ".jbroot-";
-    const size_t prefixLength = sizeof(prefix) - 1;
-    if (strlen(name) != prefixLength + 16 ||
-        strncmp(name, prefix, prefixLength) != 0) {
-        return NO;
-    }
-    char *end = NULL;
-    unsigned long long value = strtoull(name + prefixLength, &end, 16);
-    if (!end || *end != '\0') {
-        return NO;
-    }
-    uint8_t check = (uint8_t)(value >> 8) ^ (uint8_t)(value >> 16) ^
-        (uint8_t)(value >> 24) ^ (uint8_t)(value >> 32) ^
-        (uint8_t)(value >> 40) ^ (uint8_t)(value >> 48) ^
-        (uint8_t)(value >> 56);
-    return check == (uint8_t)value;
-}
+// Two different prefixes are in play here and conflating them was the original
+// mistake.
+//
+// The install prefix is what this process must prepend to reach an installed
+// file. On roothide it is empty, because a maintainer-script child already
+// resolves bare paths inside the jailbreak root.
+//
+// The launchd prefix is what must appear inside the plist. launchd is not
+// subject to any redirection, so it needs a real absolute path even when this
+// process would reach the same file with a bare one.
+//
+// Both are handed over by the shell maintainer script, which already had to
+// determine them. Re-deriving either one here would be a second, weaker guess,
+// and on roothide a wrong one: the guard is invoked through a bare path, so its
+// own executable path carries no jbroot component, and scanning the bundle
+// container from a redirected process looks inside the jailbreak root rather
+// than at it.
+static NSString *const CCNMInstallPrefixVariable =
+    @"NETWORKMANAGER_INSTALL_PREFIX";
+static NSString *const CCNMLaunchdPrefixVariable =
+    @"NETWORKMANAGER_LAUNCHD_PREFIX";
 
-static NSString *CCNMCompiledInstallPrefix(void) {
-#if defined(THEOS_PACKAGE_INSTALL_PREFIX)
-    const char *prefix = THEOS_PACKAGE_INSTALL_PREFIX;
-    return prefix && prefix[0] != '\0'
-        ? [NSString stringWithUTF8String:prefix] : @"";
-#else
-    return @"";
-#endif
-}
-
-static NSString *CCNMJBRootFromExecutable(void) {
-    uint32_t size = 0;
-    (void)_NSGetExecutablePath(NULL, &size);
-    if (size == 0) {
+// An absolute path with no trailing slash, or nil. Empty is accepted only where
+// the caller asks for it, because the two prefixes differ on exactly that point.
+static NSString *CCNMPrefixFromEnvironment(NSString *variable,
+                                           BOOL emptyIsValid) {
+    const char *value = getenv(variable.UTF8String);
+    if (!value) {
         return nil;
     }
-    char *buffer = calloc(1, size);
-    if (!buffer) {
+    if (value[0] == '\0') {
+        return emptyIsValid ? @"" : nil;
+    }
+    NSString *prefix = [NSString stringWithUTF8String:value];
+    // Anything relative would silently build paths against dpkg's working
+    // directory; a trailing slash would produce a doubled separator inside the
+    // plist, where the value is compared literally.
+    if (![prefix hasPrefix:@"/"] || [prefix hasSuffix:@"/"]) {
         return nil;
     }
-    NSString *root = nil;
-    if (_NSGetExecutablePath(buffer, &size) == 0) {
-        NSString *executable = [NSString stringWithUTF8String:buffer];
-        NSMutableArray<NSString *> *components = [NSMutableArray array];
-        for (NSString *component in executable.pathComponents) {
-            [components addObject:component];
-            if (CCNMIsJBRootName(component.UTF8String)) {
-                root = [NSString pathWithComponents:components];
-                break;
-            }
-        }
-    }
-    free(buffer);
-    return root;
+    return prefix;
 }
 
-static NSString *CCNMUniqueScannedJBRoot(void) {
-    NSString *parent = @"/var/containers/Bundle/Application";
-    NSArray<NSString *> *entries = [[NSFileManager defaultManager]
-        contentsOfDirectoryAtPath:parent error:NULL];
-    NSMutableArray<NSString *> *matches = [NSMutableArray array];
-    for (NSString *entry in entries) {
-        if (CCNMIsJBRootName(entry.UTF8String)) {
-            [matches addObject:[parent stringByAppendingPathComponent:entry]];
-        }
-    }
-    return matches.count == 1 ? matches.firstObject : nil;
-}
-
-NSString *CCNMMaintainerJailbreakRoot(void) {
-    static NSString *root;
+// The prefix this process prepends to reach installed files.
+//
+// nil means it could not be determined and no installed path is trustworthy.
+// @"" means bare paths already resolve, which is the normal roothide answer, so
+// it must not be mistaken for absence.
+NSString *CCNMMaintainerInstallPrefix(void) {
+    static NSString *prefix;
+    static BOOL resolved;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        NSString *compiledPrefix = CCNMCompiledInstallPrefix();
-        if (compiledPrefix.length > 0) {
-            BOOL isDirectory = NO;
-            if ([[NSFileManager defaultManager] fileExistsAtPath:compiledPrefix
-                                                     isDirectory:&isDirectory] &&
-                isDirectory) {
-                root = compiledPrefix;
-            }
+        prefix = CCNMPrefixFromEnvironment(CCNMInstallPrefixVariable, YES);
+        if (prefix) {
+            resolved = YES;
             return;
         }
-        root = CCNMJBRootFromExecutable() ?: CCNMUniqueScannedJBRoot();
+        // Compile-time fallback for the rootless lane only, where the prefix is
+        // a fixed property of the package rather than of the running system.
+        // Deliberately no runtime derivation: a guard that guesses its root can
+        // read a policy state that is not the live one, report it as clean, and
+        // authorize removal while a forced band configuration is still applied.
+#if defined(THEOS_PACKAGE_INSTALL_PREFIX)
+        const char *compiled = THEOS_PACKAGE_INSTALL_PREFIX;
+        if (compiled && compiled[0] == '/') {
+            NSString *candidate = [NSString stringWithUTF8String:compiled];
+            BOOL isDirectory = NO;
+            if ([[NSFileManager defaultManager] fileExistsAtPath:candidate
+                                                     isDirectory:&isDirectory] &&
+                isDirectory) {
+                prefix = candidate;
+                resolved = YES;
+            }
+        }
+#endif
     });
-    return root;
+    return resolved ? prefix : nil;
+}
+
+// The prefix that must appear inside the launchd plist. Never empty: launchd is
+// not redirected, so a bare path there would point outside the jailbreak.
+// Internal: every caller outside this file wants a path, not a prefix.
+static NSString *CCNMMaintainerLaunchdPrefix(void) {
+    static NSString *prefix;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        prefix = CCNMPrefixFromEnvironment(CCNMLaunchdPrefixVariable, NO);
+#if defined(THEOS_PACKAGE_INSTALL_PREFIX)
+        if (!prefix) {
+            const char *compiled = THEOS_PACKAGE_INSTALL_PREFIX;
+            if (compiled && compiled[0] == '/') {
+                prefix = [NSString stringWithUTF8String:compiled];
+            }
+        }
+#endif
+    });
+    return prefix;
+}
+
+// A real absolute jailbreak root, or nil when installed paths resolve bare.
+// Distinct from the install prefix: an empty prefix is a valid answer there but
+// is not a root that can be prepended to a launchctl candidate.
+NSString *CCNMMaintainerJailbreakRoot(void) {
+    NSString *prefix = CCNMMaintainerInstallPrefix();
+    return prefix.length > 0 ? prefix : nil;
 }
 
 NSString *CCNMMaintainerRootedPath(NSString *path) {
     if (![path isKindOfClass:NSString.class] || ![path hasPrefix:@"/"]) {
         return nil;
     }
-    NSString *root = CCNMMaintainerJailbreakRoot();
-    return root.length > 0 ? [root stringByAppendingPathComponent:path] : nil;
+    NSString *prefix = CCNMMaintainerInstallPrefix();
+    if (!prefix) {
+        return nil;
+    }
+    // Concatenation rather than stringByAppendingPathComponent:, so an empty
+    // prefix yields the original absolute path instead of a relative one.
+    return [prefix stringByAppendingString:path];
+}
+
+// The absolute path launchd itself will use. Only meaningful for comparison
+// against the installed plist; this process may not be able to open it.
+static NSString *CCNMMaintainerLaunchdPath(NSString *path) {
+    NSString *prefix = CCNMMaintainerLaunchdPrefix();
+    return prefix ? [prefix stringByAppendingString:path] : nil;
 }
 
 // launchctl lookup.
@@ -375,116 +403,62 @@ static BOOL CCNMJobIsLoaded(void) {
     return CCNMRunLaunchctl(@[@"print", target], YES) == 0;
 }
 
-static BOOL CCNMWritePlist(NSDictionary *plist,
-                           NSString *path,
-                           NSError **error) {
-    NSData *data = [NSPropertyListSerialization dataWithPropertyList:plist
-                                                              format:NSPropertyListXMLFormat_v1_0
-                                                             options:0
-                                                               error:error];
-    if (!data) {
-        return NO;
-    }
-
-    CCNMFileWriteOutcome outcome;
-    CCNMReplaceFileContents(path.fileSystemRepresentation, data.bytes,
-                            data.length, 0, 0, 0644, &outcome);
-    if (outcome.ok) {
-        return YES;
-    }
-
-    NSString *step = outcome.failingStep
-        ? @(outcome.failingStep) : @"unknown";
-    NSMutableString *detail = [NSMutableString stringWithFormat:
-        @"step %@", step];
-    if (outcome.failureErrno != 0) {
-        [detail appendFormat:@" errno %d", outcome.failureErrno];
-    }
-    if ([step isEqualToString:@"in-place-open"]) {
-        [detail appendFormat:@", after a new sibling was refused with errno %d",
-            outcome.siblingErrno];
-    } else if (outcome.stage == CCNMFileWriteStageInPlace) {
-        [detail appendFormat:@", rewriting in place because a new sibling was "
-                              "refused with errno %d", outcome.siblingErrno];
-    }
-    if ([step isEqualToString:@"write"]) {
-        [detail appendFormat:@", %lu of %lu bytes left",
-            (unsigned long)outcome.bytesRemaining,
-            (unsigned long)outcome.bytesTotal];
-    }
-    if ([step isEqualToString:@"mode"] ||
-        [step isEqualToString:@"ownership"]) {
-        [detail appendFormat:@", ended up mode %o owned by %u:%u instead of "
-                              "root:root 0644, which launchd would refuse",
-            outcome.resultMode, outcome.resultUid, outcome.resultGid];
-    }
-
-    // Surroundings come from the writer, which captured them at the moment of
-    // failure. Re-inspecting here would report a different instant and, as root,
-    // permission bits alone cannot explain a refusal to create a file: the
-    // mount state is the field that separates a read-only volume from a policy
-    // hook. Guessing between those has already cost several rounds.
-    NSMutableString *context = [NSMutableString stringWithFormat:
-        @"euid %d", (int)geteuid()];
-    NSString *directory = path.stringByDeletingLastPathComponent;
-    if (outcome.directoryStatErrno != 0) {
-        [context appendFormat:@", %@ could not be inspected (stat errno %d)",
-            directory, outcome.directoryStatErrno];
-    } else {
-        [context appendFormat:@", %@ is mode %o owned by uid %u",
-            directory, outcome.directoryMode, outcome.directoryUid];
-    }
-    if (outcome.targetStatErrno != 0) {
-        [context appendFormat:@", the plist itself is absent (stat errno %d)",
-            outcome.targetStatErrno];
-    } else {
-        [context appendFormat:@", the plist itself is mode %o owned by uid %u",
-            outcome.targetMode, outcome.targetUid];
-    }
-    if (outcome.readOnlyMount < 0) {
-        [context appendFormat:@", mount flags unavailable (errno %d)",
-            outcome.mountStatErrno];
-    } else {
-        [context appendFormat:@", the filesystem is mounted %@",
-            outcome.readOnlyMount ? @"read-only" : @"read-write"];
-    }
-
-    return CCNMSetError(error, CCNMMaintainerErrorPlist,
-        [NSString stringWithFormat:
-            @"Could not durably replace the launchd plist at %@: %@. %@.",
-            path, detail, context]);
-}
-
 BOOL CCNMPrepareMaintenanceLaunchd(NSError **error) {
-    NSString *root = CCNMMaintainerJailbreakRoot();
-    if (root.length == 0) {
+    // Verification only. The shell postinst already substituted the jailbreak
+    // root, the way roothide's own packages do, so there is nothing left to
+    // write here — and writing was the one thing this process could not do: the
+    // reporting device showed a maintainer-script child running as euid 0 whose
+    // every read succeeded and every write returned EPERM. What remains is to
+    // confirm that what shell produced is actually loadable, and to say exactly
+    // what is wrong when it is not.
+    NSString *installPrefix = CCNMMaintainerInstallPrefix();
+    if (!installPrefix) {
         return CCNMSetError(error, CCNMMaintainerErrorRoot,
-            @"The active jailbreak root could not be resolved uniquely.");
+            [NSString stringWithFormat:
+                @"The install prefix could not be determined (%@ was %@).",
+                CCNMInstallPrefixVariable,
+                getenv(CCNMInstallPrefixVariable.UTF8String)
+                    ? @"set to something that is not an absolute path"
+                    : @"not set by the maintainer script"]);
+    }
+    // The path launchd will use is a different question from the path this
+    // process reads. launchd is not redirected, so the plist must name a real
+    // absolute path even where a bare one works here.
+    NSString *expectedProgram = CCNMMaintainerLaunchdPath(
+        CCNMMaintenanceExecutableRelativePath);
+    NSString *expectedBaseline = CCNMMaintainerLaunchdPath(
+        CCNMMaintenanceBaselineRelativePath);
+    if (!expectedProgram || !expectedBaseline) {
+        return CCNMSetError(error, CCNMMaintainerErrorRoot,
+            [NSString stringWithFormat:
+                @"The launchd path prefix could not be determined (%@ was %@).",
+                CCNMLaunchdPrefixVariable,
+                getenv(CCNMLaunchdPrefixVariable.UTF8String)
+                    ? @"set to something that is not an absolute path"
+                    : @"not set by the maintainer script"]);
     }
     NSString *plistPath = CCNMMaintainerRootedPath(
         CCNMMaintenanceLaunchdRelativePath);
     NSString *executablePath = CCNMMaintainerRootedPath(
         CCNMMaintenanceExecutableRelativePath);
-    NSString *baselinePath = CCNMMaintainerRootedPath(
-        CCNMMaintenanceBaselineRelativePath);
-    // Deliberately no launchctl requirement here. This function's whole job is
-    // to leave a correct plist on disk, and that is what makes the job loadable
-    // at the next boot. Demanding launchctl would throw away the durable part of
-    // the work just because the immediate load is impossible.
-    //
-    // Report the failing item individually. A single combined message cannot be
-    // acted on: these inputs fail for unrelated reasons (unresolvable rooted
-    // path, unpacked-but-not-executable helper) and each needs a different fix.
-    if (!plistPath || !executablePath || !baselinePath) {
+    if (!plistPath || !executablePath) {
         return CCNMSetError(error, CCNMMaintainerErrorPath,
-            @"A required maintenance path could not be resolved against the jailbreak root.");
+            @"A required maintenance path could not be resolved against the install prefix.");
     }
-    // No access(2) prechecks here. On this platform access(X_OK) is routed
+    // Deliberately no launchctl requirement here. A correct plist on disk is
+    // what makes the job loadable at the next boot, so demanding launchctl would
+    // discard the durable part of the work because the immediate load failed.
+    //
+    // Report each failing input separately. They fail for unrelated reasons and
+    // each needs a different fix on the device; one combined message is not
+    // actionable.
+    //
+    // No access(2) prechecks either. On this platform access(X_OK) is routed
     // through an exec-authorization hook and returns EPERM for files that are
     // present and perfectly usable; the reporting device hit exactly that on the
     // freshly unpacked helper (errno 1) even though dpkg had just written it.
     // Readability is decided by the read that follows, and the helper is judged
-    // by its stat mode, since nothing in this function needs to execute it.
+    // by its stat mode, since nothing here needs to execute it.
     NSError *readError = nil;
     NSData *plistData = [NSData dataWithContentsOfFile:plistPath
                                               options:0
@@ -511,46 +485,51 @@ BOOL CCNMPrepareMaintenanceLaunchd(NSError **error) {
                 executablePath, (unsigned)(helperInfo.st_mode & 07777)]);
     }
 
-    NSDictionary *source = [NSPropertyListSerialization
+    NSDictionary *installed = [NSPropertyListSerialization
         propertyListWithData:plistData
                      options:NSPropertyListImmutable
                       format:NULL
                        error:NULL];
-    if (![source isKindOfClass:NSDictionary.class] ||
-        ![source[@"Label"] isEqual:CCNMMaintenanceLaunchdLabel]) {
+    if (![installed isKindOfClass:NSDictionary.class] ||
+        ![installed[@"Label"] isEqual:CCNMMaintenanceLaunchdLabel]) {
         return CCNMSetError(error, CCNMMaintainerErrorPlist,
             @"The installed launchd plist has an invalid label or format.");
     }
-    NSArray *arguments = [source[@"ProgramArguments"] isKindOfClass:NSArray.class]
-        ? source[@"ProgramArguments"] : nil;
-    NSDictionary *keepAlive = [source[@"KeepAlive"] isKindOfClass:NSDictionary.class]
-        ? source[@"KeepAlive"] : nil;
+    NSArray *arguments = [installed[@"ProgramArguments"] isKindOfClass:NSArray.class]
+        ? installed[@"ProgramArguments"] : nil;
+    NSDictionary *keepAlive = [installed[@"KeepAlive"] isKindOfClass:NSDictionary.class]
+        ? installed[@"KeepAlive"] : nil;
     NSDictionary *pathState = [keepAlive[@"PathState"] isKindOfClass:NSDictionary.class]
         ? keepAlive[@"PathState"] : nil;
-    NSString *oldProgram = [arguments.firstObject isKindOfClass:NSString.class]
+    NSString *program = [arguments.firstObject isKindOfClass:NSString.class]
         ? arguments.firstObject : nil;
-    NSString *oldPath = [pathState.allKeys.firstObject isKindOfClass:NSString.class]
+    NSString *watchedPath = [pathState.allKeys.firstObject isKindOfClass:NSString.class]
         ? pathState.allKeys.firstObject : nil;
-    NSDictionary *environment = [source[@"EnvironmentVariables"]
-        isKindOfClass:NSDictionary.class] ? source[@"EnvironmentVariables"] : nil;
+    NSDictionary *environment = [installed[@"EnvironmentVariables"]
+        isKindOfClass:NSDictionary.class] ? installed[@"EnvironmentVariables"] : nil;
     if (arguments.count != 2 || ![arguments[1] isEqual:@"--daemon"] ||
-        ![oldProgram hasSuffix:CCNMMaintenanceExecutableRelativePath] ||
-        pathState.count != 1 || ![pathState[oldPath] boolValue] ||
-        ![oldPath hasSuffix:CCNMMaintenanceBaselineRelativePath] ||
+        pathState.count != 1 || ![pathState[watchedPath] boolValue] ||
         keepAlive[@"SuccessfulExit"] != nil ||
-        ![source[@"UserName"] isEqual:@"root"] ||
+        ![installed[@"UserName"] isEqual:@"root"] ||
         ![environment[@"DISABLE_TWEAKS"] isEqual:@"1"] ||
-        source[@"RunAtLoad"] != nil) {
+        installed[@"RunAtLoad"] != nil) {
         return CCNMSetError(error, CCNMMaintainerErrorPlist,
             @"The installed launchd plist violates the reviewed maintenance contract.");
     }
-
-    NSMutableDictionary *updated = [source mutableCopy];
-    updated[@"ProgramArguments"] = @[executablePath, @"--daemon"];
-    NSMutableDictionary *updatedKeepAlive = [keepAlive mutableCopy];
-    updatedKeepAlive[@"PathState"] = @{baselinePath: @YES};
-    updated[@"KeepAlive"] = updatedKeepAlive;
-    return CCNMWritePlist(updated, plistPath, error);
+    // Exact paths, not hasSuffix:. A surviving @JBROOT@ placeholder or a
+    // doubled prefix both end with the right relative path, and both leave a job
+    // launchd cannot start. This is the check that catches a substitution that
+    // did not happen, so it has to name what it found.
+    if (![program isEqualToString:expectedProgram] ||
+        ![watchedPath isEqualToString:expectedBaseline]) {
+        return CCNMSetError(error, CCNMMaintainerErrorPlist,
+            [NSString stringWithFormat:
+                @"The installed launchd plist does not point at this install. "
+                 "Program is %@ and the watched path is %@; expected %@ and %@.",
+                program ?: @"absent", watchedPath ?: @"absent",
+                expectedProgram, expectedBaseline]);
+    }
+    return YES;
 }
 
 BOOL CCNMStopMaintenanceLaunchd(NSError **error) {
@@ -570,8 +549,11 @@ BOOL CCNMStopMaintenanceLaunchd(NSError **error) {
 }
 
 CCNMMaintenanceRegistration CCNMRegisterMaintenanceLaunchd(NSError **error) {
-    // The plist must be correct regardless of whether launchctl can run, so it
-    // is written first and its failure is the only hard failure.
+    // Preparing the plist is the only step whose failure is permanent. Once it
+    // has succeeded the durable half of the work is on disk and launchd can load
+    // the job at the next boot, so nothing after this point may report Failed:
+    // that code means "will not load now or later", which would be a false
+    // statement about a plist this function just validated.
     if (!CCNMPrepareMaintenanceLaunchd(error)) {
         return CCNMMaintenanceRegistrationFailed;
     }
@@ -581,20 +563,34 @@ CCNMMaintenanceRegistration CCNMRegisterMaintenanceLaunchd(NSError **error) {
         return CCNMMaintenanceRegistrationDeferred;
     }
     if (!CCNMStopMaintenanceLaunchd(error)) {
-        return CCNMMaintenanceRegistrationFailed;
+        return CCNMMaintenanceRegistrationRejected;
     }
-    NSString *plistPath = CCNMMaintainerRootedPath(
+    // launchctl gets the launchd-prefixed path, not the one this process reads.
+    // launchctl is a system binary outside the jailbreak root, so it is not
+    // subject to the redirection this process may be under; a bare path would
+    // resolve for us and fail for it.
+    NSString *plistPath = CCNMMaintainerLaunchdPath(
         CCNMMaintenanceLaunchdRelativePath);
+    if (!plistPath) {
+        // Unreachable in practice: prepare already required this prefix. Kept as
+        // a guard rather than an assertion, and reported as Rejected because the
+        // plist it validated is still on disk.
+        (void)CCNMSetError(error, CCNMMaintainerErrorRoot,
+            @"The launchd path prefix could not be determined, so the job cannot be bootstrapped.");
+        return CCNMMaintenanceRegistrationRejected;
+    }
     if (CCNMRunLaunchctl(@[@"bootstrap", @"system", plistPath], NO) != 0 ||
         !CCNMJobIsLoaded()) {
         (void)CCNMStopMaintenanceLaunchd(NULL);
         (void)CCNMSetError(error, CCNMMaintainerErrorLaunchctl,
             @"The maintenance launchd job could not be registered and verified.");
-        return CCNMMaintenanceRegistrationFailed;
+        return CCNMMaintenanceRegistrationRejected;
     }
+    // Read through the install prefix: this is our own stat, not launchd's.
     NSString *baselinePath = CCNMMaintainerRootedPath(
         CCNMMaintenanceBaselineRelativePath);
-    if ([[NSFileManager defaultManager] fileExistsAtPath:baselinePath]) {
+    if (baselinePath &&
+        [[NSFileManager defaultManager] fileExistsAtPath:baselinePath]) {
         NSString *target = [@"system/"
             stringByAppendingString:CCNMMaintenanceLaunchdLabel];
         if (CCNMRunLaunchctl(@[@"kickstart", @"-k", target], NO) != 0 ||
@@ -602,7 +598,7 @@ CCNMMaintenanceRegistration CCNMRegisterMaintenanceLaunchd(NSError **error) {
             (void)CCNMStopMaintenanceLaunchd(NULL);
             (void)CCNMSetError(error, CCNMMaintainerErrorLaunchctl,
                 @"The policy-scoped maintenance job could not be started.");
-            return CCNMMaintenanceRegistrationFailed;
+            return CCNMMaintenanceRegistrationRejected;
         }
     }
     return CCNMMaintenanceRegistrationActive;
