@@ -1,6 +1,7 @@
 #import "CCNMMaintainerEnvironment.h"
 
 #import "CCNMLaunchctlProbe.h"
+#import "CCNMPlistWrite.h"
 
 #import <dispatch/dispatch.h>
 #import <errno.h>
@@ -384,46 +385,74 @@ static BOOL CCNMWritePlist(NSDictionary *plist,
     if (!data) {
         return NO;
     }
-    NSString *temporary = [path stringByAppendingFormat:
-        @".networkmanager.%d.part", getpid()];
-    int descriptor = open(temporary.fileSystemRepresentation,
-        O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
-    if (descriptor < 0) {
-        return CCNMSetError(error, CCNMMaintainerErrorPlist,
-            @"Could not create the launchd plist replacement.");
+
+    CCNMFileWriteOutcome outcome;
+    CCNMReplaceFileContents(path.fileSystemRepresentation, data.bytes,
+                            data.length, 0, 0, 0644, &outcome);
+    if (outcome.ok) {
+        return YES;
     }
-    const uint8_t *bytes = data.bytes;
-    NSUInteger remaining = data.length;
-    BOOL success = YES;
-    while (remaining > 0) {
-        ssize_t written = write(descriptor, bytes, remaining);
-        if (written < 0 && errno == EINTR) {
-            continue;
-        }
-        if (written <= 0) {
-            success = NO;
-            break;
-        }
-        bytes += written;
-        remaining -= (NSUInteger)written;
+
+    NSString *step = outcome.failingStep
+        ? @(outcome.failingStep) : @"unknown";
+    NSMutableString *detail = [NSMutableString stringWithFormat:
+        @"step %@", step];
+    if (outcome.failureErrno != 0) {
+        [detail appendFormat:@" errno %d", outcome.failureErrno];
     }
-    if (success) {
-        success = fchmod(descriptor, 0644) == 0 &&
-            fchown(descriptor, 0, 0) == 0 && fsync(descriptor) == 0;
+    if ([step isEqualToString:@"in-place-open"]) {
+        [detail appendFormat:@", after a new sibling was refused with errno %d",
+            outcome.siblingErrno];
+    } else if (outcome.stage == CCNMFileWriteStageInPlace) {
+        [detail appendFormat:@", rewriting in place because a new sibling was "
+                              "refused with errno %d", outcome.siblingErrno];
     }
-    if (close(descriptor) != 0) {
-        success = NO;
+    if ([step isEqualToString:@"write"]) {
+        [detail appendFormat:@", %lu of %lu bytes left",
+            (unsigned long)outcome.bytesRemaining,
+            (unsigned long)outcome.bytesTotal];
     }
-    if (success) {
-        success = rename(temporary.fileSystemRepresentation,
-            path.fileSystemRepresentation) == 0;
+    if ([step isEqualToString:@"mode"] ||
+        [step isEqualToString:@"ownership"]) {
+        [detail appendFormat:@", ended up mode %o owned by %u:%u instead of "
+                              "root:root 0644, which launchd would refuse",
+            outcome.resultMode, outcome.resultUid, outcome.resultGid];
     }
-    if (!success) {
-        (void)unlink(temporary.fileSystemRepresentation);
-        return CCNMSetError(error, CCNMMaintainerErrorPlist,
-            @"Could not durably replace the launchd plist.");
+
+    // Surroundings come from the writer, which captured them at the moment of
+    // failure. Re-inspecting here would report a different instant and, as root,
+    // permission bits alone cannot explain a refusal to create a file: the
+    // mount state is the field that separates a read-only volume from a policy
+    // hook. Guessing between those has already cost several rounds.
+    NSMutableString *context = [NSMutableString stringWithFormat:
+        @"euid %d", (int)geteuid()];
+    NSString *directory = path.stringByDeletingLastPathComponent;
+    if (outcome.directoryStatErrno != 0) {
+        [context appendFormat:@", %@ could not be inspected (stat errno %d)",
+            directory, outcome.directoryStatErrno];
+    } else {
+        [context appendFormat:@", %@ is mode %o owned by uid %u",
+            directory, outcome.directoryMode, outcome.directoryUid];
     }
-    return YES;
+    if (outcome.targetStatErrno != 0) {
+        [context appendFormat:@", the plist itself is absent (stat errno %d)",
+            outcome.targetStatErrno];
+    } else {
+        [context appendFormat:@", the plist itself is mode %o owned by uid %u",
+            outcome.targetMode, outcome.targetUid];
+    }
+    if (outcome.readOnlyMount < 0) {
+        [context appendFormat:@", mount flags unavailable (errno %d)",
+            outcome.mountStatErrno];
+    } else {
+        [context appendFormat:@", the filesystem is mounted %@",
+            outcome.readOnlyMount ? @"read-only" : @"read-write"];
+    }
+
+    return CCNMSetError(error, CCNMMaintainerErrorPlist,
+        [NSString stringWithFormat:
+            @"Could not durably replace the launchd plist at %@: %@. %@.",
+            path, detail, context]);
 }
 
 BOOL CCNMPrepareMaintenanceLaunchd(NSError **error) {
