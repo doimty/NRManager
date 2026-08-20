@@ -113,7 +113,34 @@ class UninstallGuardTests(unittest.TestCase):
         register = source.index("CCNMRegisterMaintenanceLaunchd(&launchdError)")
         self.assertLess(clear, cleared_check)
         self.assertLess(cleared_check, register)
-        self.assertIn("return CCNMPostinstBlocked", source[register:])
+        # Policy-state safety stays fail-closed: an uncleared removal guard must
+        # still block configure, because leaving it armed would let the modem
+        # policy be enabled while the package believes removal was approved.
+        self.assertIn("return CCNMPostinstBlocked", source[cleared_check:register])
+
+    def test_postinst_launchd_registration_is_non_fatal(self):
+        # The maintenance daemon only provides automatic serving-state
+        # monitoring. It owns no policy or modem state, so a host where
+        # launchctl/plist/executable paths are unavailable must still get a
+        # fully configured package instead of a permanently half-installed one.
+        source = POSTINST_SOURCE.read_text()
+        register = source.index("CCNMRegisterMaintenanceLaunchd(&launchdError)")
+        tail = source[register:]
+        self.assertNotIn("return CCNMPostinstBlocked", tail)
+        self.assertIn("warning", tail)
+        self.assertIn("return CCNMInstallAllowed", tail)
+
+    def test_prerm_launchd_stop_is_non_fatal(self):
+        # Stopping the daemon is best-effort for the same reason. Removal must
+        # remain gated on verified policy restore, not on launchctl success.
+        source = PRERM_SOURCE.read_text()
+        stop = source.index("CCNMStopMaintenanceLaunchd(&launchdError)")
+        policy_read = source.index("CCNMReadN78PolicyState()")
+        self.assertLess(stop, policy_read)
+        self.assertNotIn("return CCNMPrermBlocked", source[stop:policy_read])
+        self.assertIn("warning", source[stop:policy_read])
+        # The policy restore gate itself is still fail-closed.
+        self.assertIn("return CCNMPrermBlocked", source[policy_read:])
 
     def test_launchd_owner_is_fail_closed_and_scheme_aware(self):
         source = MAINTAINER_SOURCE.read_text()
