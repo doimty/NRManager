@@ -291,7 +291,11 @@ static int CCNMRunLaunchctl(NSArray<NSString *> *arguments, BOOL quiet) {
     }
 
     NSArray<NSString *> *order = CCNMLaunchctlProbeOrder();
+    // Two buckets. A path that simply does not exist carries no information
+    // beyond "not here", and listing twenty of them buries the two entries that
+    // matter. Paths that exist and still could not be run are reported in full.
     NSMutableArray<NSString *> *failures = [NSMutableArray array];
+    NSUInteger absent = 0;
     NSUInteger position = 0;
     for (NSString *candidate in order) {
         BOOL pathSourced = position >= CCNMLaunchctlPathSourcedFrom;
@@ -299,6 +303,10 @@ static int CCNMRunLaunchctl(NSArray<NSString *> *arguments, BOOL quiet) {
         int probeErrno = 0;
         if (CCNMLaunchctlCandidateIsUnusable(
                 candidate.fileSystemRepresentation, pathSourced, &probeErrno)) {
+            if (probeErrno == ENOENT || probeErrno == ENOTDIR) {
+                absent++;
+                continue;
+            }
             if (failures.count < CCNMLaunchctlReportLimit) {
                 [failures addObject:[NSString stringWithFormat:
                     @"%@(stat errno %d)", candidate, probeErrno]];
@@ -318,12 +326,26 @@ static int CCNMRunLaunchctl(NSArray<NSString *> *arguments, BOOL quiet) {
         }
     }
 
-    NSString *suffix = order.count > failures.count
-        ? [NSString stringWithFormat:@" and %lu more",
-               (unsigned long)(order.count - failures.count)]
-        : @"";
-    CCNMLaunchctlProbeReport = [NSString stringWithFormat:@"probed %@%@",
-        [failures componentsJoinedByString:@", "], suffix];
+    if (failures.count == 0) {
+        CCNMLaunchctlProbeReport = [NSString stringWithFormat:
+            @"no launchctl exists at any of the %lu probed paths",
+            (unsigned long)order.count];
+        CCNMLaunchctlResolutionFailed = YES;
+        return -1;
+    }
+    NSMutableString *report = [NSMutableString stringWithFormat:@"probed %@",
+        [failures componentsJoinedByString:@", "]];
+    NSUInteger reported = failures.count + absent;
+    if (order.count > reported) {
+        [report appendFormat:@" and %lu more",
+            (unsigned long)(order.count - reported)];
+    }
+    if (absent > 0) {
+        [report appendFormat:@"; %lu other probed path%@ do%@ not exist",
+            (unsigned long)absent, absent == 1 ? @"" : @"s",
+            absent == 1 ? @"es" : @""];
+    }
+    CCNMLaunchctlProbeReport = report;
     CCNMLaunchctlResolutionFailed = YES;
     return -1;
 }
@@ -428,20 +450,43 @@ BOOL CCNMPrepareMaintenanceLaunchd(NSError **error) {
         return CCNMSetError(error, CCNMMaintainerErrorPath,
             @"A required maintenance path could not be resolved against the jailbreak root.");
     }
-    if (access(plistPath.fileSystemRepresentation, R_OK) != 0) {
+    // No access(2) prechecks here. On this platform access(X_OK) is routed
+    // through an exec-authorization hook and returns EPERM for files that are
+    // present and perfectly usable; the reporting device hit exactly that on the
+    // freshly unpacked helper (errno 1) even though dpkg had just written it.
+    // Readability is decided by the read that follows, and the helper is judged
+    // by its stat mode, since nothing in this function needs to execute it.
+    NSError *readError = nil;
+    NSData *plistData = [NSData dataWithContentsOfFile:plistPath
+                                              options:0
+                                                error:&readError];
+    if (!plistData) {
         return CCNMSetError(error, CCNMMaintainerErrorPath,
             [NSString stringWithFormat:
-                @"The launchd plist is not readable at %@ (errno %d).",
-                plistPath, errno]);
+                @"The launchd plist is not readable at %@ (%@).",
+                plistPath,
+                readError.localizedDescription ?: @"unknown read failure"]);
     }
-    if (access(executablePath.fileSystemRepresentation, X_OK) != 0) {
+    struct stat helperInfo;
+    if (stat(executablePath.fileSystemRepresentation, &helperInfo) != 0) {
         return CCNMSetError(error, CCNMMaintainerErrorPath,
             [NSString stringWithFormat:
-                @"The maintenance helper is not executable at %@ (errno %d).",
+                @"The maintenance helper is missing at %@ (stat errno %d).",
                 executablePath, errno]);
     }
+    if (!S_ISREG(helperInfo.st_mode) ||
+        (helperInfo.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) == 0) {
+        return CCNMSetError(error, CCNMMaintainerErrorPath,
+            [NSString stringWithFormat:
+                @"The maintenance helper is not executable at %@ (mode %o).",
+                executablePath, (unsigned)(helperInfo.st_mode & 07777)]);
+    }
 
-    NSDictionary *source = [NSDictionary dictionaryWithContentsOfFile:plistPath];
+    NSDictionary *source = [NSPropertyListSerialization
+        propertyListWithData:plistData
+                     options:NSPropertyListImmutable
+                      format:NULL
+                       error:NULL];
     if (![source isKindOfClass:NSDictionary.class] ||
         ![source[@"Label"] isEqual:CCNMMaintenanceLaunchdLabel]) {
         return CCNMSetError(error, CCNMMaintainerErrorPlist,

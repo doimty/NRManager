@@ -467,6 +467,33 @@ class LaunchctlDiagnosticsTests(unittest.TestCase):
         self.assertNotIn("cleaned up manually", prerm)
         self.assertIn("will not return after a reboot", prerm)
 
+    def test_no_access_call_survives_anywhere_in_the_maintainer(self):
+        # access(2) as a usability predicate is banned in this file. The device
+        # returned EPERM from access(X_OK) for both the real launchctl binary and
+        # the freshly unpacked helper, so any remaining call is a latent repeat
+        # of the same bug. Comments explaining that are fine.
+        source = MAINTAINER_SOURCE.read_text()
+        code = "\n".join(
+            line for line in source.splitlines()
+            if not line.lstrip().startswith("//")
+        )
+        self.assertNotIn("access(", code)
+
+    def test_absent_paths_are_summarised_rather_than_listed(self):
+        # The first shipped report listed twenty paths, eighteen of which were
+        # plain ENOENT, and buried the two spawn failures that carried the
+        # diagnosis. Existing-but-unrunnable paths are reported individually;
+        # nonexistent ones are counted.
+        source = MAINTAINER_SOURCE.read_text()
+        body = source[source.index("static int CCNMRunLaunchctl"):
+                      source.index("static BOOL CCNMLaunchctlIsUsable")]
+        self.assertIn("probeErrno == ENOENT", body)
+        self.assertIn("absent++", body)
+        self.assertIn("do%@ not exist", body)
+        # A total absence needs its own wording; "probed " with an empty list is
+        # not a sentence.
+        self.assertIn("no launchctl exists at any of the %lu probed paths", body)
+
     def test_a_failed_resolution_is_not_retried(self):
         # Resolution spawns real processes. Retrying on every subsequent call
         # would multiply the spawn attempts and rebuild the same report, and

@@ -239,9 +239,20 @@ class UninstallGuardTests(unittest.TestCase):
         self.assertIn("could not be resolved against the jailbreak root", body)
         self.assertIn("is not readable at %@", body)
         self.assertIn("is not executable at %@", body)
-        # Diagnostics must name the path and errno so a device report is enough.
-        self.assertIn("plistPath, errno", body)
-        self.assertIn("executablePath, errno", body)
+        self.assertIn("is missing at %@", body)
+        # Diagnostics must name the path and the reason so a device report is
+        # enough. access(2) is deliberately absent: on this platform
+        # access(X_OK) returned EPERM for the freshly unpacked helper, so mode
+        # bits and the actual read are the only trustworthy evidence. The
+        # file-wide ban is enforced in tests/test_launchctl_probe_order.py.
+        code = "\n".join(
+            line for line in body.splitlines()
+            if not line.lstrip().startswith("//")
+        )
+        self.assertNotIn("access(", code)
+        self.assertIn("stat errno %d", body)
+        self.assertIn("mode %o", body)
+        self.assertIn("readError.localizedDescription", body)
         # The plist contract checks stay after the path checks.
         self.assertLess(body.index("is not executable at %@"),
                         body.index("CCNMMaintainerErrorPlist"))
