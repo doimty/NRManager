@@ -212,24 +212,17 @@ class UninstallGuardTests(unittest.TestCase):
             self.assertIn(token, source)
         self.assertNotIn("|| true", source)
 
-    def test_launchctl_lookup_falls_back_to_system_paths(self):
-        # A jailbreak bootstrap is not obligated to ship launchctl under its
-        # own root. Resolving only rooted candidates made registration fail on
-        # real devices, so the Apple-signed system copy must remain reachable.
+    def test_launchctl_lookup_covers_every_filesystem_view(self):
+        # A jailbreak bootstrap is not obligated to ship launchctl under its own
+        # root, and on the reported device /bin/launchctl was a dangling symlink
+        # while /usr/bin/launchctl was the real binary. The ordering itself is
+        # covered behaviorally in tests/test_launchctl_probe_order.py; this only
+        # pins that the maintainer delegates to it rather than reintroducing an
+        # inline candidate list.
         source = MAINTAINER_SOURCE.read_text()
-        body = source[source.index("static NSString *CCNMLaunchctlPath(void)"):
-                      source.index("static int CCNMRunLaunchctl")]
-        self.assertIn("stringByAppendingPathComponent:relativeCandidates[index]", body)
-        # roothide's jbroot-aware launchctl lives in basebin, not bin/sbin.
-        self.assertIn('@"/basebin/launchctl"', body)
-        self.assertLess(body.index('@"/basebin/launchctl"'),
-                        body.index('@"/bin/launchctl"'))
-        # The rooted lookup must not be able to abort the search early.
-        self.assertNotIn("return nil;\n    }\n    for", body)
-        rooted = body.index("stringByAppendingPathComponent:relativeCandidates[index]")
-        bare = body.index("NSString *candidate = relativeCandidates[index];")
-        self.assertLess(rooted, bare, "rooted launchctl must be preferred over system")
-        self.assertEqual(body.count("access(candidate.fileSystemRepresentation, X_OK) == 0"), 2)
+        self.assertIn("CCNMBuildLaunchctlProbeOrder", source)
+        self.assertNotIn("relativeCandidates[index]", source)
+        self.assertIn("CCNMLaunchctlProbe.h", source)
 
     def test_prepare_reports_each_missing_input_separately(self):
         # One combined "launchctl, plist, executable, or policy path" message is
@@ -242,7 +235,7 @@ class UninstallGuardTests(unittest.TestCase):
             "A required launchctl, plist, executable, or policy path is unavailable.",
             body)
         self.assertIn("CCNMMaintainerErrorLaunchctl", body)
-        self.assertIn("launchctl was not found", body)
+        self.assertIn("CCNMLaunchctlUnavailableMessage()", body)
         self.assertIn("could not be resolved against the jailbreak root", body)
         self.assertIn("is not readable at %@", body)
         self.assertIn("is not executable at %@", body)

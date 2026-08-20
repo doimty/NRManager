@@ -1,5 +1,7 @@
 #import "CCNMMaintainerEnvironment.h"
 
+#import "CCNMLaunchctlProbe.h"
+
 #import <dispatch/dispatch.h>
 #import <errno.h>
 #import <fcntl.h>
@@ -143,39 +145,87 @@ NSString *CCNMMaintainerRootedPath(NSString *path) {
     return root.length > 0 ? [root stringByAppendingPathComponent:path] : nil;
 }
 
-static NSString *CCNMLaunchctlPath(void) {
-    // launchctl is an Apple-signed system binary. A jailbreak root may ship a
-    // wrapper that translates jbroot paths, so prefer it when present, but the
-    // real-root system copy is the authoritative fallback: a procursus-style
-    // bootstrap is not required to provide launchctl at all, and treating its
-    // absence as fatal previously broke maintenance registration entirely.
-    static NSString *const relativeCandidates[] = {
-        // roothide keeps its jbroot-aware launchctl in basebin, outside the
-        // usual bin/sbin layout, so probe it before the bootstrap paths.
-        @"/basebin/launchctl",
-        @"/bin/launchctl", @"/sbin/launchctl",
-        @"/usr/bin/launchctl", @"/usr/sbin/launchctl"
-    };
-    static const size_t candidateCount =
-        sizeof(relativeCandidates) / sizeof(relativeCandidates[0]);
+// launchctl lookup.
+//
+// This has now failed twice on a real roothide device while the same bare path
+// was executable from the user's shell, which means the interesting variable is
+// not the candidate list but the filesystem *view* the maintainer script runs
+// in. The ordering therefore lives in CCNMLaunchctlProbe.c, where it is host
+// testable, and this file only performs the access() probes and reports them.
+//
+// A lookup failure must be diagnosable from the dpkg log alone instead of
+// costing another build round, so every probe is recorded with its errno.
 
+// Bounds both the probe table and the reported list so one failed lookup cannot
+// flood dpkg output. PATH contributes at most a handful of directories.
+static const size_t CCNMLaunchctlProbeCapacity = 64;
+static const NSUInteger CCNMLaunchctlReportLimit = 24;
+
+static NSArray<NSString *> *CCNMLaunchctlProbeOrder(void) {
+    char **buffer = calloc(CCNMLaunchctlProbeCapacity, sizeof(char *));
+    if (!buffer) {
+        return @[];
+    }
     NSString *root = CCNMMaintainerJailbreakRoot();
-    if (root.length > 0) {
-        for (size_t index = 0; index < candidateCount; index++) {
-            NSString *candidate =
-                [root stringByAppendingPathComponent:relativeCandidates[index]];
+    size_t count = CCNMBuildLaunchctlProbeOrder(
+        root.length > 0 ? root.fileSystemRepresentation : NULL,
+        getenv("PATH"), buffer, CCNMLaunchctlProbeCapacity);
+    NSMutableArray<NSString *> *paths = [NSMutableArray arrayWithCapacity:count];
+    for (size_t index = 0; index < count; index++) {
+        NSString *candidate = [NSString stringWithUTF8String:buffer[index]];
+        if (candidate) {
+            [paths addObject:candidate];
+        }
+        free(buffer[index]);
+    }
+    free(buffer);
+    return paths;
+}
+
+static NSString *CCNMLaunchctlResolution(NSString **report) {
+    static NSString *resolved;
+    static NSString *probeReport;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSArray<NSString *> *order = CCNMLaunchctlProbeOrder();
+        NSMutableArray<NSString *> *failures = [NSMutableArray array];
+        for (NSString *candidate in order) {
+            errno = 0;
             if (access(candidate.fileSystemRepresentation, X_OK) == 0) {
-                return candidate;
+                resolved = candidate;
+                break;
+            }
+            if (failures.count < CCNMLaunchctlReportLimit) {
+                [failures addObject:[NSString stringWithFormat:@"%@(errno %d)",
+                    candidate, errno]];
             }
         }
-    }
-    for (size_t index = 0; index < candidateCount; index++) {
-        NSString *candidate = relativeCandidates[index];
-        if (access(candidate.fileSystemRepresentation, X_OK) == 0) {
-            return candidate;
+        if (!resolved) {
+            NSString *suffix = order.count > failures.count
+                ? [NSString stringWithFormat:@" and %lu more",
+                       (unsigned long)(order.count - failures.count)]
+                : @"";
+            probeReport = [NSString stringWithFormat:@"probed %@%@",
+                [failures componentsJoinedByString:@", "], suffix];
         }
+    });
+    if (report) {
+        *report = probeReport;
     }
-    return nil;
+    return resolved;
+}
+
+static NSString *CCNMLaunchctlPath(void) {
+    return CCNMLaunchctlResolution(NULL);
+}
+
+// Builds the user-facing message for a failed lookup, including the probe table.
+static NSString *CCNMLaunchctlUnavailableMessage(void) {
+    NSString *report = nil;
+    (void)CCNMLaunchctlResolution(&report);
+    return [NSString stringWithFormat:
+        @"launchctl was not found in any known location; %@.",
+        report.length > 0 ? report : @"no candidate path was probed"];
 }
 
 static int CCNMRunLaunchctl(NSArray<NSString *> *arguments, BOOL quiet) {
@@ -300,7 +350,7 @@ BOOL CCNMPrepareMaintenanceLaunchd(NSError **error) {
     // needs a different fix on the device.
     if (!launchctl) {
         return CCNMSetError(error, CCNMMaintainerErrorLaunchctl,
-            @"launchctl was not found under the jailbreak root or the system paths.");
+            CCNMLaunchctlUnavailableMessage());
     }
     if (!plistPath || !executablePath || !baselinePath) {
         return CCNMSetError(error, CCNMMaintainerErrorPath,
@@ -360,7 +410,7 @@ BOOL CCNMPrepareMaintenanceLaunchd(NSError **error) {
 BOOL CCNMStopMaintenanceLaunchd(NSError **error) {
     if (!CCNMLaunchctlPath()) {
         return CCNMSetError(error, CCNMMaintainerErrorLaunchctl,
-            @"launchctl is unavailable.");
+            CCNMLaunchctlUnavailableMessage());
     }
     if (!CCNMJobIsLoaded()) {
         return YES;
