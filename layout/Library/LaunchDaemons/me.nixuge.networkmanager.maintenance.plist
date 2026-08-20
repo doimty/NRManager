@@ -12,7 +12,7 @@
   <dict>
     <key>PathState</key>
     <dict>
-      <key>@JBROOT@/var/mobile/Library/Preferences/me.nixuge.networkmanager.n78-policy.baseline.plist</key>
+      <key>@PLIST_PREFIX@/var/mobile/Library/Preferences/me.nixuge.networkmanager.n78-policy.baseline.plist</key>
       <true/>
     </dict>
   </dict>
@@ -22,7 +22,7 @@
   <string>Background</string>
   <key>ProgramArguments</key>
   <array>
-    <string>@JBROOT@/usr/libexec/networkmanager-maintenance</string>
+    <string>@PLIST_PREFIX@/usr/libexec/networkmanager-maintenance</string>
     <string>--daemon</string>
   </array>
   <key>StandardErrorPath</key>

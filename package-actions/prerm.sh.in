@@ -15,6 +15,11 @@
 
 SCHEME_PREFIX='@PREFIX@'
 NEEDS_JBROOT='@NEEDS_JBROOT@'
+# What must literally appear inside the launchd plist, decided at package time.
+# Empty on roothide because launchctl prepends the jailbreak root itself; /var/jb
+# on rootless because nothing there rewrites anything. See postinst.sh.in for the
+# launchctl behaviour this rests on.
+LAUNCHD_PREFIX='@LAUNCHD_PREFIX@'
 
 GUARD_RELATIVE='/usr/libexec/networkmanager-removal-guard'
 OVERRIDE_RELATIVE='/var/lib/dpkg/info/me.nixuge.networkmanager.prerm'
@@ -68,11 +73,9 @@ if [ -n "$NEEDS_JBROOT" ]; then
     fi
     PREFIX_PRIMARY=''
     PREFIX_FALLBACK="$JBROOT_PREFIX"
-    LAUNCHD_PREFIX="$JBROOT_PREFIX"
 else
     PREFIX_PRIMARY="$SCHEME_PREFIX"
     PREFIX_FALLBACK=''
-    LAUNCHD_PREFIX="$SCHEME_PREFIX"
 fi
 
 describe_prefix() {
@@ -131,6 +134,10 @@ override_hint() {
     fi
 }
 
+warn() {
+    printf 'NetworkManagerReborn: warning — %s\n' "$1" >&2
+}
+
 block() {
     printf 'NetworkManagerReborn: removal blocked; %s\n' "$1" >&2
     printf '  Reinstall the package to restore the guard, or delete %s and retry to override.\n' \
@@ -144,21 +151,45 @@ fi
 
 guard="$RESOLVED_PATH"
 
-# Hand both prefixes over rather than letting the guard re-derive them. On
-# roothide the guard is invoked through a bare path, so its own executable path
-# carries no .jbroot- component and a scan would look inside the jailbreak root
-# instead of at it. A guard reading the wrong root would report a clean policy
-# state and authorize removal of a package that still holds a forced band
-# configuration, which is exactly what this gate exists to prevent.
+# Hand both prefixes over rather than letting the guard re-derive them: it is
+# invoked through a bare path, so its own executable path carries no .jbroot-
+# component and there is nothing to derive from.
 #
-# The install prefix may legitimately be empty; the launchd prefix may not, so it
-# is exported only when known.
-NETWORKMANAGER_INSTALL_PREFIX="$RESOLVED_PREFIX"
-export NETWORKMANAGER_INSTALL_PREFIX
-if [ -n "$LAUNCHD_PREFIX" ]; then
-    NETWORKMANAGER_LAUNCHD_PREFIX="$LAUNCHD_PREFIX"
-    export NETWORKMANAGER_LAUNCHD_PREFIX
+# NETWORKMANAGER_INSTALL_PREFIX is what the guard prepends to open a file, and it
+# must be the real jailbreak root -- not the prefix this script resolved for
+# itself. Exporting the latter was a real bug with its worst consequence right
+# here. This shell is path-redirected, so its `/` already is the jailbreak root and
+# RESOLVED_PREFIX is legitimately empty; the guard is not redirected, so the same
+# bare path lands on the real root, every policy record reads as absent, and
+# "absent" is indistinguishable from "no band configuration was ever applied".
+# That is exactly the conclusion this gate exists to refuse to reach by accident:
+# it would authorize removal while a forced band configuration is still live, with
+# the Settings UI that could restore it going away in the same transaction.
+#
+# An empty prefix is a statement about this shell, not about the filesystem, and it
+# must not cross a process boundary. So it is left unset when the jailbreak root is
+# unknown, and the guard fails closed on an unresolved prefix.
+#
+# NETWORKMANAGER_LAUNCHD_PREFIX is a different question -- what must literally
+# appear inside the plist -- and it is legitimately empty on roothide, so it is
+# always exported. Empty and unset are distinct answers to the guard.
+# Whether the prefix was handed over is stated either way. This is the
+# fail-closed direction, so an unset install prefix is about to turn into a
+# blocked removal, and the reason has to be in the dpkg log next to the block
+# message rather than inferable only from the guard's own wording.
+if [ -n "$NEEDS_JBROOT" ]; then
+    if [ -n "$JBROOT_PREFIX" ]; then
+        NETWORKMANAGER_INSTALL_PREFIX="$JBROOT_PREFIX"
+        export NETWORKMANAGER_INSTALL_PREFIX
+    else
+        warn "the jailbreak root ${JBROOT_STATUS}, so the guard was given no install prefix and will fail closed rather than read the wrong root."
+    fi
+else
+    NETWORKMANAGER_INSTALL_PREFIX="$SCHEME_PREFIX"
+    export NETWORKMANAGER_INSTALL_PREFIX
 fi
+NETWORKMANAGER_LAUNCHD_PREFIX="$LAUNCHD_PREFIX"
+export NETWORKMANAGER_LAUNCHD_PREFIX
 
 "$guard" "$@"
 status=$?

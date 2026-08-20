@@ -20,6 +20,9 @@ BASELINE = (
     "/var/mobile/Library/Preferences/"
     "me.nixuge.networkmanager.n78-policy.baseline.plist"
 )
+# What the repo template carries where a lane prefix belongs. Invalid on both
+# lanes by design, so a before-package patcher that never ran fails both.
+SENTINEL = "@PLIST_PREFIX@"
 
 
 class MaintenanceDaemonSkeletonTests(unittest.TestCase):
@@ -145,9 +148,13 @@ class MaintenanceDaemonSkeletonTests(unittest.TestCase):
         self.assertEqual(payload["Label"], "me.nixuge.networkmanager.maintenance")
         self.assertEqual(payload["UserName"], "root")
         self.assertEqual(payload["EnvironmentVariables"]["DISABLE_TWEAKS"], "1")
-        self.assertEqual(payload["ProgramArguments"], ["@JBROOT@" + PROGRAM, "--daemon"])
+        # The repo template carries a sentinel where the prefix belongs, not a
+        # lane prefix. @PLIST_PREFIX@ is invalid on both lanes on purpose: it used
+        # to be @JBROOT@, which made a skipped before-package patch look correct
+        # on roothide and only broke rootless.
+        self.assertEqual(payload["ProgramArguments"], [SENTINEL + PROGRAM, "--daemon"])
         self.assertEqual(payload["KeepAlive"], {
-            "PathState": {"@JBROOT@" + BASELINE: True},
+            "PathState": {SENTINEL + BASELINE: True},
         })
         self.assertNotIn("RunAtLoad", payload)
         self.assertNotIn("SuccessfulExit", payload["KeepAlive"])
@@ -155,7 +162,11 @@ class MaintenanceDaemonSkeletonTests(unittest.TestCase):
     def test_staging_patcher_emits_exact_paths_for_both_schemes(self):
         root_makefile = ROOT_MAKEFILE.read_text()
         self.assertIn("scripts/patch-maintenance-launchd.py", root_makefile)
-        for scheme, prefix in (("rootless", "/var/jb"), ("roothide", "@JBROOT@")):
+        # roothide gets bare paths: its launchctl rewrites every absolute path in
+        # the plist as jbroot(path) before launchd sees it, so a prefix written
+        # here would be doubled. rootless gets /var/jb because nothing there
+        # rewrites anything.
+        for scheme, prefix in (("rootless", "/var/jb"), ("roothide", "")):
             with self.subTest(scheme=scheme), tempfile.TemporaryDirectory() as temporary:
                 staged = Path(temporary)
                 target = staged / "Library" / "LaunchDaemons" / LAUNCHD.name
@@ -172,8 +183,12 @@ class MaintenanceDaemonSkeletonTests(unittest.TestCase):
                     check=False,
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
-                with target.open("rb") as handle:
-                    payload = plistlib.load(handle)
+                raw = target.read_bytes()
+                # Nothing on the device rewrites this file any more, so a
+                # surviving sentinel would be permanent.
+                self.assertNotIn(SENTINEL.encode(), raw)
+                self.assertNotIn(b"@JBROOT@", raw)
+                payload = plistlib.loads(raw)
                 self.assertEqual(payload["ProgramArguments"][0], prefix + PROGRAM)
                 self.assertEqual(payload["KeepAlive"]["PathState"], {
                     prefix + BASELINE: True,

@@ -11,27 +11,48 @@
 # on every child exec, and saw bare paths such as /bin/launchctl as ENOENT. That
 # is a process-level restriction, not permissions and not a read-only mount.
 #
-# roothide's own packages do this work in shell. Their bootstrapd postinst is:
+# So the shell half owns everything that depends on being the redirected process:
+# resolving the jailbreak root, and handing it to a helper that is not redirected.
 #
-#   plutil -xml /basebin/LaunchDaemons/com.roothide.bootstrap.bootstrapd.plist
-#   sed -i "s|@JBROOT@|$(jbroot)|g" /basebin/LaunchDaemons/...
+# What this script no longer does
+# -------------------------------
+# It used to rewrite the launchd plist, substituting a @JBROOT@ placeholder with
+# the live jailbreak root, on the grounds that launchd is not redirected and so
+# needs a real absolute path. That was wrong on roothide, and it was the cause of
+# the doubled path the reporting device showed:
 #
-# Note the two different prefixes there: a bare /basebin path is being edited,
-# while $(jbroot) supplies the absolute path written into the file. launchd is
-# not subject to any redirection, so the plist must name a real absolute path;
-# the script editing it may or may not be redirected.
+#   program = <jbroot>/<jbroot>/usr/libexec/networkmanager-maintenance
 #
-# Which of those this script gets is not settled by reading the bootstrap
-# source. exechook.c decides injection with isSubPathOf(path, jbroot("/")), and
-# whether dpkg hands the maintainer script a bare or a jbroot-absolute path is
-# not determinable from source alone. So nothing here assumes: each installed
-# file is resolved against both candidate prefixes and the one that matched is
-# named in the install log, which turns the open question into evidence.
+# roothide's launchctl is itself redirected and patches the plist on load. Its
+# _patch_plist walks every path-bearing key and rewrites each value that starts
+# with '/' as jbroot(value), guarding re-entry only with a __Patched flag it sets
+# itself -- it never checks whether the value already carries a jailbreak root.
+# A plist that already holds one therefore gets a second.
+#
+# The plist now ships with bare paths on roothide and launchctl supplies the
+# root, which is what the two ordinary daemons in the bootstrap tarball do
+# (us.diatr.shshd.plist names /bin/sh, com.apple.atrun.plist names
+# /usr/libexec/atrun). The @JBROOT@ precedent came from bootstrapd's own postinst,
+# and it does not transfer: basebin daemons are loaded by bootstrapd through the
+# native API rather than by the patched launchctl.
+#
+# Independent second reason: the jbroot identifier changes on every re-jailbreak.
+# A baked-in absolute path expires at the next boot into a new bootstrap, and the
+# daemon stops being found. Only the bare form survives that.
+#
+# Consequence worth stating plainly: no dependency on plutil, on grep's binary
+# behaviour, or on a textual rewrite of a length-prefixed binary plist. Those
+# were three separate ways to corrupt or silently skip the file, and all three
+# are gone with the substitution that needed them.
 
 SCHEME_PREFIX='@PREFIX@'
 NEEDS_JBROOT='@NEEDS_JBROOT@'
+# What must literally appear inside the plist, decided at package time. Empty on
+# roothide because launchctl prepends the root; /var/jb on rootless because
+# nothing there rewrites anything. Handed to the guard so it can compare, not so
+# it can open anything -- see the export block at the bottom.
+LAUNCHD_PREFIX='@LAUNCHD_PREFIX@'
 
-PLIST_RELATIVE='/Library/LaunchDaemons/me.nixuge.networkmanager.maintenance.plist'
 GUARD_RELATIVE='/usr/libexec/networkmanager-install-guard'
 
 note() {
@@ -43,8 +64,9 @@ warn() {
 }
 
 # ---------------------------------------------------------------------------
-# Candidate prefixes. At most two, and which applies is a property of the
-# running process, so both are tried rather than guessed.
+# Candidate prefixes for reaching installed files from *this* process. At most
+# two, and which applies is a property of the running process, so both are tried
+# rather than guessed.
 #
 # roothide: the bare path first. If this shell does have the redirection then a
 #           bare path is the correct one, and the jbroot-absolute path resolves
@@ -52,17 +74,14 @@ warn() {
 # rootless: exactly one real prefix. A bare path would point outside the
 #           jailbreak, so it is never a candidate.
 # ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
-# jbroot's output is an external input and is validated before use. An
-# implausible value must not be prepended to anything: a non-absolute or
-# multi-line prefix that happens to be non-empty would be substituted into the
-# plist as-is, the @JBROOT@ placeholder would be gone, every later check would
-# pass, and launchd would hold a path that cannot exist. That is the one outcome
-# worse than not substituting at all, because it reports success.
+# jbroot's output is an external input and is validated before use. A non-absolute
+# or multi-line value must not be prepended to anything and must not be handed to
+# the guard, which would then read a root that does not exist and find no policy
+# records -- indistinguishable from a clean band configuration, the one
+# conclusion the removal gate exists to refuse to reach by accident.
 #
-# Trailing slashes are normalised rather than rejected, so the plist does not
-# gain a doubled separator; the value is never normalised down to empty, because
-# empty means "unresolved" everywhere else in this script.
+# Trailing slashes are normalised rather than rejected; the value is never
+# normalised down to empty, because empty means "unresolved" everywhere else here.
 # ---------------------------------------------------------------------------
 validate_jbroot() {
     case "$1" in
@@ -108,13 +127,9 @@ if [ -n "$NEEDS_JBROOT" ]; then
     fi
     PREFIX_PRIMARY=''
     PREFIX_FALLBACK="$JBROOT_PREFIX"
-    # What launchd itself must use. launchd is never redirected, so this is the
-    # jbroot even where a bare path works for this script.
-    LAUNCHD_PREFIX="$JBROOT_PREFIX"
 else
     PREFIX_PRIMARY="$SCHEME_PREFIX"
     PREFIX_FALLBACK=''
-    LAUNCHD_PREFIX="$SCHEME_PREFIX"
 fi
 
 describe_prefix() {
@@ -154,162 +169,55 @@ resolve() {
 }
 
 # ---------------------------------------------------------------------------
-# The launchd plist: give it the real absolute path launchd will need.
-# ---------------------------------------------------------------------------
-patch_jbroot() {
-    if ! resolve "$PLIST_RELATIVE"; then
-        warn "the launchd plist was not found under $(candidate_list), so the maintenance daemon cannot be registered. jbroot: ${JBROOT_STATUS}."
-        return 1
-    fi
-    plist="$RESOLVED_PATH"
-    note "resolved the launchd plist under $(describe_prefix "$RESOLVED_PREFIX")."
-
-    # Whether a substitution is required is settled at package time, not by
-    # inspecting the file. NEEDS_JBROOT is empty for exactly the lanes whose
-    # prefix is baked into the plist already.
-    #
-    # Asking the file instead was a real bug, twice over. Theos converts every
-    # staged plist to binary1 in its FINALPACKAGE internal-package step, which
-    # runs after before-package, so both lanes ship a *binary* plist no matter
-    # what the packaging script wrote. So:
-    #
-    #   - A format question placed first warns about the rootless plist, which is
-    #     completely correct and needs no rewrite at all. On a bootstrap without
-    #     plutil that warning is permanent and unfixable.
-    #   - A `grep @JBROOT@` question placed first is not portable. GNU grep -a
-    #     matches the placeholder inside a binary plist; the BSD grep on macOS
-    #     reports no match for the same file and pattern. "No match" is the
-    #     success branch, so on a bootstrap with a BSD-ish grep the roothide
-    #     placeholder would survive with nothing at all in the install log. That
-    #     is the exact failure mode this whole file is written to prevent, and CI
-    #     caught it: the Ubuntu host-tests job passed while both macOS packaging
-    #     jobs failed eight tests.
-    #
-    # The lane answers the question without reading anything, so neither quirk
-    # can decide it.
-    if [ -z "$NEEDS_JBROOT" ]; then
-        return 0
-    fi
-
-    if [ -z "$JBROOT_PREFIX" ]; then
-        warn "the jailbreak root ${JBROOT_STATUS}, so ${plist} still contains the @JBROOT@ placeholder and launchd cannot start the daemon."
-        return 1
-    fi
-
-    # A textual rewrite is required, so the format now has to be settled. Apple's
-    # plutil spells the conversion -convert xml1 and roothide's bootstrap spells
-    # it -xml; try both. roothide ships plutil and its own bootstrapd postinst
-    # relies on it, which is what makes requiring it acceptable on this lane and
-    # unacceptable on the other.
-    plutil -convert xml1 "$plist" >/dev/null 2>&1 ||
-        plutil -xml "$plist" >/dev/null 2>&1 || true
-
-    # The conversion is not allowed to be best-effort. Where grep *can* see into
-    # a binary plist, sed would rewrite 8 bytes to a longer path inside a
-    # length-prefixed string and leave the trailer's offset table stale, giving
-    # launchd a file it cannot parse at all — while every later check passes,
-    # because the placeholder really is gone. Leaving the plist unsubstituted is
-    # recoverable by reinstalling; corrupting it and reporting success is not.
-    #
-    # Confirmed positively, so an unreadable file or a missing grep cannot pass
-    # for XML. Sniffing the magic bytes would mean depending on head or dd as
-    # well, and every tool this script needs is one more thing a given bootstrap
-    # can be missing.
-    grep -qa '<?xml' "$plist"
-    xml_status=$?
-    if [ "$xml_status" -eq 1 ]; then
-        warn "${plist} is not XML, so plutil is unavailable or failed; refusing to run a textual substitution over it. The @JBROOT@ placeholder remains and launchd cannot start the daemon."
-        return 1
-    fi
-    if [ "$xml_status" -ne 0 ]; then
-        warn "could not read ${plist} to confirm it is XML (grep exit ${xml_status}); refusing to rewrite it. The @JBROOT@ placeholder remains and launchd cannot start the daemon."
-        return 1
-    fi
-
-    # Only now is the placeholder question asked, and only against text, where
-    # every grep agrees. grep's exit status is three-valued: 0 match, 1 no match,
-    # 2 or more error. Used as a boolean, an unreadable plist or a missing grep
-    # would be indistinguishable from "already substituted", which is the success
-    # branch.
-    grep -qa '@JBROOT@' "$plist"
-    placeholder_status=$?
-    if [ "$placeholder_status" -eq 1 ]; then
-        # Already substituted by an earlier run. Idempotent by design: dpkg
-        # reruns postinst on reconfigure and on a repeated install.
-        return 0
-    fi
-    if [ "$placeholder_status" -ne 0 ]; then
-        warn "could not read ${plist} to look for the @JBROOT@ placeholder (grep exit ${placeholder_status}); treat the maintenance daemon as unregistered."
-        return 1
-    fi
-
-    # Rewrite through a sibling and copy the bytes back, so the file keeps the
-    # mode and ownership dpkg gave it and sed -i portability is not a factor.
-    #
-    # The name is predictable, but the directory is root-owned on both lanes, so
-    # this is not a privilege boundary: anyone who could plant a symlink here
-    # could edit the plist directly. The unlink is for stale state from a crashed
-    # earlier run, not for an attacker.
-    scratch="${plist}.networkmanager.$$"
-    rm -f "$scratch"
-    if ! sed "s|@JBROOT@|${JBROOT_PREFIX}|g" "$plist" > "$scratch" 2>/dev/null; then
-        rm -f "$scratch"
-        warn "could not create a replacement next to ${plist} (euid $(id -u), jbroot ${JBROOT_PREFIX}); the plist still contains the @JBROOT@ placeholder."
-        return 1
-    fi
-    if ! cat "$scratch" > "$plist" 2>/dev/null; then
-        rm -f "$scratch"
-        warn "could not write ${plist} (euid $(id -u)); it still contains the @JBROOT@ placeholder. This is the same write refusal a compiled maintainer script hit, now reached from shell."
-        return 1
-    fi
-    rm -f "$scratch"
-
-    # Same three-valued status as above, and the stakes are reversed here: an
-    # error must not read as "no placeholder found", which is the success case.
-    grep -qa '@JBROOT@' "$plist"
-    survived_status=$?
-    if [ "$survived_status" -eq 0 ]; then
-        warn "the @JBROOT@ placeholder survived substitution in ${plist}; sed reported success but changed nothing."
-        return 1
-    fi
-    if [ "$survived_status" -ne 1 ]; then
-        warn "could not confirm the substitution in ${plist} (grep exit ${survived_status}); treat the maintenance daemon as unregistered."
-        return 1
-    fi
-    note "wrote the jailbreak root into the launchd plist."
-    return 0
-}
-
-patch_jbroot || true
-
-# ---------------------------------------------------------------------------
 # The policy guard owns the rest: clearing the removal guard when that is safe,
-# validating the launchd contract, and loading the job if launchctl is
-# reachable. It only reads and reports, so it works without the privileges this
-# script needs.
+# validating the launchd contract against the installed plist, and loading the
+# job if launchctl is reachable. It only reads and reports, so it works without
+# the privileges this script needs.
 # ---------------------------------------------------------------------------
 if ! resolve "$GUARD_RELATIVE"; then
     warn "the install guard was not found under $(candidate_list), so band policy state was not validated. jbroot: ${JBROOT_STATUS}."
     exit 0
 fi
 
-# Hand both prefixes over instead of letting the guard re-derive them. The shell
-# has already proven which one exists; the guard cannot repeat that reasoning
-# correctly, because it is invoked through a bare path and so its own executable
-# path carries no .jbroot- component.
+# Hand both prefixes over instead of letting the guard re-derive them. The guard
+# is invoked through a bare path, so its own executable path carries no .jbroot-
+# component and it has nothing to derive from.
 #
-# These are two different questions and conflating them was the original mistake.
-# The install prefix is what the guard prepends to read a file, and empty is the
-# normal roothide answer, so it is exported even when empty. The launchd prefix is
-# what must appear inside the plist, and it can never be empty, so it is exported
-# only when known; leaving it unset makes the guard say so instead of comparing
-# against a bare path launchd would never use.
-NETWORKMANAGER_INSTALL_PREFIX="$RESOLVED_PREFIX"
-export NETWORKMANAGER_INSTALL_PREFIX
-if [ -n "$LAUNCHD_PREFIX" ]; then
-    NETWORKMANAGER_LAUNCHD_PREFIX="$LAUNCHD_PREFIX"
-    export NETWORKMANAGER_LAUNCHD_PREFIX
+# They answer two different questions and must not be merged:
+#
+#   NETWORKMANAGER_INSTALL_PREFIX  what the guard prepends to open a file. It is
+#       not redirected -- it links no libroothide and is exec'd through a bare
+#       path, so nothing rewrites its paths and a bare one lands on the real
+#       root. It therefore needs the real jailbreak root, not the prefix this
+#       shell resolved for itself. Exporting the latter was a real bug: this
+#       shell's `/` already *is* the jailbreak root, so RESOLVED_PREFIX is
+#       legitimately empty, and an empty prefix is a statement about this process
+#       that must not cross a process boundary.
+#
+#   NETWORKMANAGER_LAUNCHD_PREFIX  what must literally appear inside the plist,
+#       which the guard compares against the plist's contents. A package-time
+#       constant, and legitimately empty on roothide.
+#
+# Empty and unset are different answers and the guard reads them differently, so
+# the launchd prefix is always exported even when empty, while the install prefix
+# is left unset when the jailbreak root is unknown. The guard then reports that it
+# could not resolve anything and fails closed, instead of quietly reading the
+# wrong root and calling it clean.
+if [ -n "$NEEDS_JBROOT" ]; then
+    if [ -n "$JBROOT_PREFIX" ]; then
+        NETWORKMANAGER_INSTALL_PREFIX="$JBROOT_PREFIX"
+        export NETWORKMANAGER_INSTALL_PREFIX
+        note "handing the guard install prefix ${JBROOT_PREFIX} and launchd prefix $(describe_prefix "$LAUNCHD_PREFIX")."
+    else
+        warn "the jailbreak root ${JBROOT_STATUS}, so the guard was given no install prefix and will fail closed rather than read the wrong root."
+    fi
+else
+    NETWORKMANAGER_INSTALL_PREFIX="$SCHEME_PREFIX"
+    export NETWORKMANAGER_INSTALL_PREFIX
+    note "handing the guard install prefix ${SCHEME_PREFIX} and launchd prefix ${LAUNCHD_PREFIX}."
 fi
+NETWORKMANAGER_LAUNCHD_PREFIX="$LAUNCHD_PREFIX"
+export NETWORKMANAGER_LAUNCHD_PREFIX
 
 "$RESOLVED_PATH" "$@"
 exit $?

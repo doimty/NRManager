@@ -2,22 +2,33 @@
 """Behavioural tests for the shell maintainer scripts.
 
 These render the real templates the way scripts/patch-maintenance-launchd.py
-does and run them through /bin/sh with stubbed jbroot/plutil, so the prefix
-resolution, the substitution, the idempotence and every diagnostic branch are
-executed rather than asserted against source text.
+does and run them through /bin/sh with a stubbed jbroot, so prefix resolution,
+the exports and every diagnostic branch are executed rather than asserted
+against source text.
 
 Why the maintainer scripts are shell at all: on roothide the jbroot path
 redirection and the sandbox exemption both come from basebin/bootstrap.dylib,
 injected via DYLD_INSERT_LIBRARIES. A compiled maintainer script on the
 reporting device ran as euid 0 and could stat, read and parse inside the
 jailbreak root but got EPERM on every write and child exec, and saw bare paths
-as ENOENT. The substitution is therefore done the way roothide's own packages do
-it, with plutil and sed.
+as ENOENT. The shell half therefore owns everything that depends on being the
+redirected process: resolving the jailbreak root and handing it to a helper that
+is not redirected.
+
+What these tests no longer cover, deliberately: postinst used to substitute an
+@JBROOT@ placeholder in the launchd plist with the live jailbreak root. That was
+wrong on roothide -- launchctl prepends the root itself, so the result was a
+doubled path -- and the plist now ships complete. The substitution needed plutil,
+a textual sed over a possibly-binary plist, and three-valued grep handling, and
+every one of those was a way to corrupt the file or skip it silently. They are
+gone with the mechanism that needed them, and one test below asserts the
+dependency is really gone rather than merely unused.
 """
 
 import os
 import pathlib
 import plistlib
+import re
 import shutil
 import stat
 import subprocess
@@ -40,55 +51,33 @@ PRERM_TEMPLATE = REPO / "package-actions" / "prerm.sh.in"
 LABEL = "me.nixuge.networkmanager.maintenance"
 PLIST_RELATIVE = f"Library/LaunchDaemons/{LABEL}.plist"
 
-PLUTIL_STUB = """#!/bin/sh
-# Apple's plutil spells this -convert xml1; the bootstrap's spells it -xml.
-if [ "$1" = "-convert" ]; then shift 2; elif [ "$1" = "-xml" ]; then shift; else exit 64; fi
-python3 - "$1" <<'PY'
-import plistlib, sys
-path = sys.argv[1]
-data = plistlib.loads(open(path, 'rb').read())
-open(path, 'wb').write(plistlib.dumps(data, fmt=plistlib.FMT_XML, sort_keys=False))
-PY
-"""
 
-# macOS grep reports no match for a pattern that is demonstrably present in a
-# binary plist, while GNU grep -a finds it. That is not a guess: the Ubuntu
-# host-tests job passed while both macOS packaging jobs failed eight tests, and
-# the split is exact. Every failing test pre-wrote a binary plist; every
-# grep-dependent test that passed pre-wrote XML.
-#
-# The discriminator is UTF-8 validity, verified locally against the real staged
-# plist: the binary form's first invalid byte is at offset 8, the placeholder is
-# present as contiguous bytes in both forms, and there is no NUL between the
-# preceding newline and the pattern, so line/NUL truncation is ruled out. The
-# likely cause is BSD grep decoding input as multibyte characters under a UTF-8
-# locale and giving up on invalid sequences; that mechanism is not verifiable
-# from Linux, so this stub is pinned to the observed behaviour rather than to the
-# explanation.
-GREP_THAT_CANNOT_READ_BINARY_FILES = """#!/bin/sh
-pattern=""
-file=""
-for argument in "$@"; do
-    case "$argument" in
-        -*) ;;
-        *) if [ -z "$pattern" ]; then pattern="$argument"; else file="$argument"; fi ;;
-    esac
-done
-exec python3 -c '
-import sys
-with open(sys.argv[2], "rb") as handle:
-    data = handle.read()
-try:
-    text = data.decode("utf-8")
-except UnicodeDecodeError:
-    sys.exit(1)
-sys.exit(0 if sys.argv[1] in text else 1)
-' "$pattern" "$file"
-"""
+# The substitution mechanism this build retired, and the three tools it needed.
+# Matched on word boundaries: a plain substring test for "sed " also matches the
+# middle of "used ", which made an earlier version of this assertion pass for a
+# reason that had nothing to do with the template.
+RETIRED_TOOLS = re.compile(r"\b(plutil|sed|grep)\b")
+RETIRED_PLACEHOLDER = "@JBROOT@"
+
+
+def assertRetiredToolsAbsent(case, template):
+    """Fail if a template names @JBROOT@ or any tool the substitution needed.
+
+    Only the executable body is examined. The header comments deliberately
+    explain why plutil, sed and grep are gone, and that prose is worth keeping.
+    """
+    text = template.read_text()
+    body = text[text.index("SCHEME_PREFIX="):]
+    case.assertNotIn(RETIRED_PLACEHOLDER, body, template.name)
+    for line in body.splitlines():
+        code = line.split("#", 1)[0]
+        found = RETIRED_TOOLS.search(code)
+        case.assertIsNone(
+            found, f"{template.name} still reaches for {found.group(0) if found else ''}: {line}")
 
 
 def staged_plist(prefix):
-    """The plist as the packaging step leaves it: XML, prefix applied."""
+    """The plist as the packaging step leaves it: prefix already applied."""
     return {
         "Label": LABEL,
         "ProgramArguments": [
@@ -124,20 +113,23 @@ class ShellScriptBase(unittest.TestCase):
                      self.prefix / "var/lib/dpkg/info"):
             path.mkdir(parents=True, exist_ok=True)
         self.set_jbroot(str(self.prefix))
-        self.stub("plutil", PLUTIL_STUB)
-        # Which grep flavour the device has is not knowable, and the two disagree
-        # about binary files. NMR_SHELL_TEST_GREP=binary-blind reruns this whole module
-        # against the stricter one; see GrepFlavourSweepTests at the bottom.
-        if os.environ.get("NMR_SHELL_TEST_GREP") == "binary-blind":
-            self.stub("grep", GREP_THAT_CANNOT_READ_BINARY_FILES)
         self.guard_log = self.dir / "guard.log"
         self.install_guard(0)
         self.plist = self.prefix / PLIST_RELATIVE
+        # Binary, because Theos converts every staged plist in its FINALPACKAGE
+        # internal-package step, which runs after before-package. This is the
+        # shape that actually reaches the device.
         self.write_plist(staged_plist(self.plist_prefix()), binary=True)
 
     def plist_prefix(self):
-        return (patcher.ROOTHIDE_PLACEHOLDER if self.scheme == "roothide"
-                else str(self.prefix))
+        """The lane's real plist prefix, independent of the temporary tree.
+
+        Not repointed for rootless the way SCHEME_PREFIX is: this value is a
+        package-time constant that must not depend on the host, and postinst no
+        longer reads the plist at all, so its contents and its location are
+        genuinely independent here.
+        """
+        return "" if self.scheme == "roothide" else patcher.ROOTLESS_PREFIX
 
     def set_jbroot(self, value):
         if value is None:
@@ -162,8 +154,9 @@ class ShellScriptBase(unittest.TestCase):
         """A guard that reports what the shell handed it, set-ness included.
 
         `${VAR-absent}` distinguishes unset from empty, which is the whole point
-        of the contract: an empty install prefix is a valid roothide answer, an
-        absent one means nothing resolved.
+        of the contract: an empty *launchd* prefix is the correct roothide answer,
+        while an absent *install* prefix means nothing resolved and the guard must
+        fail closed rather than read the wrong root.
         """
         return self.install_guard(0, body=(
             '#!/bin/sh\n'
@@ -188,14 +181,19 @@ class ShellScriptBase(unittest.TestCase):
     def read_plist(self):
         return plistlib.loads(self.plist.read_bytes())
 
-    def render(self):
+    def render(self, repoint_primary=False):
         """Render exactly as the packaging step does, then return the path.
 
-        One documented harness substitution: the rootless lane's fixed prefix is
-        /var/jb, and a test may not create that on the host, so the rendered
-        SCHEME_PREFIX data line is repointed at the temporary tree. Only that
-        assignment is touched, never the logic, and the substitution is asserted
-        so a template rename cannot silently turn this into a no-op.
+        Two documented harness substitutions, both of data lines only, never of
+        logic, and both asserted so a template rename cannot silently turn this
+        into a no-op:
+
+        - The rootless lane's fixed prefix is /var/jb and a test may not create
+          that on the host, so SCHEME_PREFIX is repointed at the temporary tree.
+        - repoint_primary makes the roothide lane's *bare* candidate resolve,
+          which on a real redirected device it does and on this host it cannot.
+          Needed to reach the branch where the bare path resolves but jbroot
+          fails.
         """
         staging = self.dir / "staging"
         (staging / "DEBIAN").mkdir(parents=True, exist_ok=True)
@@ -210,10 +208,17 @@ class ShellScriptBase(unittest.TestCase):
             script.write_text(text.replace(
                 needle, f"SCHEME_PREFIX='{self.prefix}'"))
             script.chmod(0o755)
+        if repoint_primary:
+            text = script.read_text()
+            needle = "    PREFIX_PRIMARY=''\n"
+            self.assertIn(needle, text)
+            script.write_text(text.replace(
+                needle, f"    PREFIX_PRIMARY='{self.prefix}'\n", 1))
+            script.chmod(0o755)
         return script
 
-    def run_script(self, *args, path_extra=None, cwd=None):
-        script = self.render()
+    def run_script(self, *args, path_extra=None, cwd=None, repoint_primary=False):
+        script = self.render(repoint_primary=repoint_primary)
         env = dict(os.environ)
         env["PATH"] = f"{path_extra or self.bin}:{env['PATH']}"
         return subprocess.run([str(script), *args], capture_output=True,
@@ -224,12 +229,13 @@ class ShellScriptBase(unittest.TestCase):
 
 
 class RenderingTests(unittest.TestCase):
-    def test_the_roothide_script_prefix_is_empty_and_rootless_is_var_jb(self):
-        # Two different prefixes are in play. The plist needs a real absolute
-        # path because launchd is not redirected; the script's own prefix is
-        # empty on roothide, where a bare path already resolves inside the
-        # jailbreak root.
-        self.assertEqual(patcher.plist_prefix("roothide"), "@JBROOT@")
+    def test_the_roothide_plist_prefix_is_empty_and_rootless_is_var_jb(self):
+        # The roothide plist must hold bare paths: launchctl is a redirected
+        # binary that rewrites every absolute path in the file as jbroot(path)
+        # before launchd sees it, guarding re-entry only with a __Patched flag it
+        # sets itself. A plist already carrying the root gets a second one, which
+        # is the doubled program path the reporting device showed.
+        self.assertEqual(patcher.plist_prefix("roothide"), "")
         self.assertEqual(patcher.script_prefix("roothide"), "")
         self.assertEqual(patcher.plist_prefix("rootless"), "/var/jb")
         self.assertEqual(patcher.script_prefix("rootless"), "/var/jb")
@@ -244,57 +250,74 @@ class RenderingTests(unittest.TestCase):
                                  ["postinst", "prerm"])
                 for path in written:
                     text = path.read_text()
-                    self.assertNotIn("@PREFIX@", text)
-                    self.assertNotIn("@NEEDS_JBROOT@", text)
+                    for placeholder in ("@PREFIX@", "@LAUNCHD_PREFIX@",
+                                        "@NEEDS_JBROOT@"):
+                        self.assertNotIn(placeholder, text)
                     self.assertTrue(text.startswith("#!/bin/sh\n"))
                     self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o755)
 
-    def test_the_launchd_plist_is_written_as_xml_with_the_scheme_prefix(self):
-        for scheme, expected in (("roothide", "@JBROOT@"), ("rootless", "/var/jb")):
-            with tempfile.TemporaryDirectory() as directory:
-                staging = pathlib.Path(directory)
-                target = staging / patcher.PLIST_RELATIVE
-                target.parent.mkdir(parents=True)
-                target.write_bytes(plistlib.dumps(staged_plist("@JBROOT@"),
-                                                  fmt=plistlib.FMT_BINARY))
-                patcher.patch_launchd_plist(staging, patcher.plist_prefix(scheme))
-                # XML, because the on-device substitution is textual. A binary
-                # plist would leave the placeholder unmatched with nothing in the
-                # install log to show it.
-                self.assertTrue(target.read_bytes().lstrip().startswith(b"<?xml"))
-                payload = plistlib.loads(target.read_bytes())
-                self.assertEqual(payload["ProgramArguments"][0],
-                                 expected + patcher.PROGRAM_RELATIVE)
-                self.assertEqual(list(payload["KeepAlive"]["PathState"]),
-                                 [expected + patcher.BASELINE_RELATIVE])
+    def test_the_staged_plist_carries_the_lane_prefix_and_no_sentinel(self):
+        for scheme, expected in (("roothide", ""), ("rootless", "/var/jb")):
+            with self.subTest(scheme=scheme):
+                with tempfile.TemporaryDirectory() as directory:
+                    staging = pathlib.Path(directory)
+                    target = staging / patcher.PLIST_RELATIVE
+                    target.parent.mkdir(parents=True)
+                    shutil.copy(
+                        REPO / "layout" / patcher.PLIST_RELATIVE, target)
+                    patcher.patch_launchd_plist(
+                        staging, patcher.plist_prefix(scheme))
+                    raw = target.read_bytes()
+                    # Nothing on the device rewrites this file any more, so an
+                    # unresolved token would be permanent.
+                    self.assertNotIn(patcher.TEMPLATE_SENTINEL.encode(), raw)
+                    self.assertNotIn(patcher.ROOTHIDE_PLACEHOLDER.encode(), raw)
+                    payload = plistlib.loads(raw)
+                    self.assertEqual(payload["ProgramArguments"][0],
+                                     expected + patcher.PROGRAM_RELATIVE)
+                    self.assertEqual(list(payload["KeepAlive"]["PathState"]),
+                                     [expected + patcher.BASELINE_RELATIVE])
+
+    def test_a_sentinel_that_survives_patching_is_refused(self):
+        # The patcher rewrites both path-bearing keys wholesale, so this can only
+        # fire if a future template grows a third path. Failing the build is the
+        # point: there is no device-side step left to repair it.
+        with tempfile.TemporaryDirectory() as directory:
+            staging = pathlib.Path(directory)
+            target = staging / patcher.PLIST_RELATIVE
+            target.parent.mkdir(parents=True)
+            payload = staged_plist("")
+            payload["WorkingDirectory"] = (
+                patcher.TEMPLATE_SENTINEL + "/usr/libexec")
+            target.write_bytes(plistlib.dumps(payload))
+            with self.assertRaises(SystemExit) as raised:
+                patcher.patch_launchd_plist(staging, "")
+            self.assertIn(patcher.TEMPLATE_SENTINEL, str(raised.exception))
 
 
-class PostinstSubstitutionTests(ShellScriptBase):
-    def test_the_placeholder_is_replaced_with_the_live_jbroot(self):
+class PostinstLaunchdPlistTests(ShellScriptBase):
+    def test_the_shipped_plist_is_left_exactly_as_packaged(self):
+        # The whole rewrite is gone. postinst touching this file at all is the
+        # regression: on roothide the correct contents are the bare paths that
+        # shipped, and launchctl supplies the root on load.
+        before = self.plist.read_bytes()
         result = self.run_script("configure")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNoWarning(result)
+        self.assertEqual(self.plist.read_bytes(), before)
+        self.assertEqual(self.plist.stat().st_mode & 0o777, 0o644)
         payload = self.read_plist()
         self.assertEqual(payload["ProgramArguments"][0],
-                         f"{self.prefix}{patcher.PROGRAM_RELATIVE}")
+                         patcher.PROGRAM_RELATIVE)
         self.assertEqual(list(payload["KeepAlive"]["PathState"]),
-                         [f"{self.prefix}{patcher.BASELINE_RELATIVE}"])
-        self.assertNotIn(b"@JBROOT@", self.plist.read_bytes())
+                         [patcher.BASELINE_RELATIVE])
 
-    def test_a_binary_plist_is_converted_before_substitution(self):
-        # sed cannot match a placeholder inside a binary plist, so a package that
-        # skipped the conversion would silently ship an unpatched daemon.
-        self.assertEqual(self.plist.read_bytes()[:8], b"bplist00")
+    def test_no_scratch_file_is_left_beside_the_plist(self):
         self.run_script("configure")
-        self.assertTrue(self.plist.read_bytes().lstrip().startswith(b"<?xml"))
-
-    def test_the_rewrite_keeps_the_mode_and_leaves_no_scratch_file(self):
-        self.run_script("configure")
-        self.assertEqual(self.plist.stat().st_mode & 0o777, 0o644)
         siblings = sorted(p.name for p in self.plist.parent.iterdir())
         self.assertEqual(siblings, [f"{LABEL}.plist"], siblings)
 
-    def test_running_twice_is_a_no_op_the_second_time(self):
+    def test_running_twice_is_a_no_op(self):
         # dpkg reruns postinst on reconfigure and on a repeated install.
         self.run_script("configure")
         first = self.plist.read_bytes()
@@ -303,31 +326,52 @@ class PostinstSubstitutionTests(ShellScriptBase):
         self.assertEqual(self.plist.read_bytes(), first)
         self.assertNoWarning(result)
 
-    def test_the_resolved_prefix_is_reported(self):
-        # Which prefix the maintainer-script shell actually sees is the open
-        # question this build answers, so it has to appear in the install log.
-        # On this host the bare path cannot exist, so the jbroot fallback wins
-        # and the log must name it rather than claiming the redirected root.
+    def test_a_binary_plist_needs_no_plutil_grep_or_sed(self):
+        # Three separate portability traps, all retired with the substitution.
+        # plutil is absent on some bootstraps; the grep on the macOS runners
+        # reports no match for a pattern demonstrably present in a binary plist,
+        # and "no match" was the success branch; and sed rewriting a longer path
+        # into a length-prefixed binary string leaves the offset table stale, so
+        # launchd cannot parse the file while every later check passes.
+        self.assertEqual(self.plist.read_bytes()[:8], b"bplist00")
+        for tool in ("plutil", "grep", "sed"):
+            self.stub(tool, f'#!/bin/sh\necho "{tool} must not be used" >&2\nexit 99\n')
+        before = self.plist.read_bytes()
         result = self.run_script("configure")
-        self.assertIn("resolved the launchd plist under", result.stderr)
-        self.assertIn(str(self.prefix), result.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNoWarning(result)
+        self.assertNotIn("must not be used", result.stderr)
+        self.assertEqual(self.plist.read_bytes(), before)
+        self.assertTrue(self.guard_log.exists())
 
-    def test_the_resolved_prefixes_are_handed_to_the_guard(self):
+    def test_the_template_does_not_reach_for_those_tools_at_all(self):
+        # The stub test above proves they are not reached on the happy path. This
+        # proves they are not named anywhere, so no diagnostic branch can bring
+        # the dependency back in.
+        assertRetiredToolsAbsent(self, POSTINST_TEMPLATE)
+
+
+class PostinstPrefixHandoffTests(ShellScriptBase):
+    def test_the_prefixes_are_handed_to_the_guard(self):
         # The guard cannot re-derive these: it is invoked through a bare path, so
         # its own executable path carries no jbroot component. Executed rather
-        # than asserted against source text, because export ordering and quoting
-        # are exactly what a source-text check cannot prove.
+        # than asserted against source text, because export ordering, quoting and
+        # set-ness are exactly what a source-text check cannot prove.
         self.install_env_reporting_guard()
         result = self.run_script("configure")
         self.assertEqual(result.returncode, 0, result.stderr)
         environment = self.guard_environment()
-        # On this host the bare path cannot exist, so the jbroot fallback wins
-        # and both prefixes are the stubbed jailbreak root.
+        # The install prefix is a filesystem root for a process nothing
+        # redirects, so it must be the real jailbreak root. On this host the bare
+        # path cannot exist, so the jbroot fallback wins.
         self.assertEqual(environment["install"], str(self.prefix))
-        self.assertEqual(environment["launchd"], str(self.prefix))
+        # The launchd prefix is a different question -- what must literally
+        # appear inside the plist -- and empty is the roothide answer. Empty, not
+        # absent: absent would mean the script never said.
+        self.assertEqual(environment["launchd"], "")
 
     def test_the_launchd_prefix_matches_what_was_written_into_the_plist(self):
-        # One prefix, two consumers. If these diverge, the guard rejects a plist
+        # One value, two consumers. If these diverge the guard rejects a plist
         # that is actually correct, or accepts one launchd cannot start.
         self.install_env_reporting_guard()
         self.run_script("configure")
@@ -337,6 +381,66 @@ class PostinstSubstitutionTests(ShellScriptBase):
                          launchd + patcher.PROGRAM_RELATIVE)
         self.assertEqual(list(payload["KeepAlive"]["PathState"]),
                          [launchd + patcher.BASELINE_RELATIVE])
+
+    def test_the_install_prefix_is_reported(self):
+        # Which prefix the maintainer-script shell actually sees is the open
+        # question this build answers, so it has to appear in the install log.
+        result = self.run_script("configure")
+        self.assertIn("handing the guard install prefix", result.stderr)
+        self.assertIn(str(self.prefix), result.stderr)
+
+    def test_a_trailing_slash_is_normalised_not_rejected(self):
+        # roothide's own jbroot takes an optional argument and can return a value
+        # with a trailing separator. Rejecting that would be a false negative;
+        # passing it through verbatim would hand the guard a doubled separator.
+        self.install_env_reporting_guard()
+        self.stub("jbroot", f'#!/bin/sh\nprintf "%s/\\n" "{self.prefix}"\n')
+        result = self.run_script("configure")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNoWarning(result)
+        self.assertEqual(self.guard_environment()["install"], str(self.prefix))
+
+    def test_an_unusable_jbroot_leaves_the_install_prefix_unset(self):
+        # The branch that matters on a device where the bare path resolves but
+        # jbroot does not: the guard must be told nothing rather than be handed a
+        # prefix that would send every policy read to the wrong root. Absent, not
+        # empty, because the guard reads those differently and "absent" is what
+        # makes it fail closed.
+        self.install_env_reporting_guard()
+        self.set_jbroot(None)
+        result = self.run_script("configure", repoint_primary=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("could not be resolved", result.stderr)
+        self.assertIn("jbroot produced no output", result.stderr)
+        environment = self.guard_environment()
+        self.assertEqual(environment["install"], "absent")
+        # The launchd prefix does not depend on the device at all, so it is still
+        # a real answer.
+        self.assertEqual(environment["launchd"], "")
+
+    def test_an_implausible_jbroot_is_never_handed_over(self):
+        # jbroot's output is an external input. A non-empty but implausible value
+        # must not become a prefix: the guard would read a root that does not
+        # exist, find no policy records, and "absent" is indistinguishable from a
+        # clean band configuration -- the one conclusion the removal gate exists
+        # to refuse to reach by accident.
+        cases = {
+            "relative path": ('#!/bin/sh\nprintf "relative/root\\n"\n',
+                              "relative path"),
+            "two lines": ('#!/bin/sh\nprintf "/a\\n/b\\n"\n',
+                          "more than one line"),
+            "not a directory": ('#!/bin/sh\nprintf "%s\\n" "$0"\n',
+                                "not a directory"),
+        }
+        for label, (stub, reason) in cases.items():
+            with self.subTest(case=label):
+                self.guard_log.unlink(missing_ok=True)
+                self.install_env_reporting_guard()
+                self.stub("jbroot", stub)
+                result = self.run_script("configure", repoint_primary=True)
+                self.assertIn(reason, result.stderr)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.guard_environment()["install"], "absent")
 
     def test_the_bare_prefix_is_tried_before_the_jbroot_prefix(self):
         script = self.render().read_text()
@@ -353,241 +457,40 @@ class PostinstSubstitutionTests(ShellScriptBase):
 class PostinstRootlessTests(ShellScriptBase):
     scheme = "rootless"
 
-    def test_the_rootless_lane_needs_no_substitution_and_no_jbroot(self):
+    def test_the_rootless_lane_does_not_depend_on_jbroot(self):
         # The prefix is baked in at package time and jbroot does not exist on
         # that platform, so the script must not depend on it. This is also the
         # only lane where the primary prefix is a real path, so it covers the
         # primary branch of the resolver.
         (self.bin / "jbroot").unlink()
+        before = self.plist.read_bytes()
         result = self.run_script("configure")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNoWarning(result)
         self.assertIn(str(self.prefix), result.stderr)
-        self.assertEqual(self.read_plist()["ProgramArguments"][0],
-                         f"{self.prefix}{patcher.PROGRAM_RELATIVE}")
+        self.assertEqual(self.plist.read_bytes(), before)
         self.assertTrue(self.guard_log.exists())
 
-    def test_both_prefixes_are_the_baked_in_one(self):
-        # No jbroot on this platform, so the fixed prefix has to serve both
-        # roles. This is also the only lane where the primary prefix resolves,
-        # so it covers the primary branch of the resolver.
+    def test_the_launchd_prefix_is_the_lane_constant_not_the_install_prefix(self):
+        # No jbroot on this platform, so the install prefix is the baked-in one.
+        # The launchd prefix is a different question and here it is a real path:
+        # nothing on rootless rewrites the plist, so /var/jb has to be inside it.
+        #
+        # These two differ in this test only because the harness repoints
+        # SCHEME_PREFIX at a temporary tree and deliberately leaves the launchd
+        # prefix alone, which is what makes the separation observable at all.
         (self.bin / "jbroot").unlink()
         self.install_env_reporting_guard()
         self.run_script("configure")
         environment = self.guard_environment()
         self.assertEqual(environment["install"], str(self.prefix))
-        self.assertEqual(environment["launchd"], str(self.prefix))
-
-    def test_a_binary_plist_with_no_placeholder_needs_no_plutil(self):
-        # The release-blocking false failure. Theos converts every staged plist
-        # to binary1 in internal-package, after before-package, so this lane
-        # ships a binary plist with the prefix already baked in and nothing to
-        # substitute. Asking about the format before asking whether a rewrite is
-        # needed warned about a completely correct plist, and on a bootstrap
-        # without plutil that warning was unavoidable and permanent.
-        self.assertEqual(self.plist.read_bytes()[:8], b"bplist00")
-        (self.bin / "plutil").unlink()
-        (self.bin / "jbroot").unlink()
-        before = self.plist.read_bytes()
-        result = self.run_script("configure")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertNoWarning(result)
-        # Untouched, because no substitution was required.
-        self.assertEqual(self.plist.read_bytes(), before)
-        self.assertEqual(self.read_plist()["ProgramArguments"][0],
-                         f"{self.prefix}{patcher.PROGRAM_RELATIVE}")
-        self.assertTrue(self.guard_log.exists())
-
-
-class PostinstDiagnosticTests(ShellScriptBase):
-    def test_a_missing_plist_names_every_prefix_it_tried(self):
-        self.plist.unlink()
-        result = self.run_script("configure")
-        self.assertIn("was not found under", result.stderr)
-        self.assertIn("the redirected root (bare paths)", result.stderr)
-        self.assertIn(str(self.prefix), result.stderr)
-        # The policy guard still has to run; the daemon is the optional part.
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(self.guard_log.exists())
-
-    def test_an_unresolvable_jbroot_is_reported_and_nothing_is_changed(self):
-        # With jbroot broken the fallback prefix is gone, so on a host where the
-        # bare path does not exist nothing resolves. The failure has to name the
-        # jbroot status, otherwise the log looks like a missing-file problem.
-        self.set_jbroot(None)
-        result = self.run_script("configure")
-        self.assertIn("was not found under", result.stderr)
-        self.assertIn("jbroot: could not be resolved", result.stderr)
-        self.assertIn("the redirected root (bare paths)", result.stderr)
-        self.assertIn(b"@JBROOT@", self.plist.read_bytes())
-        self.assertEqual(result.returncode, 0, result.stderr)
-
-    def test_an_empty_jbroot_is_treated_as_unresolvable(self):
-        self.stub("jbroot", "#!/bin/sh\necho\n")
-        result = self.run_script("configure")
-        self.assertIn("jbroot: could not be resolved", result.stderr)
-        self.assertIn(b"@JBROOT@", self.plist.read_bytes())
-
-    def test_an_implausible_jbroot_is_rejected_rather_than_substituted(self):
-        # jbroot's output is an external input that ends up inside the plist. A
-        # non-empty but implausible value would be substituted as-is: the
-        # placeholder disappears, every later check passes, and launchd holds a
-        # path that cannot exist. That is worse than not substituting, because it
-        # reports success. Each case must name why it was rejected, since the
-        # install log is the only evidence available on the device.
-        cases = {
-            "relative path": ('#!/bin/sh\nprintf "relative/root\\n"\n',
-                              "relative path"),
-            "two lines": ('#!/bin/sh\nprintf "/a\\n/b\\n"\n',
-                          "more than one line"),
-            "not a directory": ('#!/bin/sh\nprintf "%s\\n" "$0"\n',
-                                "not a directory"),
-        }
-        for label, (stub, reason) in cases.items():
-            with self.subTest(case=label):
-                self.write_plist(staged_plist("@JBROOT@"), binary=True)
-                self.stub("jbroot", stub)
-                result = self.run_script("configure")
-                self.assertIn(reason, result.stderr)
-                self.assertIn(b"@JBROOT@", self.plist.read_bytes())
-                self.assertNotIn("wrote the jailbreak root", result.stderr)
-                self.assertEqual(result.returncode, 0, result.stderr)
-
-    def test_a_trailing_slash_is_normalised_not_rejected(self):
-        # roothide's own jbroot takes an optional argument and can return a value
-        # with a trailing separator. Rejecting that would be a false negative;
-        # using it verbatim would put a doubled separator into the plist, so the
-        # daemon path would be wrong in a way nothing downstream checks.
-        self.stub("jbroot", f'#!/bin/sh\nprintf "%s/\\n" "{self.prefix}"\n')
-        result = self.run_script("configure")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertNoWarning(result)
-        self.assertEqual(self.read_plist()["ProgramArguments"][0],
-                         f"{self.prefix}{patcher.PROGRAM_RELATIVE}")
-        self.assertNotIn("//", self.read_plist()["ProgramArguments"][0])
-
-    def test_a_substitution_that_changes_nothing_is_caught(self):
-        # sed exiting 0 without substituting would otherwise ship a placeholder
-        # plist while the install log looks clean.
-        self.stub("sed", '#!/bin/sh\nshift\ncat "$1"\n')
-        result = self.run_script("configure")
-        self.assertIn("placeholder survived", result.stderr)
-        self.assertEqual(result.returncode, 0, result.stderr)
-
-    def test_a_failing_plutil_does_not_stop_an_already_xml_plist(self):
-        # Both dialects are tried and neither failing is fatal when the plist is
-        # already XML, which is the shape the packaging step ships.
-        self.write_plist(staged_plist("@JBROOT@"), binary=False)
-        self.stub("plutil", "#!/bin/sh\nexit 1\n")
-        result = self.run_script("configure")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertNotIn(b"@JBROOT@", self.plist.read_bytes())
-
-    def test_a_binary_plist_is_refused_rather_than_corrupted(self):
-        # The failure this guards against is worse than not substituting. grep -a
-        # matches @JBROOT@ inside a binary plist, so without an XML check sed
-        # would rewrite 8 bytes to a longer path inside a length-prefixed string,
-        # leaving the trailer's offset table stale. launchd then cannot parse the
-        # file at all, and every later check passes because the placeholder
-        # really is gone. Unsubstituted is recoverable; corrupt-and-report-success
-        # is not.
-        #
-        # This is the roothide lane, so a substitution really is required, which
-        # is what makes the format load-bearing here and irrelevant on rootless.
-        self.stub("plutil", "#!/bin/sh\nexit 1\n")
-        before = self.plist.read_bytes()
-        self.assertEqual(before[:8], b"bplist00")
-        self.assertIn(b"@JBROOT@", before)
-        result = self.run_script("configure")
-        self.assertIn("is not XML", result.stderr)
-        self.assertNotIn("wrote the jailbreak root", result.stderr)
-        self.assertEqual(self.plist.read_bytes(), before)
-        self.assertEqual(plistlib.loads(self.plist.read_bytes())["Label"], LABEL)
-        # Still not an install failure: the daemon is the optional part.
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(self.guard_log.exists())
-
-    def test_the_lane_decides_whether_a_rewrite_is_needed_not_the_file(self):
-        # Regression on the order of questions. Reading the file to decide this is
-        # not portable: GNU grep -a finds @JBROOT@ inside a binary plist and the
-        # grep on the macOS runners reports no match, and "not found" is the
-        # success branch. The lane is known at package time, so it decides.
-        script = self.render().read_text()
-        body = script[script.index("patch_jbroot() {"):]
-        gate = body.index('[ -z "$NEEDS_JBROOT" ]')
-        self.assertLess(gate, body.index("plutil -convert"))
-        self.assertLess(gate, body.index("xml_status="))
-        self.assertLess(gate, body.index("placeholder_status="))
-        # And the format is settled before the placeholder is looked for, so that
-        # question is only ever asked of text.
-        self.assertLess(body.index("xml_status="), body.index("placeholder_status="))
-
-    def test_a_grep_that_cannot_see_into_a_binary_plist_still_substitutes(self):
-        # The portability failure CI caught. The grep on the macOS runners reports
-        # no match for a placeholder that is demonstrably present in a binary
-        # plist; this stub reproduces that. The roothide lane must still convert
-        # and substitute, because nothing asks the binary file a question whose
-        # "no" means success.
-        self.stub("grep", GREP_THAT_CANNOT_READ_BINARY_FILES)
-        self.assertEqual(self.plist.read_bytes()[:8], b"bplist00")
-        result = self.run_script("configure")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertNoWarning(result)
-        self.assertIn("wrote the jailbreak root", result.stderr)
-        self.assertNotIn(b"@JBROOT@", self.plist.read_bytes())
-        self.assertEqual(self.read_plist()["ProgramArguments"][0],
-                         f"{self.prefix}{patcher.PROGRAM_RELATIVE}")
-
-    def test_an_unreadable_plist_is_not_read_as_already_substituted(self):
-        # grep's status is three-valued: 0 match, 1 no match, 2+ error. Used as a
-        # boolean, an error is indistinguishable from "no placeholder left",
-        # which is the success case, so the placeholder would survive with a
-        # clean install log.
-        self.write_plist(staged_plist("@JBROOT@"), binary=False)
-        self.stub("grep", (
-            '#!/bin/sh\n'
-            '# Answers the XML question honestly, errors on the placeholder one.\n'
-            'for argument in "$@"; do\n'
-            '    if [ "$argument" = "@JBROOT@" ]; then exit 2; fi\n'
-            'done\n'
-            'exit 0\n'))
-        result = self.run_script("configure")
-        self.assertIn("grep exit 2", result.stderr)
-        self.assertNotIn("wrote the jailbreak root", result.stderr)
-        self.assertIn(b"@JBROOT@", self.plist.read_bytes())
-        self.assertEqual(result.returncode, 0, result.stderr)
-
-    def test_an_unverifiable_substitution_is_not_reported_as_success(self):
-        # Mirror of the above at the other end: after sed runs, a grep error must
-        # not read as "the placeholder is gone".
-        self.write_plist(staged_plist("@JBROOT@"), binary=False)
-        self.stub("grep", (
-            '#!/bin/sh\n'
-            'log="$0.calls"\n'
-            'case "$*" in\n'
-            '    *@JBROOT@*)\n'
-            '        if [ -e "$log" ]; then exit 2; fi\n'
-            '        : > "$log"\n'
-            '        exit 0 ;;\n'
-            'esac\n'
-            'exit 0\n'))
-        result = self.run_script("configure")
-        self.assertIn("could not confirm the substitution", result.stderr)
-        self.assertNotIn("wrote the jailbreak root", result.stderr)
-        self.assertEqual(result.returncode, 0, result.stderr)
-
-    def test_a_write_refusal_names_the_path_and_keeps_the_plist(self):
-        # This is the shell-side reproduction of the EPERM that a compiled
-        # maintainer script hit on the device.
-        if os.geteuid() == 0:
-            self.skipTest("root ignores directory and file write permission")
-        os.chmod(self.plist.parent, 0o555)
-        self.addCleanup(os.chmod, self.plist.parent, 0o755)
-        result = self.run_script("configure")
-        self.assertIn("could not create a replacement next to", result.stderr)
-        self.assertIn(str(self.plist), result.stderr)
-        self.assertIn("euid", result.stderr)
-        self.assertIn(b"@JBROOT@", self.plist.read_bytes())
+        self.assertEqual(environment["launchd"], patcher.ROOTLESS_PREFIX)
+        # And what was handed over still describes the plist that shipped.
+        payload = self.read_plist()
+        self.assertEqual(payload["ProgramArguments"][0],
+                         environment["launchd"] + patcher.PROGRAM_RELATIVE)
+        self.assertEqual(list(payload["KeepAlive"]["PathState"]),
+                         [environment["launchd"] + patcher.BASELINE_RELATIVE])
 
 
 class PostinstGuardDelegationTests(ShellScriptBase):
@@ -603,14 +506,17 @@ class PostinstGuardDelegationTests(ShellScriptBase):
         (self.prefix / "usr/libexec" / self.guard_name).unlink()
         result = self.run_script("configure")
         self.assertIn("install guard was not found under", result.stderr)
+        self.assertIn("the redirected root (bare paths)", result.stderr)
+        self.assertIn(str(self.prefix), result.stderr)
         self.assertEqual(result.returncode, 0)
 
-    def test_the_daemon_is_patched_even_when_the_guard_rejects(self):
-        # Order matters: the plist must be correct on disk regardless of the
-        # policy verdict, because it is what makes the job loadable at boot.
+    def test_the_plist_survives_a_rejecting_guard(self):
+        # The plist is what makes the job loadable at the next boot, so a policy
+        # verdict must not affect it either way.
         self.install_guard(74)
-        self.run_script("configure")
-        self.assertNotIn(b"@JBROOT@", self.plist.read_bytes())
+        before = self.plist.read_bytes()
+        self.assertEqual(self.run_script("configure").returncode, 74)
+        self.assertEqual(self.plist.read_bytes(), before)
 
 
 class PrermTests(ShellScriptBase):
@@ -631,9 +537,19 @@ class PrermTests(ShellScriptBase):
         self.assertEqual(result.returncode, 0, result.stderr)
         environment = self.guard_environment()
         self.assertEqual(environment["install"], str(self.prefix))
-        self.assertEqual(environment["launchd"], str(self.prefix))
         self.assertNotEqual(environment["install"], "absent")
+        self.assertEqual(environment["launchd"], "")
         self.assertNotEqual(environment["launchd"], "absent")
+
+    def test_an_unusable_jbroot_leaves_the_install_prefix_unset(self):
+        # Removal is where this matters most, so the reason has to be in the dpkg
+        # log beside the block the guard is about to produce.
+        self.install_env_reporting_guard()
+        self.set_jbroot(None)
+        result = self.run_script("remove", repoint_primary=True)
+        self.assertIn("could not be resolved", result.stderr)
+        self.assertIn("jbroot produced no output", result.stderr)
+        self.assertEqual(self.guard_environment()["install"], "absent")
 
     def test_a_blocking_guard_verdict_is_propagated(self):
         self.install_guard(73)
@@ -716,16 +632,20 @@ class PrermTests(ShellScriptBase):
 
 
 class TemplateContractTests(unittest.TestCase):
-    def test_both_templates_are_shell_and_use_the_roothide_convention(self):
+    def test_both_templates_carry_every_placeholder_the_patcher_fills(self):
         for template in (POSTINST_TEMPLATE, PRERM_TEMPLATE):
             text = template.read_text()
             self.assertTrue(text.startswith("#!/bin/sh\n"), template.name)
-            self.assertIn("@PREFIX@", text)
-            self.assertIn("@NEEDS_JBROOT@", text)
-        postinst = POSTINST_TEMPLATE.read_text()
-        self.assertIn("@JBROOT@", postinst)
-        self.assertIn("jbroot", postinst)
-        self.assertLess(postinst.index("plutil"), postinst.index("sed "))
+            for placeholder in ("@PREFIX@", "@LAUNCHD_PREFIX@", "@NEEDS_JBROOT@"):
+                self.assertIn(placeholder, text, template.name)
+            self.assertIn("jbroot", text, template.name)
+
+    def test_neither_template_substitutes_anything_into_the_plist(self):
+        # The retired mechanism, asserted at the template level so it cannot come
+        # back through either script.
+        for template in (POSTINST_TEMPLATE, PRERM_TEMPLATE):
+            with self.subTest(template=template.name):
+                assertRetiredToolsAbsent(self, template)
 
     def test_the_templates_pass_the_shell_parser_for_both_schemes(self):
         for scheme in ("roothide", "rootless"):
@@ -737,58 +657,6 @@ class TemplateContractTests(unittest.TestCase):
                                             capture_output=True, text=True)
                     self.assertEqual(result.returncode, 0,
                                      f"{scheme}/{path.name}: {result.stderr}")
-
-
-class GrepFlavourHarnessTests(ShellScriptBase):
-    """Prove the sweep is really running against the binary-blind grep.
-
-    Without this, breaking the NMR_SHELL_TEST_GREP wiring would silently turn the
-    sweep into a second GNU-grep run: still green, and no longer testing anything.
-    Skipped in the default run, so it only ever asserts inside the sweep.
-    """
-
-    @unittest.skipUnless(os.environ.get("NMR_SHELL_TEST_GREP") == "binary-blind",
-                         "only meaningful inside the grep-flavour sweep")
-    def test_the_stubbed_grep_cannot_see_into_a_binary_plist(self):
-        stub = self.bin / "grep"
-        self.assertTrue(stub.exists(),
-                        "the sweep did not install its grep stub, so every case in "
-                        "this module just ran against the host grep again")
-        self.assertEqual(self.plist.read_bytes()[:8], b"bplist00")
-        self.assertIn(b"@JBROOT@", self.plist.read_bytes())
-        result = subprocess.run([str(stub), "-qa", "@JBROOT@", str(self.plist)],
-                                capture_output=True)
-        # 1 is "no match": the answer that would have hidden the placeholder.
-        self.assertEqual(result.returncode, 1)
-        # And it is not simply broken: it still answers correctly about text.
-        self.write_plist(staged_plist("@JBROOT@"), binary=False)
-        result = subprocess.run([str(stub), "-qa", "@JBROOT@", str(self.plist)],
-                                capture_output=True)
-        self.assertEqual(result.returncode, 0)
-
-
-class GrepFlavourSweepTests(unittest.TestCase):
-    """Rerun every test in this module against the binary-blind grep.
-
-    Which flavour the device has is not knowable, and the two disagree about
-    binary files in a way that decides whether the roothide substitution happens
-    at all. A single hand-written case covers the path that broke; this covers the
-    rest, including every diagnostic that asserts on a specific warning.
-
-    A subprocess rather than a fixture, because the flavour has to be chosen in
-    setUp before any script runs, and mixing both flavours inside one process
-    would make the module's own results depend on test order.
-    """
-
-    @unittest.skipIf(os.environ.get("NMR_SHELL_TEST_GREP") == "binary-blind",
-                     "already inside the grep-flavour sweep")
-    def test_the_whole_module_passes_with_a_binary_blind_grep(self):
-        result = subprocess.run(
-            [sys.executable, "-m", "unittest", "-q",
-             "tests.test_maintainer_shell_scripts"],
-            cwd=REPO, capture_output=True, text=True,
-            env=dict(os.environ, NMR_SHELL_TEST_GREP="binary-blind"))
-        self.assertEqual(result.returncode, 0, result.stderr[-4000:])
 
 
 if __name__ == "__main__":

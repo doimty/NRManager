@@ -2,6 +2,7 @@
 """P0 contracts for removal/downgrade restoration and cleanup recovery."""
 
 from pathlib import Path
+import re
 import sys
 import unittest
 
@@ -53,18 +54,30 @@ class UninstallGuardTests(unittest.TestCase):
         self.assertNotIn("-lroothide", makefile)
         self.assertIn("SUBPROJECTS += package-actions", root_makefile)
 
-    def test_the_shell_postinst_uses_the_roothide_substitution_convention(self):
-        # plutil first, because Theos stages the plist as a binary plist and a
-        # textual substitution cannot match inside one.
-        postinst = POSTINST_TEMPLATE.read_text()
-        self.assertTrue(postinst.startswith("#!/bin/sh\n"))
-        self.assertIn("plutil", postinst)
-        self.assertIn("@JBROOT@", postinst)
-        self.assertIn("jbroot", postinst)
-        self.assertLess(postinst.index("plutil"), postinst.index("sed "))
-        self.assertIn("networkmanager-install-guard", postinst)
+    def test_the_shell_postinst_no_longer_rewrites_the_launchd_plist(self):
+        # The retired mechanism. postinst used to convert the plist with plutil and
+        # sed @JBROOT@ into the live jailbreak root, which was the cause of the
+        # doubled program path the reporting device showed: roothide's launchctl is
+        # itself redirected and prepends jbroot to every absolute path in the file
+        # on load, so a plist that already carried one got a second.
+        #
+        # Asserted on the executable body only. The header comments deliberately
+        # explain why those three tools are gone, and that prose is worth keeping.
+        for template in (POSTINST_TEMPLATE, PRERM_TEMPLATE):
+            text = template.read_text()
+            with self.subTest(template=template.name):
+                self.assertTrue(text.startswith("#!/bin/sh\n"))
+                self.assertIn("jbroot", text)
+                body = text[text.index("SCHEME_PREFIX="):]
+                self.assertNotIn("@JBROOT@", body)
+                for line in body.splitlines():
+                    code = line.split("#", 1)[0]
+                    # Word boundaries: a substring test for "sed " also matches
+                    # the middle of "used ".
+                    found = re.search(r"\b(plutil|sed|grep)\b", code)
+                    self.assertIsNone(found, f"{template.name}: {line}")
+        self.assertIn("networkmanager-install-guard", POSTINST_TEMPLATE.read_text())
         prerm = PRERM_TEMPLATE.read_text()
-        self.assertTrue(prerm.startswith("#!/bin/sh\n"))
         self.assertIn("networkmanager-removal-guard", prerm)
         # Fail-closed: an unusable guard blocks removal rather than allowing it.
         self.assertIn("exit 73", prerm)
@@ -156,16 +169,29 @@ class UninstallGuardTests(unittest.TestCase):
         for template in ("postinst.sh.in", "prerm.sh.in"):
             text = (ROOT / "package-actions" / template).read_text()
             with self.subTest(template=template):
-                # The install prefix may legitimately be empty, so it is always
-                # exported.
+                # The install prefix is a filesystem root for a process nothing
+                # redirects, so it must be the real jailbreak root and is
+                # exported only when that is known. Leaving it unset makes the
+                # guard fail closed instead of reading the wrong root and
+                # reporting every policy record absent, which is
+                # indistinguishable from a clean band configuration.
                 self.assertIn(
-                    'NETWORKMANAGER_INSTALL_PREFIX="$RESOLVED_PREFIX"', text)
+                    'NETWORKMANAGER_INSTALL_PREFIX="$JBROOT_PREFIX"', text)
+                self.assertIn('if [ -n "$JBROOT_PREFIX" ]; then', text)
                 self.assertIn("export NETWORKMANAGER_INSTALL_PREFIX", text)
-                # The launchd prefix may not be empty, so it is exported only
-                # when known; an unset variable makes the guard report that
-                # rather than compare against a path launchd would never use.
-                self.assertIn('if [ -n "$LAUNCHD_PREFIX" ]; then', text)
+                # Never the prefix the shell resolved for itself: this shell is
+                # redirected, so that value is legitimately empty and says
+                # nothing about the filesystem the guard sees.
+                self.assertNotIn(
+                    'NETWORKMANAGER_INSTALL_PREFIX="$RESOLVED_PREFIX"', text)
+                # The launchd prefix is a package-time constant describing what
+                # must literally appear inside the plist, and empty is the
+                # correct roothide answer, so it is always exported. Empty and
+                # unset are different answers to the guard.
+                self.assertIn(
+                    'NETWORKMANAGER_LAUNCHD_PREFIX="$LAUNCHD_PREFIX"', text)
                 self.assertIn("export NETWORKMANAGER_LAUNCHD_PREFIX", text)
+                self.assertNotIn('if [ -n "$LAUNCHD_PREFIX" ]; then', text)
                 # Exported before the guard runs, not after.
                 self.assertLess(text.index("export NETWORKMANAGER_INSTALL_PREFIX"),
                                 text.rindex('"$@"'))
@@ -173,10 +199,18 @@ class UninstallGuardTests(unittest.TestCase):
                                 text.rindex('"$@"'))
 
     def test_the_install_and_launchd_prefixes_are_kept_distinct(self):
-        # Conflating these was the original mistake. The install prefix is what
-        # the guard prepends to read a file, and on roothide it is empty. The
-        # launchd prefix is what must appear inside the plist, and it is never
-        # empty because launchd is not subject to the redirection.
+        # Conflating these was the original mistake, and they disagree on exactly
+        # one point: whether empty is a valid answer.
+        #
+        # The install prefix is what the guard prepends to open a file. The guard
+        # is not redirected -- it links no libroothide and is exec'd through a
+        # bare path -- so an empty prefix lands every read on the real root. It is
+        # therefore rejected here and the value is probed against this package's
+        # own anchor file rather than trusted.
+        #
+        # The launchd prefix is what must literally appear inside the plist, and
+        # empty is the correct roothide answer: launchctl prepends the jailbreak
+        # root itself, so a prefix written into the plist would be doubled.
         source = MAINTAINER_SOURCE.read_text()
         supplied = source[source.index("static NSString *CCNMPrefixFromEnvironment"):
                           source.index("NSString *CCNMMaintainerInstallPrefix")]
@@ -186,11 +220,17 @@ class UninstallGuardTests(unittest.TestCase):
         self.assertIn('hasPrefix:@"/"', supplied)
         self.assertIn('hasSuffix:@"/"', supplied)
         install = source[source.index("NSString *CCNMMaintainerInstallPrefix"):
-                         source.index("NSString *CCNMMaintainerLaunchdPrefix")]
-        self.assertIn("CCNMInstallPrefixVariable, YES", install)
-        launchd = source[source.index("NSString *CCNMMaintainerLaunchdPrefix"):
+                         source.index("static NSString *CCNMMaintainerLaunchdPrefix")]
+        self.assertIn("CCNMInstallPrefixVariable, NO", install)
+        # And it is measured, not taken on faith.
+        self.assertIn("CCNMVerdictForPrefix", install)
+        launchd = source[source.index("static NSString *CCNMMaintainerLaunchdPrefix"):
                          source.index("NSString *CCNMMaintainerJailbreakRoot")]
-        self.assertIn("CCNMLaunchdPrefixVariable, NO", launchd)
+        self.assertIn("CCNMLaunchdPrefixVariable, YES", launchd)
+        # Set-ness is carried separately from the value, so an empty prefix is
+        # distinguishable from a variable the maintainer script never set.
+        self.assertIn("BOOL *resolved", launchd)
+        self.assertIn("didResolve", launchd)
         # The jailbreak root is a third question: an empty install prefix is a
         # valid answer there but is not a root that can be prepended.
         root_body = source[source.index("NSString *CCNMMaintainerJailbreakRoot"):

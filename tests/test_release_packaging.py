@@ -344,14 +344,25 @@ Load command 1
 
 
 class LaunchdPlistLaneTests(unittest.TestCase):
-    """The repo template already contains @JBROOT@.
+    """What prefix belongs inside the plist, per lane.
 
-    That makes a skipped before-package patch invisible on roothide and fatal on
-    rootless: rootless has no jbroot and its postinst has nothing to substitute,
-    so a literal @JBROOT@ path would ship and the daemon would never start.
+    roothide: none. Its launchctl is a redirected binary that rewrites every
+    absolute path in the file as jbroot(path) before launchd sees it, guarding
+    re-entry only with a __Patched flag it sets itself, so a plist that already
+    carries the jailbreak root gets a second one. The reporting device showed
+    exactly that doubled path.
+
+    rootless: /var/jb, because nothing there rewrites anything.
+
+    The repo template carries @PLIST_PREFIX@ where the prefix belongs, which is
+    invalid on both lanes on purpose. The template used to carry @JBROOT@, and
+    that made a skipped before-package patch invisible on roothide while only
+    rootless failed -- the asymmetry that let a wrong roothide contract look
+    verified.
     """
 
     RELATIVE = verify_release_package.LAUNCHD_PLIST_RELATIVE
+    SENTINEL = verify_release_package.TEMPLATE_SENTINEL
 
     def staged(self, prefix: str) -> dict:
         return {
@@ -385,53 +396,73 @@ class LaunchdPlistLaneTests(unittest.TestCase):
             return failures
 
     def test_each_lane_accepts_its_own_prefix(self) -> None:
-        self.assertEqual(self.check("roothide", self.staged("@JBROOT@")), [])
+        self.assertEqual(self.check("roothide", self.staged("")), [])
         self.assertEqual(self.check("rootless", self.staged("/var/jb")), [])
 
-    def test_an_unpatched_plist_fails_the_rootless_lane(self) -> None:
-        failures = self.check("rootless", self.staged("@JBROOT@"))
-        self.assertTrue(any("@JBROOT@" in failure for failure in failures), failures)
+    def test_an_unpatched_plist_fails_both_lanes(self) -> None:
+        # The point of a sentinel that is valid nowhere: a patcher that never ran
+        # is caught in both lanes, not just the one whose prefix it resembles.
+        for lane in ("roothide", "rootless"):
+            with self.subTest(lane=lane):
+                failures = self.check(lane, self.staged(self.SENTINEL))
+                self.assertTrue(
+                    any(self.SENTINEL in failure for failure in failures), failures)
+
+    def test_a_jbroot_placeholder_is_still_refused(self) -> None:
+        # No device-side step substitutes this any more, and launchctl would
+        # happily prepend the jailbreak root to it and store the result.
+        for lane in ("roothide", "rootless"):
+            with self.subTest(lane=lane):
+                failures = self.check(lane, self.staged("@JBROOT@"))
+                self.assertTrue(
+                    any("@JBROOT@" in failure for failure in failures), failures)
 
     def test_a_rootless_prefixed_plist_fails_the_roothide_lane(self) -> None:
         failures = self.check("roothide", self.staged("/var/jb"))
         self.assertTrue(any("/var/jb" in failure for failure in failures), failures)
 
-    def test_a_binary_roothide_plist_is_accepted_because_theos_binarizes_it(self) -> None:
+    def test_a_jbroot_absolute_path_fails_the_roothide_lane(self) -> None:
+        # The shape the reporting device shipped: a real jailbreak root written
+        # into the plist at package time, which launchctl then doubles.
+        jbroot = "/var/containers/Bundle/Application/.jbroot-D6B5C1F194F5F1C3"
+        failures = self.check("roothide", self.staged(jbroot))
+        self.assertTrue(any(jbroot in failure for failure in failures), failures)
+
+    def test_a_binary_plist_is_accepted_because_theos_binarizes_it(self) -> None:
         # Theos converts every staged plist to binary1 in internal-package, which
         # runs after before-package, so a binary plist is what actually ships. An
-        # XML requirement here failed a completely correct package. The device
-        # postinst converts with plutil before rewriting and refuses if it cannot.
-        self.assertEqual(self.check("roothide", self.staged("@JBROOT@"),
+        # XML requirement here failed a completely correct package.
+        self.assertEqual(self.check("roothide", self.staged(""),
                                     plistlib.FMT_BINARY), [])
         self.assertEqual(self.check("rootless", self.staged("/var/jb"),
                                     plistlib.FMT_BINARY), [])
 
-    def test_the_roothide_placeholder_must_be_present_as_plain_bytes(self) -> None:
-        # Necessary for the device flow in either format: plutil converts, then
-        # sed substitutes, and a placeholder missing from the file cannot survive
-        # a conversion. Asserted on the bytes the verifier reads, both formats.
-        for fmt in (plistlib.FMT_XML, plistlib.FMT_BINARY):
-            with self.subTest(fmt=fmt):
-                with tempfile.TemporaryDirectory() as directory:
-                    root = Path(directory)
-                    self.write(root, self.staged("@JBROOT@"), fmt)
-                    self.assertIn(b"@JBROOT@", (root / self.RELATIVE).read_bytes())
-                self.assertEqual(self.check("roothide", self.staged("@JBROOT@"), fmt), [])
+    def test_an_unresolved_token_is_caught_in_either_format(self) -> None:
+        # The byte scan runs before parsing and independently of the two path
+        # checks, so a token in a key those checks do not reach is still caught.
+        for token in (self.SENTINEL, "@JBROOT@"):
+            for fmt in (plistlib.FMT_XML, plistlib.FMT_BINARY):
+                with self.subTest(token=token, fmt=fmt):
+                    payload = self.staged("")
+                    payload["WorkingDirectory"] = token + "/usr/libexec"
+                    failures = self.check("roothide", payload, fmt)
+                    self.assertTrue(
+                        any(token in failure for failure in failures), failures)
 
     def test_the_reviewed_contract_fields_are_enforced(self) -> None:
-        payload = self.staged("@JBROOT@")
+        payload = self.staged("")
         payload["RunAtLoad"] = True
         self.assertTrue(
             any("RunAtLoad" in failure for failure in self.check("roothide", payload))
         )
 
-        payload = self.staged("@JBROOT@")
+        payload = self.staged("")
         payload["KeepAlive"]["SuccessfulExit"] = False
         self.assertTrue(
             any("SuccessfulExit" in failure for failure in self.check("roothide", payload))
         )
 
-        payload = self.staged("@JBROOT@")
+        payload = self.staged("")
         payload["UserName"] = "mobile"
         self.assertTrue(
             any("UserName" in failure for failure in self.check("roothide", payload))

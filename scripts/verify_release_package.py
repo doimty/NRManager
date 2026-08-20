@@ -164,6 +164,9 @@ LAUNCHD_PLIST_RELATIVE = "Library/LaunchDaemons/me.nixuge.networkmanager.mainten
 LAUNCHD_LABEL = "me.nixuge.networkmanager.maintenance"
 ROOTHIDE_PLACEHOLDER = "@JBROOT@"
 ROOTLESS_PREFIX = "/var/jb"
+# The token the repo template carries where a prefix belongs. Invalid on both
+# lanes by design, so a before-package patcher that never ran fails both.
+TEMPLATE_SENTINEL = "@PLIST_PREFIX@"
 MAINTENANCE_PROGRAM_RELATIVE = "/usr/libexec/networkmanager-maintenance"
 MAINTENANCE_BASELINE_RELATIVE = (
     "/var/mobile/Library/Preferences/"
@@ -356,8 +359,11 @@ def verify_maintainer_scripts(control_root: Path, failures: List[str]) -> Dict[s
         if not text.startswith("#!/bin/sh\n"):
             failures.append("maintainer script %s must start with #!/bin/sh" % name)
         # An unrendered template would reach the device with a literal
-        # placeholder and fail at a path that does not exist.
-        for placeholder in ("@PREFIX@", "@NEEDS_JBROOT@"):
+        # placeholder and fail at a path that does not exist. @LAUNCHD_PREFIX@ is
+        # included because it renders to an empty string on roothide, so an
+        # unrendered one is invisible in the resulting path and would instead
+        # surface much later as a launchd-contract mismatch.
+        for placeholder in ("@PREFIX@", "@LAUNCHD_PREFIX@", "@NEEDS_JBROOT@"):
             if placeholder in text:
                 failures.append(
                     "maintainer script %s still contains the %s placeholder" % (name, placeholder)
@@ -372,28 +378,29 @@ def verify_maintainer_scripts(control_root: Path, failures: List[str]) -> Dict[s
 def verify_launchd_plist(payload_root: Path, lane: str, failures: List[str]) -> Dict[str, object]:
     """Check the shipped launchd plist against the lane it was staged for.
 
-    This gate exists because the repo template at
-    layout/Library/LaunchDaemons/... already contains @JBROOT@. If the
-    before-package patcher does not run, the roothide package is accidentally
-    correct while the rootless package ships a literal @JBROOT@ path that no
-    on-device script ever substitutes: rootless has no jbroot and its postinst
-    has nothing to replace. The daemon would then never start, with nothing in
-    any other gate to show why.
+    The prefix a roothide plist must carry is *empty*, and this gate previously
+    asserted the opposite. roothide's launchctl is a redirected binary that
+    rewrites the plist on load: _patch_plist walks every path-bearing key and
+    replaces each absolute value with jbroot(value), guarding re-entry only with a
+    __Patched flag it sets itself. A plist already holding the jailbreak root gets
+    a second one, which the reporting device showed as
 
-    The mirror case matters too. A rootless-prefixed plist in a roothide package
-    points launchd at /var/jb, which does not exist there.
+        program = <jbroot>/<jbroot>/usr/libexec/networkmanager-maintenance
+
+    followed by a dyld failure, because @loader_path then resolved into a
+    directory that does not exist. Rootless is the opposite: nothing rewrites
+    anything there, so the plist must name /var/jb itself.
+
+    This gate exists because the repo template carries a sentinel where the prefix
+    belongs, so a before-package patcher that never ran leaves a path that cannot
+    resolve on either lane. The sentinel is deliberately not a valid prefix for
+    either one; the previous template held @JBROOT@, which made a skipped patcher
+    produce an accidentally correct roothide package and only broke rootless.
 
     Format is recorded but not required. Theos runs convert_xml_plist.sh in its
     FINALPACKAGE internal-package step, which is after before-package, so every
     staged plist reaches the .deb as binary1 regardless of what the packaging
     script wrote. Requiring XML here therefore failed a correct package.
-
-    What is required instead is that @JBROOT@ be present in the roothide plist as
-    plain bytes. That is a necessary condition for the device flow whichever
-    format ships: the postinst converts to XML with plutil and only then
-    substitutes, and a placeholder that is absent from the file cannot survive a
-    format conversion. It is deliberately not asserted through the parsed payload
-    alone, because the parsed value is what the prefix checks below already cover.
     """
     evidence: Dict[str, object] = {"lane": lane}
     failure_count_before = len(failures)
@@ -412,16 +419,18 @@ def verify_launchd_plist(payload_root: Path, lane: str, failures: List[str]) -> 
         evidence["status"] = "failed"
         return evidence
 
-    expected_prefix = ROOTHIDE_PLACEHOLDER if lane == "roothide" else ROOTLESS_PREFIX
+    expected_prefix = "" if lane == "roothide" else ROOTLESS_PREFIX
     evidence["expected_prefix"] = expected_prefix
-    # The device substitution is textual, and the placeholder has to be in the
-    # file for the conversion-then-sed flow to have anything to find.
-    if lane == "roothide":
-        evidence["placeholder_bytes_present"] = ROOTHIDE_PLACEHOLDER.encode() in raw
-        if not evidence["placeholder_bytes_present"]:
+    # Nothing on the device rewrites this file any more, so any unresolved token
+    # is permanent. Checked as plain bytes, independently of the parsed paths
+    # below, because a token could appear in a key those checks do not reach.
+    for token in (TEMPLATE_SENTINEL, ROOTHIDE_PLACEHOLDER):
+        present = token.encode() in raw
+        evidence["%s_present" % token.strip("@").lower()] = present
+        if present:
             failures.append(
-                "roothide launchd plist does not contain %s as plain bytes, so the "
-                "on-device sed cannot substitute it" % ROOTHIDE_PLACEHOLDER
+                "launchd plist still contains %s, so the before-package patcher "
+                "did not run and launchd has a path that cannot resolve" % token
             )
 
     arguments = payload.get("ProgramArguments")
@@ -454,12 +463,13 @@ def verify_launchd_plist(payload_root: Path, lane: str, failures: List[str]) -> 
     if isinstance(keep_alive, dict) and keep_alive.get("SuccessfulExit") is not None:
         failures.append("launchd plist must not set KeepAlive/SuccessfulExit")
 
-    # The wrong lane's prefix anywhere in the file is worth naming on its own:
-    # the checks above only look at the two paths that must match exactly.
-    other = ROOTLESS_PREFIX if lane == "roothide" else ROOTHIDE_PLACEHOLDER
-    if other.encode() in raw:
+    # The wrong lane's prefix anywhere in the file is worth naming on its own: the
+    # checks above only look at the two paths that must match exactly. Only
+    # meaningful in one direction, since the roothide prefix is empty and every
+    # path trivially "contains" it.
+    if lane == "roothide" and ROOTLESS_PREFIX.encode() in raw:
         failures.append(
-            "launchd plist for the %s lane contains %s" % (lane, other)
+            "launchd plist for the roothide lane contains %s" % ROOTLESS_PREFIX
         )
 
     evidence["status"] = "passed" if len(failures) == failure_count_before else "failed"

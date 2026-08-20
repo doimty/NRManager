@@ -499,26 +499,27 @@ class LaunchctlDiagnosticsTests(unittest.TestCase):
             self.assertIn(f"case CCNMMaintenanceRegistration{case}:", postinst)
 
     def test_an_already_correct_plist_is_not_rewritten(self):
-        # The shell postinst does the substitution, so this function only reads,
-        # parses and asserts. Writing was also the one thing the process could
-        # not do: on the reporting device every read succeeded and every write
-        # returned EPERM, so keeping a write here would have made a healthy
-        # install fail on a step that has nothing left to change.
+        # The plist ships complete, so this function only reads, parses and
+        # asserts. Writing was also the one thing the process could not do: on the
+        # reporting device every read succeeded and every write returned EPERM, so
+        # keeping a write here would have made a healthy install fail on a step
+        # that has nothing left to change.
         source = MAINTAINER_SOURCE.read_text()
         prepare = source[source.index("BOOL CCNMPrepareMaintenanceLaunchd"):
                          source.index("BOOL CCNMStopMaintenanceLaunchd")]
         self.assertNotIn("CCNMWritePlist", prepare)
         self.assertNotIn("mutableCopy", prepare)
         self.assertNotIn("CCNMWritePlist", source)
-        # Exact comparison, not hasSuffix:. A surviving @JBROOT@ placeholder and
-        # a doubled prefix both end with the correct relative path, and both
-        # leave a job launchd cannot start.
+        # Exact comparison, not hasSuffix:. A doubled prefix and a bare path both
+        # end with the correct relative path, and only one of them is loadable.
+        # The doubled shape is the one the reporting device actually shipped, so
+        # this is the check that would have caught it.
         self.assertIn("isEqualToString:expectedProgram", prepare)
         self.assertIn("isEqualToString:expectedBaseline", prepare)
         self.assertNotIn("hasSuffix:CCNMMaintenanceExecutableRelativePath", prepare)
         self.assertNotIn("hasSuffix:CCNMMaintenanceBaselineRelativePath", prepare)
         # The mismatch message has to name both sides, since it is the only
-        # evidence in the dpkg log that the substitution did not happen.
+        # evidence in the dpkg log that the shipped plist is wrong.
         self.assertIn("does not point at this install", prepare)
         self.assertIn("expected %@ and %@", prepare)
 

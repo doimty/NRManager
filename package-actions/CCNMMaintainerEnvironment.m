@@ -50,12 +50,26 @@ static BOOL CCNMSetError(NSError **error,
 // mistake.
 //
 // The install prefix is what this process must prepend to reach an installed
-// file. On roothide it is empty, because a maintainer-script child already
-// resolves bare paths inside the jailbreak root.
+// file. On roothide it is the real jailbreak root, because this process is not
+// redirected: it links no libroothide and is exec'd through a bare path, so a
+// bare path lands on the real root.
 //
-// The launchd prefix is what must appear inside the plist. launchd is not
-// subject to any redirection, so it needs a real absolute path even when this
-// process would reach the same file with a bare one.
+// The launchd prefix is what must literally appear inside the plist. On roothide
+// it is *empty*, and that is not a degenerate case to be rejected. roothide's
+// launchctl is itself redirected and rewrites every absolute path in the plist as
+// jbroot(path) before launchd sees it, guarding re-entry only with a __Patched
+// flag it sets itself. A plist that already carries the jailbreak root therefore
+// gets a second one, which is what produced
+//
+//     program = <jbroot>/<jbroot>/usr/libexec/networkmanager-maintenance
+//
+// on the reporting device, and then the dyld failure that followed from it:
+// @loader_path resolved into a directory that does not exist, so the daemon's
+// libroothide.dylib could not be found beside it.
+//
+// So on roothide the two prefixes are genuinely different values, not the same
+// value asked for twice. Rejecting an empty launchd prefix here was the second
+// half of the same defect.
 //
 // Both are handed over by the shell maintainer script, which already had to
 // determine them. Re-deriving either one here would be a second, weaker guess,
@@ -91,58 +105,156 @@ static NSString *CCNMPrefixFromEnvironment(NSString *variable,
 
 // The prefix this process prepends to reach installed files.
 //
-// nil means it could not be determined and no installed path is trustworthy.
-// @"" means bare paths already resolve, which is the normal roothide answer, so
-// it must not be mistaken for absence.
+// nil means it could not be determined, and no installed path is trustworthy.
+//
+// Never @"" unless a bare path was *measured* to work. An empty prefix is only
+// correct for a process whose paths are rewritten for it, and this one's are not:
+// it links no libroothide and is exec'd through a bare path, so it is not
+// injected either. Accepting an exported empty prefix on faith pointed every read
+// at the real root. That produced a launchd plist reported missing seconds after
+// the shell wrote it, and — the serious half — policy records that all read as
+// absent, which is indistinguishable from a clean band configuration.
+//
+// So the exported value is a hint, not a contract. Candidates are still supplied
+// rather than derived, because deriving one here is a weaker guess: the
+// executable path carries no .jbroot- component to work from. But each candidate
+// is now checked against this package's own anchor file before it is trusted,
+// which is a question this process can answer for itself.
+static NSString *CCNMInstallPrefixProbeReport = nil;
+
+typedef NS_ENUM(NSInteger, CCNMPrefixVerdict) {
+    CCNMPrefixAbsent = 0,
+    CCNMPrefixInconclusive,
+    CCNMPrefixUsable,
+};
+
+// stat(2) only, and deliberately no access(X_OK). On this platform that check is
+// routed through an exec-authorization hook and returned EPERM for a freshly
+// unpacked, perfectly runnable binary on the reporting device. Nothing here
+// executes the anchor; it only has to be present.
+static CCNMPrefixVerdict CCNMVerdictForPrefix(NSString *prefix, int *outErrno) {
+    NSString *anchor =
+        [prefix stringByAppendingString:CCNMMaintenanceExecutableRelativePath];
+    struct stat info;
+    if (stat(anchor.fileSystemRepresentation, &info) == 0) {
+        *outErrno = 0;
+        // Something that is not a regular file where our helper belongs is not
+        // this package's install root.
+        return S_ISREG(info.st_mode) ? CCNMPrefixUsable : CCNMPrefixAbsent;
+    }
+    *outErrno = errno;
+    switch (errno) {
+    case ENOENT:
+    case ENOTDIR:
+    case ENAMETOOLONG:
+    case ELOOP:
+        // The path was resolved and there is nothing at the end of it.
+        return CCNMPrefixAbsent;
+    default:
+        // EPERM and friends mean stat declined to answer, which is not an answer
+        // of "absent". Ranked below a confirmed hit and above a confirmed miss.
+        return CCNMPrefixInconclusive;
+    }
+}
+
 NSString *CCNMMaintainerInstallPrefix(void) {
     static NSString *prefix;
     static BOOL resolved;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        prefix = CCNMPrefixFromEnvironment(CCNMInstallPrefixVariable, YES);
-        if (prefix) {
-            resolved = YES;
-            return;
-        }
-        // Compile-time fallback for the rootless lane only, where the prefix is
-        // a fixed property of the package rather than of the running system.
-        // Deliberately no runtime derivation: a guard that guesses its root can
-        // read a policy state that is not the live one, report it as clean, and
-        // authorize removal while a forced band configuration is still applied.
+        NSMutableArray<NSString *> *candidates = [NSMutableArray array];
+        void (^offer)(NSString *) = ^(NSString *candidate) {
+            if (candidate && ![candidates containsObject:candidate]) {
+                [candidates addObject:candidate];
+            }
+        };
+        // Both maintainer-script variables can carry a real absolute root, so
+        // either one can answer this; empty is rejected for both here, because an
+        // empty answer is what this function no longer takes on trust. On roothide
+        // the launchd variable is legitimately empty and simply contributes
+        // nothing, which is correct: it is not a filesystem root.
+        offer(CCNMPrefixFromEnvironment(CCNMInstallPrefixVariable, NO));
+        offer(CCNMPrefixFromEnvironment(CCNMLaunchdPrefixVariable, NO));
+        // Compile-time value for the rootless lane, where the prefix is a fixed
+        // property of the package rather than of the running system. Empty on
+        // roothide, where it is not a property of anything.
 #if defined(THEOS_PACKAGE_INSTALL_PREFIX)
         const char *compiled = THEOS_PACKAGE_INSTALL_PREFIX;
         if (compiled && compiled[0] == '/') {
-            NSString *candidate = [NSString stringWithUTF8String:compiled];
-            BOOL isDirectory = NO;
-            if ([[NSFileManager defaultManager] fileExistsAtPath:candidate
-                                                     isDirectory:&isDirectory] &&
-                isDirectory) {
-                prefix = candidate;
-                resolved = YES;
-            }
+            offer([NSString stringWithUTF8String:compiled]);
         }
 #endif
+        // Last, and only if the anchor is actually reachable that way: bare
+        // paths, which are correct for a process whose paths are rewritten for
+        // it. The probe decides whether this process is one, not a comment.
+        offer(@"");
+
+        NSMutableArray<NSString *> *report = [NSMutableArray array];
+        NSMutableArray<NSString *> *inconclusive = [NSMutableArray array];
+        for (NSString *candidate in candidates) {
+            int probeErrno = 0;
+            CCNMPrefixVerdict verdict = CCNMVerdictForPrefix(candidate, &probeErrno);
+            NSString *shown = candidate.length > 0 ? candidate : @"(bare paths)";
+            [report addObject:[NSString stringWithFormat:@"%@ %@", shown,
+                verdict == CCNMPrefixUsable ? @"holds the maintenance helper"
+                    : [NSString stringWithFormat:@"errno %d", probeErrno]]];
+            if (verdict == CCNMPrefixUsable && !resolved) {
+                prefix = candidate;
+                resolved = YES;
+            } else if (verdict == CCNMPrefixInconclusive) {
+                [inconclusive addObject:candidate];
+            }
+        }
+        // Nothing was confirmed, but something refused to answer. Prefer that
+        // over giving up: a prefix stat cannot see into is still more likely to
+        // be the right one than a prefix stat positively ruled out.
+        if (!resolved && inconclusive.count > 0) {
+            prefix = inconclusive.firstObject;
+            resolved = YES;
+        }
+        CCNMInstallPrefixProbeReport = [report componentsJoinedByString:@", "];
     });
     return resolved ? prefix : nil;
 }
 
-// The prefix that must appear inside the launchd plist. Never empty: launchd is
-// not redirected, so a bare path there would point outside the jailbreak.
+// The prefix that must appear inside the launchd plist.
+//
+// Empty is a valid answer and is distinct from unset. Empty means "bare paths
+// belong in the plist", which is correct on roothide because launchctl prepends
+// the jailbreak root itself. Unset means the maintainer script did not say, and
+// then there is nothing to compare the installed plist against.//
+// *resolved therefore carries set-ness and the return value carries the prefix;
+// a nil return with *resolved == YES is impossible.
+//
 // Internal: every caller outside this file wants a path, not a prefix.
-static NSString *CCNMMaintainerLaunchdPrefix(void) {
+static NSString *CCNMMaintainerLaunchdPrefix(BOOL *resolved) {
     static NSString *prefix;
+    static BOOL didResolve;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        prefix = CCNMPrefixFromEnvironment(CCNMLaunchdPrefixVariable, NO);
+        const char *raw = getenv(CCNMLaunchdPrefixVariable.UTF8String);
+        if (raw) {
+            // Set, so it answers the question even when empty. A malformed
+            // non-empty value is still rejected: it would be compared literally
+            // against the plist and could only ever mismatch, so reporting "not
+            // determined" is more accurate than reporting a mismatch.
+            prefix = CCNMPrefixFromEnvironment(CCNMLaunchdPrefixVariable, YES);
+            didResolve = prefix != nil;
+            return;
+        }
 #if defined(THEOS_PACKAGE_INSTALL_PREFIX)
-        if (!prefix) {
-            const char *compiled = THEOS_PACKAGE_INSTALL_PREFIX;
-            if (compiled && compiled[0] == '/') {
-                prefix = [NSString stringWithUTF8String:compiled];
-            }
+        // Compile-time value for the rootless lane only. Not a fallback for an
+        // empty export, which is already an answer.
+        const char *compiled = THEOS_PACKAGE_INSTALL_PREFIX;
+        if (compiled && compiled[0] == '/') {
+            prefix = [NSString stringWithUTF8String:compiled];
+            didResolve = prefix != nil;
         }
 #endif
     });
+    if (resolved) {
+        *resolved = didResolve;
+    }
     return prefix;
 }
 
@@ -167,11 +279,18 @@ NSString *CCNMMaintainerRootedPath(NSString *path) {
     return [prefix stringByAppendingString:path];
 }
 
-// The absolute path launchd itself will use. Only meaningful for comparison
-// against the installed plist; this process may not be able to open it.
+// The absolute path launchd itself will resolve, which on roothide means the path
+// as launchctl will rewrite it -- so a bare one. roothide's launchctl is itself a
+// redirected binary: _patch_plist replaces every absolute path in the
+// launchd-recognised keys with jbroot(path), writes the result back, and guards
+// re-entry only with its own __Patched marker without checking whether the value
+// already carries a jailbreak root. A prefix written here would therefore be
+// doubled. Only meaningful for comparison against the installed plist; this
+// process may not be able to open it.
 static NSString *CCNMMaintainerLaunchdPath(NSString *path) {
-    NSString *prefix = CCNMMaintainerLaunchdPrefix();
-    return prefix ? [prefix stringByAppendingString:path] : nil;
+    BOOL resolved = NO;
+    NSString *prefix = CCNMMaintainerLaunchdPrefix(&resolved);
+    return resolved ? [prefix stringByAppendingString:path] : nil;
 }
 
 // launchctl lookup.
@@ -404,13 +523,15 @@ static BOOL CCNMJobIsLoaded(void) {
 }
 
 BOOL CCNMPrepareMaintenanceLaunchd(NSError **error) {
-    // Verification only. The shell postinst already substituted the jailbreak
-    // root, the way roothide's own packages do, so there is nothing left to
-    // write here — and writing was the one thing this process could not do: the
-    // reporting device showed a maintainer-script child running as euid 0 whose
-    // every read succeeded and every write returned EPERM. What remains is to
-    // confirm that what shell produced is actually loadable, and to say exactly
-    // what is wrong when it is not.
+    // Verification only, and now there is nothing else it could be: the plist
+    // ships complete. It used to be verification of a substitution the shell
+    // postinst performed, which was itself the bug -- on roothide the plist must
+    // hold bare paths, because launchctl prepends the jailbreak root on load.
+    //
+    // Writing was never an option here anyway: the reporting device showed a
+    // maintainer-script child running as euid 0 whose every read succeeded and
+    // every write returned EPERM. What remains is to confirm that what shipped is
+    // actually loadable, and to say exactly what is wrong when it is not.
     NSString *installPrefix = CCNMMaintainerInstallPrefix();
     if (!installPrefix) {
         return CCNMSetError(error, CCNMMaintainerErrorRoot,
@@ -421,20 +542,23 @@ BOOL CCNMPrepareMaintenanceLaunchd(NSError **error) {
                     ? @"set to something that is not an absolute path"
                     : @"not set by the maintainer script"]);
     }
-    // The path launchd will use is a different question from the path this
-    // process reads. launchd is not redirected, so the plist must name a real
-    // absolute path even where a bare one works here.
+    // The path launchd will resolve is a different question from the path this
+    // process reads, and on roothide the answers differ in the opposite
+    // direction from the obvious guess: launchctl rewrites the plist on load, so
+    // the file must name a *bare* path there, while this process needs a real
+    // prefix to open anything.
     NSString *expectedProgram = CCNMMaintainerLaunchdPath(
         CCNMMaintenanceExecutableRelativePath);
     NSString *expectedBaseline = CCNMMaintainerLaunchdPath(
         CCNMMaintenanceBaselineRelativePath);
     if (!expectedProgram || !expectedBaseline) {
+        const char *raw = getenv(CCNMLaunchdPrefixVariable.UTF8String);
         return CCNMSetError(error, CCNMMaintainerErrorRoot,
             [NSString stringWithFormat:
                 @"The launchd path prefix could not be determined (%@ was %@).",
                 CCNMLaunchdPrefixVariable,
-                getenv(CCNMLaunchdPrefixVariable.UTF8String)
-                    ? @"set to something that is not an absolute path"
+                raw ? @"set to something that is neither empty nor an absolute "
+                       "path without a trailing slash"
                     : @"not set by the maintainer script"]);
     }
     NSString *plistPath = CCNMMaintainerRootedPath(
@@ -516,10 +640,10 @@ BOOL CCNMPrepareMaintenanceLaunchd(NSError **error) {
         return CCNMSetError(error, CCNMMaintainerErrorPlist,
             @"The installed launchd plist violates the reviewed maintenance contract.");
     }
-    // Exact paths, not hasSuffix:. A surviving @JBROOT@ placeholder or a
-    // doubled prefix both end with the right relative path, and both leave a job
-    // launchd cannot start. This is the check that catches a substitution that
-    // did not happen, so it has to name what it found.
+    // Exact paths, not hasSuffix:. A doubled prefix and a bare path both end with
+    // the right relative path, and only one of them is loadable. This is the check
+    // that catches a plist staged for the wrong lane, so it has to name what it
+    // found.
     if (![program isEqualToString:expectedProgram] ||
         ![watchedPath isEqualToString:expectedBaseline]) {
         return CCNMSetError(error, CCNMMaintainerErrorPlist,
@@ -565,10 +689,11 @@ CCNMMaintenanceRegistration CCNMRegisterMaintenanceLaunchd(NSError **error) {
     if (!CCNMStopMaintenanceLaunchd(error)) {
         return CCNMMaintenanceRegistrationRejected;
     }
-    // launchctl gets the launchd-prefixed path, not the one this process reads.
-    // launchctl is a system binary outside the jailbreak root, so it is not
-    // subject to the redirection this process may be under; a bare path would
-    // resolve for us and fail for it.
+    // launchctl gets the launchd-prefixed path, which on roothide is bare.
+    // launchctl resolves it through its own jbroot redirection -- the same
+    // rewriting that forbids a prefix inside the plist -- so handing it an
+    // already-prefixed path would make it look for the file under a doubled
+    // root.
     NSString *plistPath = CCNMMaintainerLaunchdPath(
         CCNMMaintenanceLaunchdRelativePath);
     if (!plistPath) {

@@ -12,10 +12,15 @@ export ARCHS = arm64 arm64e
 # DYLD_INSERT_LIBRARIES. The reporting device showed a compiled maintainer script
 # running as euid 0 that could stat and read inside the jbroot but got EPERM on
 # every write and on every child exec, and saw bare paths like /bin/launchctl as
-# ENOENT. Substituting @JBROOT@ is therefore done in shell, the way roothide's
-# own packages do it (plutil -xml, then sed with $(jbroot)).
+# ENOENT.
 #
-# What remains here only reads and reports: policy state, the launchd contract,
+# Nothing is substituted into the launchd plist any more, on either lane. The
+# plist ships complete: bare paths on roothide, because its launchctl is itself
+# redirected and prepends the jailbreak root to every absolute path in the file on
+# load, and /var/jb on rootless, because nothing there rewrites anything. The
+# shell half now only resolves prefixes and hands them to these guards.
+#
+# What these guards do only reads and reports: policy state, the launchd contract,
 # and the launchctl load attempt. That is why these are still compiled — the
 # policy model is shared with the Settings bundle and must not be reimplemented
 # in shell.

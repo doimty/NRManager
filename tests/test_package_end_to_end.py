@@ -6,12 +6,14 @@ actual stages together in the order the Makefile runs them, builds a .deb, and
 runs the release verifier over it.
 
 It exists because of a specific gap. The repo template at
-layout/Library/LaunchDaemons/... already contains @JBROOT@, so a
-`before-package` rule that silently does not run produces a roothide package
-that happens to be correct and a rootless package that ships a literal @JBROOT@
-path. Nothing substitutes that on rootless: there is no jbroot and the postinst
-has nothing to replace. The daemon would never start, and no single-stage test
-would notice, because each stage passes on its own.
+layout/Library/LaunchDaemons/... carries @PLIST_PREFIX@ where a lane prefix
+belongs, and no on-device step substitutes anything into that file any more, so a
+`before-package` rule that silently does not run ships a permanently
+unresolvable path. The sentinel is deliberately invalid on both lanes: it used to
+be @JBROOT@, which meant a skipped patcher produced an accidentally correct
+roothide package while only rootless broke, and that asymmetry is what let a
+wrong roothide contract look verified. No single-stage test notices, because each
+stage passes on its own.
 
 The negative control is therefore the point of this file: staging with the patch
 step skipped must fail verification in both lanes.
@@ -164,24 +166,29 @@ class PackageEndToEndTests(unittest.TestCase):
                 # Binary is what actually ships, and it must not be a failure.
                 self.assertFalse(report["launchd_plist"]["xml"])
 
-    def test_the_roothide_placeholder_ships_as_plain_bytes(self) -> None:
-        # The property the on-device textual sed depends on, asserted against the
-        # package as Theos really leaves it rather than against the XML the
-        # packaging script wrote.
-        report = self.verify("roothide")
-        self.assertTrue(report["launchd_plist"]["placeholder_bytes_present"])
+    def test_no_unresolved_token_ships_in_either_lane(self) -> None:
+        # Checked against the package as Theos really leaves it, not against the
+        # XML the packaging script wrote. There is no device-side substitution
+        # left, so a surviving token would be a permanent unresolvable path.
+        for lane in ("roothide", "rootless"):
+            with self.subTest(lane=lane):
+                evidence = self.verify(lane)["launchd_plist"]
+                self.assertFalse(evidence["plist_prefix_present"])
+                self.assertFalse(evidence["jbroot_present"])
 
     def test_each_lane_ships_its_own_launchd_prefix(self) -> None:
+        # roothide ships bare paths: its launchctl rewrites every absolute path in
+        # the plist as jbroot(path) before launchd sees it, so a prefix here would
+        # be doubled. That doubling is what the reporting device showed.
         self.assertEqual(
             self.verify("roothide")["launchd_plist"]["program"],
-            "@JBROOT@" + verifier.MAINTENANCE_PROGRAM_RELATIVE)
+            verifier.MAINTENANCE_PROGRAM_RELATIVE)
         self.assertEqual(
             self.verify("rootless")["launchd_plist"]["program"],
             "/var/jb" + verifier.MAINTENANCE_PROGRAM_RELATIVE)
 
     def test_a_skipped_before_package_step_is_caught_in_both_lanes(self) -> None:
-        # The negative control this file exists for. Without it, a rootless
-        # package can ship a literal @JBROOT@ path that nothing substitutes.
+        # The negative control this file exists for.
         for lane in ("roothide", "rootless"):
             with self.subTest(lane=lane):
                 report = self.verify(lane, run_before_package=False)
@@ -190,10 +197,17 @@ class PackageEndToEndTests(unittest.TestCase):
                     any("missing: postinst" in failure or "postinst" in failure
                         for failure in report["failures"]), report["failures"])
 
-    def test_an_unsubstituted_rootless_plist_names_the_placeholder(self) -> None:
-        failures = self.verify("rootless", run_before_package=False)["failures"]
-        self.assertTrue(
-            any("@JBROOT@" in failure for failure in failures), failures)
+    def test_an_unpatched_plist_names_the_sentinel_in_both_lanes(self) -> None:
+        # The sentinel is invalid on both lanes on purpose. It used to be @JBROOT@,
+        # which meant a skipped patcher produced an accidentally correct roothide
+        # package and only rootless failed -- the asymmetry that let a wrong
+        # roothide contract look verified.
+        for lane in ("roothide", "rootless"):
+            with self.subTest(lane=lane):
+                failures = self.verify(lane, run_before_package=False)["failures"]
+                self.assertTrue(
+                    any(verifier.TEMPLATE_SENTINEL in failure
+                        for failure in failures), failures)
 
 
 if __name__ == "__main__":
