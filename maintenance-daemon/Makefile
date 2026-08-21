@@ -49,7 +49,18 @@ networkmanager-maintenance_INSTALL_PATH = /usr/libexec
 # it, so a genuinely missing symbol would have shipped as a binary that loads and
 # then dies when dyld has to bind it -- the same runtime-only failure shape as the
 # libroothide crash, from a different cause. It also demoted _objc_msgSend to the
-# flat namespace in the arm64 slice of the shipped build. If a private framework
-# is ever genuinely needed here, declare it; do not reintroduce a blanket flag.
+# flat namespace in the arm64 slice of the shipped build.
+#
+# Removing it changes this binary's dyld fixup format from LC_DYLD_INFO_ONLY to
+# LC_DYLD_CHAINED_FIXUPS, because chained fixups cannot encode a flat-namespace
+# lookup and the flag was forcing the old format. That is accepted here and only
+# here. The chained-fixups suspicion on this project concerns *injected* bundles;
+# the two guards next door are exec'd tools that ship chained fixups and both ran
+# on the reporting iOS 15.1.1 device, which is what makes this trade evidenced
+# rather than assumed. A masked missing symbol is a real defect; the fixup format
+# on an exec'd tool is not.
+#
+# If a private framework is ever genuinely needed here, declare it; do not
+# reintroduce a blanket flag.
 
 include $(THEOS_MAKE_PATH)/tool.mk

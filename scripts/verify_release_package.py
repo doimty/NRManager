@@ -168,17 +168,30 @@ UNLINKED_ROOTHIDE_TOOLS = (
     "networkmanager-removal-guard",
     MAINTENANCE_HELPER_NAME,
 )
-# A separate and deliberately narrower exemption: which roothide binaries may
-# carry LC_DYLD_CHAINED_FIXUPS. Not the same question as libroothide, and
-# conflating the two would have silently dropped the daemon's fixup-format check
-# at the moment it stopped linking the library. The daemon keeps LC_DYLD_INFO_ONLY
-# because it links against the iOS 14 minimum with a two-level namespace and no
-# chained-fixups opt-in; that is the device-verified shape for this project, and
-# on this daemon it is also the signal that no blanket -undefined dynamic_lookup
-# crept back into its link.
+# A separate and deliberately narrower question: which roothide binaries may carry
+# LC_DYLD_CHAINED_FIXUPS. Not the same question as libroothide, and conflating the
+# two would have silently dropped this check for the daemon at the moment it
+# stopped linking the library.
+#
+# The pin exists for the two injected bundles. On this project a build with a
+# floating Xcode produced chained-fixup bundles that crashed on device while the
+# pinned Xcode 15.4 build produced LC_DYLD_INFO_ONLY bundles that worked. Several
+# things moved at once there, so the format is a baseline marker rather than a
+# proven cause -- but it is a cheap and exact marker, and injected code is where
+# the risk was.
+#
+# Standalone tools are a different case, and this list names all three. They are
+# exec'd, not injected, and dyld has supported chained fixups since iOS 13.4. The
+# two guards are the evidence: they ship chained fixups today and both ran on the
+# reporting iOS 15.1.1 device -- their launchctl EPERM output is what redesigned
+# this release. The daemon is the same kind of binary built the same way.
+#
+# Membership coinciding with UNLINKED_ROOTHIDE_TOOLS is a coincidence of this
+# release, not a shared rule; see the test that pins both.
 CHAINED_FIXUPS_ALLOWED_TOOLS = (
     "networkmanager-install-guard",
     "networkmanager-removal-guard",
+    MAINTENANCE_HELPER_NAME,
 )
 FORBIDDEN_LEGACY_PAYLOAD_BASENAMES = {
     "discord@2x.png",

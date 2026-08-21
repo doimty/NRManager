@@ -338,19 +338,30 @@ Load command 1
             verify_release_package.BINARY_PAYLOAD_FILES,
         )
         # The daemon joins the guards: none of the three may link libroothide,
-        # because none of them runs with a bootstrap or a .jbroot beside it. The
-        # separate, narrower CHAINED_FIXUPS_ALLOWED_TOOLS keeps the daemon's
-        # fixup-format check alive -- conflating the two lists would have dropped
-        # it at the moment the daemon stopped linking the library.
+        # because none of them runs with a bootstrap or a .jbroot beside it.
         self.assertEqual(
             verify_release_package.UNLINKED_ROOTHIDE_TOOLS,
             ("networkmanager-install-guard", "networkmanager-removal-guard",
              "networkmanager-maintenance"),
         )
+        # Same membership, different question, and the lists must stay separate.
+        # LC_DYLD_INFO_ONLY is pinned for the two injected bundles, where a
+        # floating-Xcode chained-fixups build once crashed on device. The three
+        # standalone tools are exec'd rather than injected; the two guards ship
+        # chained fixups and both ran on the reporting iOS 15.1.1 device.
         self.assertEqual(
             verify_release_package.CHAINED_FIXUPS_ALLOWED_TOOLS,
-            ("networkmanager-install-guard", "networkmanager-removal-guard"),
+            ("networkmanager-install-guard", "networkmanager-removal-guard",
+             "networkmanager-maintenance"),
         )
+        self.assertIsNot(
+            verify_release_package.CHAINED_FIXUPS_ALLOWED_TOOLS,
+            verify_release_package.UNLINKED_ROOTHIDE_TOOLS,
+            "the two lists answer different questions and must not be aliased",
+        )
+        for bundle in ("NetworkManager", "NetworkManagerPrefs"):
+            self.assertNotIn(
+                bundle, verify_release_package.CHAINED_FIXUPS_ALLOWED_TOOLS)
         # Absence of the library is asserted for those binaries, not merely
         # tolerated, and the daemon's whole dependency set is pinned so any
         # unreviewed addition fails too.
