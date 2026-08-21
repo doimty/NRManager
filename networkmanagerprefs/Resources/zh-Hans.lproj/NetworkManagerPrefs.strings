@@ -36,6 +36,7 @@
 "SERVING_UNKNOWN_RESTART_SETTINGS" = "未知（再次操作基带前请重启“设置”）";
 "DATA_LINE_FORMAT" = "线路 %@";
 "DATA_LINE_SLOT_1" = "SIM 1";
+"DATA_LINE_SLOT_2" = "SIM 2";
 "FRESHNESS_JUST_NOW" = "刚刚";
 "FRESHNESS_REFRESHING" = "正在刷新…";
 "FRESHNESS_UPDATED_FORMAT" = "更新于 %@";
@@ -87,3 +88,4 @@
 "POLICY_ERROR_RECOVERY_REQUIRED" = "再次更改前，必须先处理已保存的策略恢复记录。";
 "POLICY_ERROR_GENERIC" = "策略未能完成更改或验证。重试前请先查看恢复状态。";
 "POLICY_ERROR_DIAGNOSTIC_FORMAT" = "%@\n\n错误代码：%@\n详细信息：%@";
+"POLICY_ERROR_MEASURED_DEVICE_FORMAT" = "本机实测：%@ / iOS %@（%@）";

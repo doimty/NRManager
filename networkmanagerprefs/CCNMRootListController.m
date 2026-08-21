@@ -348,6 +348,24 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
     return [NSString stringWithFormat:CCNMPreferencesLocalizedString(formatKey), timestamp];
 }
 
+// The read path supports any slot, so the row must report which subscription was
+// actually sampled rather than assuming slot 1.
+- (NSString *)dataLineDisplayValue:(NSDictionary *)summary {
+    NSString *dataLine = [summary[CCNMServingSummaryDataLineKey] isKindOfClass:NSString.class]
+        ? summary[CCNMServingSummaryDataLineKey] : @"";
+    if ([dataLine isEqualToString:@"slot1"]) {
+        return CCNMPreferencesLocalizedString(@"DATA_LINE_SLOT_1");
+    }
+    if ([dataLine isEqualToString:@"slot2"]) {
+        return CCNMPreferencesLocalizedString(@"DATA_LINE_SLOT_2");
+    }
+    if ([dataLine hasPrefix:@"slot"] && dataLine.length > 4) {
+        return [NSString stringWithFormat:CCNMPreferencesLocalizedString(@"DATA_LINE_FORMAT"),
+            [dataLine substringFromIndex:4]];
+    }
+    return CCNMPreferencesLocalizedString(@"VALUE_UNKNOWN");
+}
+
 - (void)beginServingRefresh {
     if (self.servingRefreshInProgress || self.policyOperationInProgress ||
         [self.servingSummary[CCNMServingSummaryUnsafeOutstandingKey] boolValue]) {
@@ -361,7 +379,7 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
     [self updateCurrentStateWithRequestedValue:[self requestedPolicyDisplayValue:self.policySummary]
                                   appliedValue:[self appliedPolicyDisplayValue:self.policySummary]
                                   servingValue:[self servingDisplayValue:self.servingSummary]
-                                 dataLineValue:CCNMPreferencesLocalizedString(@"DATA_LINE_SLOT_1")
+                                 dataLineValue:[self dataLineDisplayValue:self.servingSummary]
                                 freshnessValue:CCNMPreferencesLocalizedString(@"FRESHNESS_REFRESHING")
                               refreshAvailable:NO];
 
@@ -383,10 +401,28 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
     [self updateCurrentStateWithRequestedValue:[self requestedPolicyDisplayValue:self.policySummary]
                                   appliedValue:[self appliedPolicyDisplayValue:self.policySummary]
                                   servingValue:[self servingDisplayValue:self.servingSummary]
-                                 dataLineValue:CCNMPreferencesLocalizedString(@"DATA_LINE_SLOT_1")
+                                 dataLineValue:[self dataLineDisplayValue:self.servingSummary]
                                 freshnessValue:[self freshnessDisplayValue:self.servingSummary]
                               refreshAvailable:!self.servingRefreshInProgress && !self.policyOperationInProgress &&
                                   ![self.servingSummary[CCNMServingSummaryUnsafeOutstandingKey] boolValue]];
+}
+
+// The device the policy actually measured, when the failure carried it. Returns
+// an empty string rather than a partial line, so a summary that never reached the
+// target check does not invent identity values.
+- (NSString *)measuredDeviceDescription:(NSDictionary<NSString *, id> *)summary {
+    NSString *model = [summary[@"deviceModel"] isKindOfClass:NSString.class]
+        ? summary[@"deviceModel"] : @"";
+    NSString *version = [summary[@"systemVersion"] isKindOfClass:NSString.class]
+        ? summary[@"systemVersion"] : @"";
+    NSString *build = [summary[@"systemBuild"] isKindOfClass:NSString.class]
+        ? summary[@"systemBuild"] : @"";
+    if (model.length == 0 || version.length == 0 || build.length == 0) {
+        return @"";
+    }
+    return [NSString stringWithFormat:
+        CCNMPreferencesLocalizedString(@"POLICY_ERROR_MEASURED_DEVICE_FORMAT"),
+        model, version, build];
 }
 
 - (NSString *)policyFailureLocalizationKey:(NSString *)errorCode {
@@ -411,6 +447,13 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
         CCNMPreferencesLocalizedString(@"POLICY_ERROR_DIAGNOSTIC_FORMAT"),
         CCNMPreferencesLocalizedString(key), errorCode,
         technicalError.length > 0 ? technicalError : CCNMPreferencesLocalizedString(@"VALUE_UNKNOWN")];
+    // The target check reports what it measured, so say so. Stating only which
+    // device is accepted leaves the user to look up their own model and build by
+    // hand to find out why they were refused.
+    NSString *measured = [self measuredDeviceDescription:summary];
+    if (measured.length > 0) {
+        message = [message stringByAppendingFormat:@"\n%@", measured];
+    }
     UIAlertController *alert = [UIAlertController
         alertControllerWithTitle:CCNMPreferencesLocalizedString(@"POLICY_ERROR_TITLE")
         message:message

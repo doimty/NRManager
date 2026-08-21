@@ -13,7 +13,50 @@ SUPPORT = ROOT / "networkmanagerprefs/CCNMServingStatusSupport.h"
 HEADER = ROOT / "networkmanagerprefs/CCNMServingStatusProvider.h"
 SOURCE = ROOT / "networkmanagerprefs/CCNMServingStatusProvider.m"
 SAMPLER = ROOT / "networkmanagerprefs/CCNMServingCellSampler.m"
+POLICY = ROOT / "networkmanagerprefs/CCNMN78PolicyController.m"
 MAKEFILE = ROOT / "networkmanagerprefs/Makefile"
+
+
+def code_only(text):
+    """The source with comments removed, so prose cannot satisfy or break a check.
+
+    Assertions about what the code does must read the code. A comment explaining
+    why the write path keeps its device allowlist should not make an assertion
+    about the read path fail, and equally a commented-out gate must never be able
+    to satisfy one. String literals are preserved because several checks are about
+    message text.
+    """
+    out = []
+    index = 0
+    length = len(text)
+    while index < length:
+        character = text[index]
+        if character == '"':
+            out.append(character)
+            index += 1
+            while index < length:
+                out.append(text[index])
+                if text[index] == "\\":
+                    if index + 1 < length:
+                        out.append(text[index + 1])
+                        index += 2
+                        continue
+                elif text[index] == '"':
+                    index += 1
+                    break
+                index += 1
+            continue
+        if text.startswith("//", index):
+            newline = text.find("\n", index)
+            index = length if newline < 0 else newline
+            continue
+        if text.startswith("/*", index):
+            end = text.find("*/", index + 2)
+            index = length if end < 0 else end + 2
+            continue
+        out.append(character)
+        index += 1
+    return "".join(out)
 
 
 class ServingStatusProviderTests(unittest.TestCase):
@@ -77,6 +120,126 @@ int main(void) {
         self.assertIn("retainedSamplerClient", source)
         self.assertIn("retainedSamplerContext", source)
         self.assertNotIn("dlclose", source)
+
+    def test_reading_is_not_gated_on_a_device_allowlist(self):
+        """The read path runs on any model; only the write path is pinned.
+
+        A RAT-selection write is a modem configuration change whose restore has
+        been verified on exactly one device, which is why that path keeps its
+        allowlist. Reading the serving cell and the band capability changes
+        nothing, so there is no restore to have verified and refusing an unknown
+        model buys no safety. What makes the read safe on an unverified device is
+        the ABI validation and the bounded waits, which apply regardless of model.
+        """
+        source = code_only(SOURCE.read_text())
+        sampler = code_only(SAMPLER.read_text())
+        for gate in ("iPhone14,3", "19B81", "CCNMServingValidateTarget"):
+            self.assertNotIn(gate, source)
+            self.assertNotIn(gate, sampler)
+        self.assertNotIn("majorVersion == 15", source)
+        # The write path must still be pinned. If this ever fails, an allowlist
+        # was removed from the wrong side.
+        policy = code_only(POLICY.read_text())
+        self.assertIn('[model isEqualToString:@"iPhone14,3"]', policy)
+        self.assertIn('[build isEqualToString:@"19B81"]', policy)
+        self.assertIn("CCNMValidateTarget", policy)
+        # What remains in the read path is the ABI and shape validation that does
+        # the actual protecting.
+        for guard in (
+            "CCNMServingValidateSubscriptionABI",
+            "CCNMServingValidateBandInfoABI",
+            "respondsToSelector:",
+            "@try {",
+        ):
+            self.assertIn(guard, source)
+
+    def test_device_identity_is_reported_not_used_as_truth(self):
+        source = SOURCE.read_text()
+        header = HEADER.read_text()
+        self.assertIn("CCNMServingDeviceIdentity", source)
+        for key in (
+            "CCNMServingSummaryDeviceModelKey",
+            "CCNMServingSummarySystemBuildKey",
+            "CCNMServingSummarySystemVersionKey",
+        ):
+            self.assertIn(key, header)
+            self.assertIn(key, source)
+        # Identity is attached to every published summary, so a refusal elsewhere
+        # can say which device it measured instead of only which one it accepts.
+        self.assertIn(
+            "[summary addEntriesFromDictionary:CCNMServingDeviceIdentity()];", source
+        )
+        self.assertIn('evidence[@"deviceIdentity"] = CCNMServingDeviceIdentity();', source)
+        # Reported only. No comparison against it may decide anything.
+        identity_start = source.index("static NSDictionary<NSString *, id> *CCNMServingDeviceIdentity")
+        identity_end = source.index("}", source.index("return @{", identity_start))
+        identity = source[identity_start:identity_end]
+        for decision in ("isEqual", "if (", "return NO", "return YES"):
+            self.assertNotIn(decision, identity)
+
+    def test_data_line_is_chosen_and_reported_never_assumed(self):
+        """Dual SIM must not make the read fail, and the row must not claim SIM 1.
+
+        Requiring exactly one present SIM in slot 1 was the write path's
+        constraint, borrowed here for no reason: a write has to bind to an
+        unambiguous subscription, a read does not. The system's own data-line
+        selection is used, with the single usable subscription as fallback, and
+        only a genuinely ambiguous choice fails.
+        """
+        source = SOURCE.read_text()
+        self.assertNotIn("Exactly one present and good SIM in slot 1 is required.", source)
+        self.assertNotIn("context.slotID == 1", source)
+        self.assertIn("userDataPreferred", source)
+        self.assertIn("@selector(userDataPreferred)", source)
+        self.assertIn("flagged.count == 1", source)
+        self.assertIn("usable.count == 1", source)
+        # CoreTelephony's own data-line answer is preferred, but only when it names
+        # a subscription that is actually present and usable, so a stale or foreign
+        # answer cannot select an absent SIM.
+        self.assertIn("CCNMServingPreferredDataLineUUID", source)
+        self.assertIn("getCurrentDataSubscriptionContextSync:", source)
+        self.assertIn("[usable addObject:context];", source)
+        reported = source.index("if (reportedDataLineUUID.length &&")
+        self.assertLess(source.index("[usable addObject:context];"), reported)
+        # That selector is not in the reviewed device baseline, so it must be
+        # optional and ABI checked like every other private call here.
+        self.assertIn("@optional", source)
+        probe_start = source.index("static NSString *CCNMServingPreferredDataLineUUID")
+        probe_end = source.index("\n}", probe_start)
+        probe = source[probe_start:probe_end]
+        self.assertIn("CCNMServingValidateObjectErrorABI", probe)
+        self.assertIn("@try {", probe)
+        self.assertIn("return nil;", probe)
+        # The chosen slot is reported rather than hardcoded, in the summary and in
+        # the settings row.
+        self.assertNotIn('CCNMServingSummaryDataLineKey: @"slot1"', source)
+        self.assertNotIn('summary[CCNMServingSummaryDataLineKey] = @"slot1";', source)
+        self.assertIn('[NSString stringWithFormat:@"slot%lld", slotID.longLongValue]', source)
+        controller = (ROOT / "networkmanagerprefs/CCNMRootListController.m").read_text()
+        self.assertIn("dataLineDisplayValue:", controller)
+        self.assertNotIn(
+            'dataLineValue:CCNMPreferencesLocalizedString(@"DATA_LINE_SLOT_1")', controller
+        )
+        for language in ("en", "zh-Hans"):
+            strings = (ROOT / f"networkmanagerprefs/Resources/{language}.lproj"
+                       / "NetworkManagerPrefs.strings").read_text()
+            self.assertIn('"DATA_LINE_SLOT_2"', strings)
+            self.assertIn('"DATA_LINE_FORMAT"', strings)
+
+    def test_unsupported_target_alert_reports_what_it_measured(self):
+        controller = (ROOT / "networkmanagerprefs/CCNMRootListController.m").read_text()
+        self.assertIn("measuredDeviceDescription:", controller)
+        self.assertIn('POLICY_ERROR_MEASURED_DEVICE_FORMAT', controller)
+        # A summary that never reached the target check has no identity to show,
+        # and must not have one invented for it.
+        start = controller.index("- (NSString *)measuredDeviceDescription:")
+        end = controller.index("- (NSString *)policyFailureLocalizationKey:", start)
+        measured = controller[start:end]
+        self.assertIn("return @\"\";", measured)
+        for language in ("en", "zh-Hans"):
+            strings = (ROOT / f"networkmanagerprefs/Resources/{language}.lproj"
+                       / "NetworkManagerPrefs.strings").read_text()
+            self.assertIn('"POLICY_ERROR_MEASURED_DEVICE_FORMAT"', strings)
 
     def test_provider_never_writes_modem_or_infers_from_policy(self):
         combined = SOURCE.read_text() + SAMPLER.read_text()

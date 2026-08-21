@@ -1054,8 +1054,8 @@ static NSDictionary *CCNMRunServingCellSampler(
                 @"kind": @"missingContext",
                 @"operation": @"preflight",
                 @"status": @"missingContext",
-                @"message": @"Slot-1 subscription context is unavailable.",
-                @"reason": @"Slot-1 subscription context is unavailable."
+                @"message": @"The data-line subscription context is unavailable.",
+                @"reason": @"The data-line subscription context is unavailable."
             }];
         }
         if (!refreshABIValid) {

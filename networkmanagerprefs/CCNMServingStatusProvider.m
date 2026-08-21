@@ -18,6 +18,9 @@
 
 NSString *const CCNMServingSummaryStateKey = @"servingState";
 NSString *const CCNMServingSummaryDataLineKey = @"dataLine";
+NSString *const CCNMServingSummaryDeviceModelKey = @"deviceModel";
+NSString *const CCNMServingSummarySystemBuildKey = @"systemBuild";
+NSString *const CCNMServingSummarySystemVersionKey = @"systemVersion";
 NSString *const CCNMServingSummarySampledAtMillisecondsKey = @"sampledAtMilliseconds";
 NSString *const CCNMServingSummaryPublishedAtMillisecondsKey = @"publishedAtMilliseconds";
 NSString *const CCNMServingSummaryStaleKey = @"stale";
@@ -118,6 +121,11 @@ static BOOL CCNMServingPersistCachedSummary(NSDictionary *summary) {
 - (instancetype)initWithQueue:(dispatch_queue_t)queue;
 - (id)getSubscriptionInfoWithError:(NSError **)error;
 - (id)getBandInfo:(id)context error:(NSError **)error;
+// Optional. CoreTelephony's own answer to "which subscription is the data line".
+// Declared @optional and always guarded by -respondsToSelector: plus an ABI check,
+// because a build that does not vend it must degrade instead of failing.
+@optional
+- (id)getCurrentDataSubscriptionContextSync:(NSError **)error;
 @end
 
 @protocol CCNMServingBandInfo <NSObject>
@@ -134,8 +142,11 @@ static BOOL CCNMServingPersistCachedSummary(NSDictionary *summary) {
 - (BOOL)isSimGood;
 - (BOOL)isSimPresent;
 - (NSUUID *)uuid;
+// Optional. Declared so -respondsToSelector: can be asked for it without a
+// compiler warning; the caller degrades gracefully when it is absent.
+@optional
+- (NSNumber *)userDataPreferred;
 @end
-
 typedef NS_ENUM(NSInteger, CCNMCellMonitorRATKind) {
     CCNMCellMonitorRATKindOther = 0,
     CCNMCellMonitorRATKindLTE,
@@ -214,16 +225,27 @@ static BOOL CCNMServingValidateBandInfoABI(id client, NSString **failure) {
         @"The BandInfo query has an unexpected private ABI.", failure);
 }
 
-static BOOL CCNMServingValidateTarget(NSString **failure) {
+// Reports what device this is running on, for the record. This is deliberately
+// not a gate.
+//
+// The write path stays locked to the accepted iPhone14,3 / iOS 15.1.1 (19B81)
+// target, because a RAT-selection write is a modem configuration change whose
+// restore has only ever been verified on that one device. The read path is a
+// different kind of operation: it asks CoreTelephony for the serving cell and
+// the band capability and changes nothing, so there is nothing to restore and
+// no reason to refuse an unknown model. Every private call it makes is ABI
+// checked and bounded before use, which is what makes running on an unverified
+// device safe here rather than the model allowlist.
+static NSDictionary<NSString *, id> *CCNMServingDeviceIdentity(void) {
     NSString *model = CCNMServingSysctlString("hw.machine");
     NSString *build = CCNMServingSysctlString("kern.osversion");
     NSOperatingSystemVersion version = NSProcessInfo.processInfo.operatingSystemVersion;
-    BOOL valid = [model isEqual:@"iPhone14,3"] && [build isEqual:@"19B81"] &&
-        version.majorVersion == 15 && version.minorVersion == 1 && version.patchVersion == 1;
-    if (!valid && failure) {
-        *failure = @"Serving status is restricted to the accepted iPhone14,3 / iOS 15.1.1 target.";
-    }
-    return valid;
+    return @{
+        CCNMServingSummaryDeviceModelKey: model ?: @"",
+        CCNMServingSummarySystemBuildKey: build ?: @"",
+        CCNMServingSummarySystemVersionKey: [NSString stringWithFormat:@"%ld.%ld.%ld",
+            (long)version.majorVersion, (long)version.minorVersion, (long)version.patchVersion]
+    };
 }
 
 static void *CCNMServingCoreTelephonyHandle(void) {
@@ -271,9 +293,52 @@ static id<CCNMServingCoreTelephonyClient> CCNMServingCreateClient(void **framewo
     return client;
 }
 
+// Asks CoreTelephony which subscription is the current data line, as a UUID.
+//
+// Returns nil whenever the answer is not trustworthy, which the caller treats as
+// "no opinion" rather than as a failure. This selector is not part of the reviewed
+// baseline on the verified device, so it is guarded by -respondsToSelector: and
+// the same ABI check as every other private call here.
+static NSString *CCNMServingPreferredDataLineUUID(id<CCNMServingCoreTelephonyClient> client) {
+    SEL selector = @selector(getCurrentDataSubscriptionContextSync:);
+    if (!CCNMServingValidateObjectErrorABI(client, selector, 0,
+            @"unavailable", @"unexpected ABI", NULL)) {
+        return nil;
+    }
+    NSError *error = nil;
+    id context = nil;
+    @try {
+        context = [client getCurrentDataSubscriptionContextSync:&error];
+    } @catch (NSException *exception) {
+        // No opinion, not a failure: the caller falls back to the other rules.
+        (void)exception;
+        return nil;
+    }
+    if (error || !context || ![context respondsToSelector:@selector(uuid)]) {
+        return nil;
+    }
+    id rawUUID = [context uuid];
+    return [rawUUID isKindOfClass:NSUUID.class] ? [(NSUUID *)rawUUID UUIDString] : nil;
+}
+
+// Picks the subscription whose serving cell is worth showing, and reports which
+// one that was.
+//
+// The write path requires exactly one present SIM in slot 1, because it has to
+// bind a modem write to an unambiguous subscription. Reading has no such
+// constraint, and refusing to read on a dual-SIM phone was never a safety
+// property, only a leftover from sharing the write path's shape.
+//
+// Order of preference: the data line CoreTelephony itself reports, then the
+// per-context userDataPreferred flag, then the single usable subscription. Each
+// candidate must still appear in the usable set, so a stale or foreign answer
+// cannot select a SIM that is absent or unusable. Only a genuinely ambiguous
+// choice fails.
 static id<CCNMServingSubscriptionContext> CCNMServingTargetContext(
     id<CCNMServingCoreTelephonyClient> client,
     NSString **subscriptionUUID,
+    NSNumber **slotID,
+    NSString **selectionReason,
     NSString **failure
 ) {
     NSError *error = nil;
@@ -295,9 +360,10 @@ static id<CCNMServingSubscriptionContext> CCNMServingTargetContext(
         return nil;
     }
 
-    NSUInteger presentCount = 0;
-    NSUInteger targetCount = 0;
-    id<CCNMServingSubscriptionContext> target = nil;
+    NSMutableArray<id<CCNMServingSubscriptionContext>> *usable = [NSMutableArray array];
+    NSMutableArray<id<CCNMServingSubscriptionContext>> *flagged = [NSMutableArray array];
+    NSString *reportedDataLineUUID = CCNMServingPreferredDataLineUUID(client);
+    id<CCNMServingSubscriptionContext> reported = nil;
     for (id<CCNMServingSubscriptionContext> context in subscriptions) {
         if (![context respondsToSelector:@selector(slotID)] ||
             ![context respondsToSelector:@selector(isSimGood)] ||
@@ -308,24 +374,54 @@ static id<CCNMServingSubscriptionContext> CCNMServingTargetContext(
             }
             return nil;
         }
-        BOOL present = context.isSimPresent;
-        if (present) {
-            presentCount++;
+        if (!context.isSimPresent || !context.isSimGood ||
+            ![context.uuid isKindOfClass:NSUUID.class]) {
+            continue;
         }
-        if (context.slotID == 1 && present && context.isSimGood &&
-            [context.uuid isKindOfClass:NSUUID.class]) {
-            target = context;
-            targetCount++;
+        [usable addObject:context];
+        if (reportedDataLineUUID.length &&
+            [context.uuid.UUIDString isEqualToString:reportedDataLineUUID]) {
+            reported = context;
+        }
+        // -userDataPreferred is the user's data-line selection as CoreTelephony
+        // records it (CTXPCServiceSubscriptionContext, iOS 15). Optional: a build
+        // that does not answer it degrades to the next rule.
+        if ([context respondsToSelector:@selector(userDataPreferred)]) {
+            NSNumber *flag = context.userDataPreferred;
+            if ([flag isKindOfClass:NSNumber.class] && flag.boolValue) {
+                [flagged addObject:context];
+            }
         }
     }
-    if (presentCount != 1 || targetCount != 1 || !target) {
+
+    id<CCNMServingSubscriptionContext> target = nil;
+    NSString *reason = nil;
+    if (reported) {
+        target = reported;
+        reason = @"currentDataSubscription";
+    } else if (flagged.count == 1) {
+        target = flagged.firstObject;
+        reason = @"userDataPreferred";
+    } else if (usable.count == 1) {
+        target = usable.firstObject;
+        reason = @"onlyUsableSubscription";
+    }
+    if (!target) {
         if (failure) {
-            *failure = @"Exactly one present and good SIM in slot 1 is required.";
+            *failure = usable.count == 0
+                ? @"No present and usable SIM was found."
+                : @"Several usable SIMs are present and none is marked as the data line.";
         }
         return nil;
     }
     if (subscriptionUUID) {
         *subscriptionUUID = target.uuid.UUIDString;
+    }
+    if (slotID) {
+        *slotID = @(target.slotID);
+    }
+    if (selectionReason) {
+        *selectionReason = reason;
     }
     return target;
 }
@@ -532,7 +628,12 @@ NSDictionary<NSString *, id> *CCNMServingStatusEmptySummary(void) {
     return @{
         CCNMServingSummarySuccessKey: @NO,
         CCNMServingSummaryStateKey: CCNMServingStateUnknown,
-        CCNMServingSummaryDataLineKey: @"slot1",
+        // Unknown until a subscription has actually been chosen. The read path
+        // supports any slot, so this must not be pre-filled with slot 1.
+        CCNMServingSummaryDataLineKey: @"",
+        CCNMServingSummaryDeviceModelKey: @"",
+        CCNMServingSummarySystemBuildKey: @"",
+        CCNMServingSummarySystemVersionKey: @"",
         CCNMServingSummarySampledAtMillisecondsKey: @0,
         CCNMServingSummaryPublishedAtMillisecondsKey: @0,
         CCNMServingSummaryStaleKey: @YES,
@@ -554,6 +655,7 @@ NSDictionary<NSString *, id> *CCNMServingStatusEmptySummary(void) {
 
 static NSDictionary *CCNMServingSummaryFromReport(NSDictionary *report,
                                                    NSString *subscriptionUUID,
+                                                   NSNumber *slotID,
                                                    BOOL unsafeOutstanding) {
     BOOL complete = [report[@"cellMonitorSamplingStatus"] isEqual:@"complete"];
     BOOL responsiveMode = [report[@"cellMonitorSamplingMode"] isEqual:@"responsiveStableServing"];
@@ -596,7 +698,9 @@ static NSDictionary *CCNMServingSummaryFromReport(NSDictionary *report,
     NSMutableDictionary *summary = [CCNMServingStatusEmptySummary() mutableCopy];
     summary[CCNMServingSummarySuccessKey] = @(success);
     summary[CCNMServingSummaryStateKey] = success ? state : CCNMServingStateUnknown;
-    summary[CCNMServingSummaryDataLineKey] = @"slot1";
+    summary[CCNMServingSummaryDataLineKey] = slotID
+        ? [NSString stringWithFormat:@"slot%lld", slotID.longLongValue] : @"";
+    [summary addEntriesFromDictionary:CCNMServingDeviceIdentity()];
     summary[CCNMServingSummarySampledAtMillisecondsKey] = @(sampledAtMilliseconds);
     summary[CCNMServingSummaryStaleKey] = @(!success);
     summary[CCNMServingSummarySamplingStatusKey] = report[@"cellMonitorSamplingStatus"] ?: @"failed";
@@ -792,25 +896,32 @@ static NSDictionary *CCNMServingSummaryFromReport(NSDictionary *report,
             NSDictionary *capability = CCNMServingCapabilityFailure(
                 @"Current BandInfo capability was not sampled.");
             NSString *subscriptionUUID = nil;
+            NSNumber *slotID = nil;
+            NSString *selectionReason = nil;
             void *frameworkHandle = NULL;
             id<CCNMServingCoreTelephonyClient> client = nil;
             id context = nil;
             @try {
-                if (!CCNMServingValidateTarget(&failure)) {
-                    report = @{ @"cellMonitorSamplingFailure": failure ?: @"Unsupported target." };
-                } else {
-                    client = CCNMServingCreateClient(&frameworkHandle, &failure);
-                    context = client ? CCNMServingTargetContext(client, &subscriptionUUID, &failure) : nil;
-                    if (context) {
-                        // Read capability before the Cell Monitor sampler so a
-                        // late sampler callback never shares the client with a
-                        // second CoreTelephony query.
-                        capability = CCNMServingReadCapability(client, context, &failure);
-                    }
-                    report = context
-                        ? CCNMRunResponsiveServingCellSampler(client, context, frameworkHandle)
-                        : @{ @"cellMonitorSamplingFailure": failure ?: @"The data-line context is unavailable." };
+                // No device allowlist here. Reading the serving cell and the band
+                // capability changes nothing on the modem, so there is no restore
+                // to have verified and no reason to refuse an unknown model. Every
+                // private call below is ABI checked and bounded; that is what makes
+                // this safe on an unverified device. The write path in
+                // CCNMN78PolicyController keeps its allowlist.
+                client = CCNMServingCreateClient(&frameworkHandle, &failure);
+                context = client
+                    ? CCNMServingTargetContext(client, &subscriptionUUID, &slotID,
+                        &selectionReason, &failure)
+                    : nil;
+                if (context) {
+                    // Read capability before the Cell Monitor sampler so a
+                    // late sampler callback never shares the client with a
+                    // second CoreTelephony query.
+                    capability = CCNMServingReadCapability(client, context, &failure);
                 }
+                report = context
+                    ? CCNMRunResponsiveServingCellSampler(client, context, frameworkHandle)
+                    : @{ @"cellMonitorSamplingFailure": failure ?: @"The data-line context is unavailable." };
             } @catch (NSException *exception) {
                 failure = [NSString stringWithFormat:@"Serving refresh raised %@: %@",
                     exception.name, exception.reason ?: @"(no reason)"];
@@ -820,10 +931,14 @@ static NSDictionary *CCNMServingSummaryFromReport(NSDictionary *report,
 
             BOOL unsafeOutstanding = CCNMServingCellSamplerHasUnsafeOutstandingAttempt();
             NSMutableDictionary *summary = [CCNMServingSummaryFromReport(
-                report ?: @{}, subscriptionUUID, unsafeOutstanding) mutableCopy];
+                report ?: @{}, subscriptionUUID, slotID, unsafeOutstanding) mutableCopy];
             [summary addEntriesFromDictionary:capability ?: @{}];
             NSMutableDictionary *evidence = [report mutableCopy] ?: [NSMutableDictionary dictionary];
             evidence[@"capability"] = capability ?: @{};
+            evidence[@"deviceIdentity"] = CCNMServingDeviceIdentity();
+            if (selectionReason) {
+                evidence[@"dataLineSelectionReason"] = selectionReason;
+            }
             [self publishSummary:[summary copy] evidence:[evidence copy]];
             if (unsafeOutstanding) {
                 self.retainedSamplerLockDescriptor = lockDescriptor;

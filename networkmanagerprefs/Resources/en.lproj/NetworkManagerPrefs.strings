@@ -36,6 +36,7 @@
 "SERVING_UNKNOWN_RESTART_SETTINGS" = "Unknown (restart Settings before another modem operation)";
 "DATA_LINE_FORMAT" = "Line %@";
 "DATA_LINE_SLOT_1" = "SIM 1";
+"DATA_LINE_SLOT_2" = "SIM 2";
 "FRESHNESS_JUST_NOW" = "Just now";
 "FRESHNESS_REFRESHING" = "Refreshing…";
 "FRESHNESS_UPDATED_FORMAT" = "Updated %@";
@@ -87,3 +88,4 @@
 "POLICY_ERROR_RECOVERY_REQUIRED" = "Saved policy evidence must be recovered before another change.";
 "POLICY_ERROR_GENERIC" = "The policy could not be changed or verified. Review the recovery state before retrying.";
 "POLICY_ERROR_DIAGNOSTIC_FORMAT" = "%@\n\nError code: %@\nDetails: %@";
+"POLICY_ERROR_MEASURED_DEVICE_FORMAT" = "This device: %@ / iOS %@ (%@)";
