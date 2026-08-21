@@ -64,6 +64,18 @@ def code_only(text):
     )
 
 
+def shell_code_only(text):
+    """The same, for the maintainer-script templates.
+
+    Their comments explain at length why a call was removed, so a ban on the call
+    has to look at the code alone or the explanation would trip it.
+    """
+    return "\n".join(
+        line for line in text.splitlines()
+        if not line.lstrip().startswith("#")
+    )
+
+
 class CompiledGuardsDoNotExecTests(unittest.TestCase):
     def test_no_compiled_guard_source_spawns_anything(self):
         # The retired approach in one assertion. A guard that spawns is a guard
@@ -315,29 +327,55 @@ class ShellOwnsLaunchctlTests(unittest.TestCase):
         self.assertIn('print', loaded)
         postinst = POSTINST_TEMPLATE.read_text()
         bootstrap = postinst.index('"$LAUNCHCTL" bootstrap system "$LAUNCHD_PLIST"')
-        verdict = postinst.index("if ! launchd_job_is_loaded; then")
+        verdict = postinst.index("launchd_job_is_loaded\nloaded_status=$?")
         self.assertLess(bootstrap, verdict)
         # The exit status is reported as evidence but is not the decision.
         self.assertIn("bootstrap_status=$?", postinst)
         self.assertNotIn('if [ "$bootstrap_status" -ne 0 ]', postinst)
 
-    def test_kickstart_never_asks_launchd_for_the_new_pid(self):
-        # `kickstart -p` waits for launchd to report a PID. On the reporting
-        # device the job was in a crash-and-backoff loop with minimum runtime
-        # 1200, and `kickstart -kp` hung. -k alone returns immediately.
-        for text in (POSTINST_TEMPLATE.read_text(), LAUNCHCTL_INCLUDE.read_text()):
-            self.assertNotIn("kickstart -kp", text)
-            self.assertNotIn("kickstart -p", text)
-        postinst = POSTINST_TEMPLATE.read_text()
-        self.assertIn('"$LAUNCHCTL" kickstart -k "$LAUNCHD_TARGET"', postinst)
+    def test_an_unanswered_launchd_is_not_reported_as_a_refusal(self):
+        # Three outcomes, not two. Collapsing "launchd did not answer" into "not
+        # loaded" is a false negative that reads as good news: a bootout that
+        # timed out would be reported as a job successfully removed, and a
+        # bootstrap whose verification timed out as a job launchd refused.
+        include = shell_code_only(LAUNCHCTL_INCLUDE.read_text())
+        loaded = include[include.index("launchd_job_is_loaded() {"):
+                         include.index("launchd_bootout() {")]
+        self.assertIn("124|125) return 2", loaded)
+        # And the callers distinguish it rather than testing truthiness, which
+        # would silently fold 2 in with 1.
+        self.assertNotIn("if ! launchd_job_is_loaded", include)
+        self.assertNotIn("launchd_job_is_loaded ||", include)
+        postinst = shell_code_only(POSTINST_TEMPLATE.read_text())
+        self.assertNotIn("if ! launchd_job_is_loaded", postinst)
+        self.assertIn('[ "$loaded_status" -eq 2 ]', postinst)
 
-    def test_a_stale_definition_is_booted_out_before_bootstrap(self):
-        # bootstrap returns 37/EALREADY without reloading, so launchd would keep
-        # a previous version's definition. On the reporting device that is also
-        # what preserved runs = 108 and the 1200-second backoff across attempts.
+    def test_the_install_never_kickstarts_the_job(self):
+        # kickstart was the only call that ever hit the deadline on the reporting
+        # device, and it buys nothing. The plist's KeepAlive PathState names the
+        # policy baseline, so launchd starts the job itself once that file exists;
+        # bootout+bootstrap already guarantees the loaded definition is this
+        # package's. kickstart -k on a job launchd had just started only kills it
+        # and pays ThrottleInterval to start it again.
+        for text in (POSTINST_TEMPLATE.read_text(), PRERM_TEMPLATE.read_text(),
+                     LAUNCHCTL_INCLUDE.read_text()):
+            self.assertNotIn("kickstart", shell_code_only(text))
+
+    def test_a_stale_definition_is_booted_out_before_bootstrap_and_reported(self):
+        # bootstrap returns 37/EALREADY without reloading, so launchd would keep a
+        # previous version's definition. On the reporting device that is also what
+        # preserved runs = 108 and the 1200-second backoff across attempts.
+        #
+        # And the failure is reported. The reporting device's jbroot identifier
+        # changed between two installs, so a definition left by the earlier one
+        # names an executable under a bootstrap that no longer exists. launchd then
+        # holds a job it can never start, which looks exactly like "loaded and
+        # healthy" in the log unless bootout says it could not clear it.
         postinst = POSTINST_TEMPLATE.read_text()
         self.assertLess(postinst.index("launchd_bootout"),
                         postinst.index('"$LAUNCHCTL" bootstrap system'))
+        self.assertIn("bootout_status=$?", postinst)
+        self.assertNotIn("launchd_bootout || :", postinst)
 
     def test_an_unusable_launchctl_is_a_notice_rather_than_a_warning(self):
         # The plist is correct on disk, which is what makes the job loadable when

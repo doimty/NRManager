@@ -80,8 +80,6 @@ LAUNCHD_LABEL='@LAUNCHD_LABEL@'
 # roothide launchctl applies its own redirection to it. Bare here for the same
 # reason the plist is bare.
 LAUNCHD_PLIST='@LAUNCHD_PLIST@'
-# Relative, because this script resolves it against its own prefix.
-BASELINE_RELATIVE='@BASELINE@'
 # The only line the guard ever writes to stdout, and only when the installed
 # plist matches the launchd contract. Everything the guard says to a human goes
 # to stderr, so stdout carries this and nothing else.
@@ -98,6 +96,18 @@ note() {
 warn() {
     printf 'NetworkManagerReborn: warning — %s\n' "$1" >&2
 }
+
+# Printed on every exit path, including the early ones, because the reporting
+# device twice produced a log whose last line was one of ours and whose install
+# then appeared to stop -- and both times the question "is this script still
+# running?" could not be answered from the log. It can be now: this line means
+# the maintainer script returned, so anything still waiting afterwards is waiting
+# on something else.
+#
+# A trap rather than a line before each exit, so a future early return cannot
+# forget it. It leaves $? alone: the pending exit status is what the shell uses
+# after the trap runs.
+trap 'note "setup finished."' EXIT
 
 # ---------------------------------------------------------------------------
 # Candidate prefixes for reaching installed files from *this* process. At most
@@ -314,39 +324,54 @@ fi
 # Replace any definition left by a previous version, so the plist that ships with
 # this one is the plist launchd holds. Failure is not conclusive and is not
 # reported: on a first install there is nothing loaded to boot out.
-launchd_bootout || :
+launchd_bootout
+bootout_status=$?
+if [ "$bootout_status" -eq 1 ]; then
+    # Not fatal, and not silent either. A definition left by a previous install
+    # can name an executable under a jailbreak root that no longer exists -- the
+    # reporting device's changed between two installs -- and bootstrap returns
+    # EALREADY without replacing it. launchd then holds a job it can never start,
+    # and every later check reports it as loaded. Unrecoverable here, so it is
+    # reported rather than worked around.
+    #
+    # Only for status 1, which means the definition is known to have survived.
+    # Status 2 means launchd stopped answering and nothing is known; the bounded
+    # calls below report that themselves, and claiming a stale definition on that
+    # evidence would be inventing one.
+    warn "a previously loaded definition of the maintenance owner could not be removed. If it points into an earlier jailbreak root, launchd keeps refusing to start it until the next reboot."
+fi
 
 launchctl_run "$LAUNCHCTL" bootstrap system "$LAUNCHD_PLIST"
 bootstrap_status=$?
 if [ "$bootstrap_status" -eq 124 ]; then
-    # This is the call that hung the reporting device's install. It is bounded now,
-    # and a timeout is not a verdict on the job: launchd may well have accepted it
-    # before the deadline, so the next check decides and the job is deliberately
-    # not booted out.
-    warn "launchctl bootstrap did not return within ${LAUNCHCTL_DEADLINE_SECONDS}s and was stopped. The plist is installed either way, so launchd starts the maintenance owner at the next reboot. Band policy changes work now."
+    # No verdict is available and none is invented: asking launchd again would
+    # only spend another deadline, and the latch inside launchctl_run skips it
+    # anyway. The job is deliberately not booted out -- launchd may well have
+    # accepted the definition before the deadline.
+    warn "launchd did not answer within ${LAUNCHCTL_DEADLINE_SECONDS}s and the request was stopped, so the maintenance owner may or may not be running. The plist is installed either way, so launchd starts it at the next reboot. Band policy changes work now."
+    exit 0
 fi
-if ! launchd_job_is_loaded; then
+launchd_job_is_loaded
+loaded_status=$?
+if [ "$loaded_status" -eq 2 ]; then
+    warn "launchd did not answer within ${LAUNCHCTL_DEADLINE_SECONDS}s when asked whether the maintenance owner loaded, so the request was stopped. The plist is installed either way, so launchd starts it at the next reboot. Band policy changes work now."
+    exit 0
+fi
+if [ "$loaded_status" -ne 0 ]; then
     warn "the maintenance owner is installed but launchd declined to load it (bootstrap exit ${bootstrap_status}). Band policy changes work now. Automatic serving-state monitoring is unavailable until launchd accepts the job, which it may do at the next reboot."
     exit 0
 fi
 
-# Start it now only when there is something to monitor. Without the baseline the
-# daemon reads the policy as disabled and exits immediately, so kickstarting it
-# would produce a pointless launch and a throttled restart.
-if resolve "$BASELINE_RELATIVE"; then
-    launchctl_run "$LAUNCHCTL" kickstart -k "$LAUNCHD_TARGET"
-    kickstart_status=$?
-    if [ "$kickstart_status" -ne 0 ]; then
-        # Deliberately left loaded. The job is bootstrapped and its KeepAlive
-        # PathState watches the baseline, so launchd can still start it without
-        # help; booting it out here would guarantee nothing runs until reboot,
-        # which is strictly worse than a failed immediate start.
-        if [ "$kickstart_status" -eq 124 ]; then
-            warn "the maintenance owner is loaded but launchctl kickstart did not return within ${LAUNCHCTL_DEADLINE_SECONDS}s and was stopped. launchd will start it when it next sees the policy baseline, at the latest after a reboot."
-        else
-            warn "the maintenance owner is loaded but could not be started now (kickstart exit ${kickstart_status}). launchd will start it when it next sees the policy baseline, at the latest after a reboot."
-        fi
-    fi
-fi
+# Deliberately no kickstart here.
+#
+# It was the only call that ever hit the deadline on the reporting device, and it
+# buys nothing that this script does not already have. The plist's KeepAlive
+# PathState names the policy baseline, so launchd starts the job by itself the
+# moment that file exists -- including right now, because bootstrapping a job
+# whose KeepAlive condition is already satisfied starts it. The bootout above
+# already guarantees the running instance is this package's binary rather than a
+# previous one. So kickstart only ever meant "and start it a second time", at the
+# cost of a call that can block the package manager and a ThrottleInterval-delayed
+# restart when it lands on a job launchd had just started.
 
 exit 0

@@ -105,17 +105,24 @@ LAUNCHCTL_INCLUDE = "launchctl.sh.inc"
 COMMON_PLACEHOLDERS = ("@PREFIX@", "@LAUNCHD_PREFIX@", "@NEEDS_JBROOT@",
                        "@LAUNCHD_LABEL@", "@LAUNCHCTL_SUPPORT@")
 REQUIRED_PLACEHOLDERS = {
-    # Only postinst loads the job, so only postinst needs the plist it loads and
-    # the baseline whose presence decides whether to start it now. prerm boots
-    # the job out, which needs the label alone.
-    "postinst": COMMON_PLACEHOLDERS + ("@LAUNCHD_PLIST@", "@BASELINE@"),
+    # Only postinst loads the job, so only postinst needs the plist it loads.
+    # prerm boots the job out, which needs the label alone.
+    "postinst": COMMON_PLACEHOLDERS + ("@LAUNCHD_PLIST@",),
     "prerm": COMMON_PLACEHOLDERS,
 }
+# Retired, and still scanned for. @BASELINE@ was how postinst decided whether to
+# kickstart the job. The kickstart is gone, so neither script carries the token
+# and nothing substitutes it -- which is exactly why it stays in the residue
+# check: a reintroduced @BASELINE@ would now ship as a literal inside a path.
+# The value itself still exists as a constant here, because the plist's KeepAlive
+# PathState names it and that is what starts the job now.
+RETIRED_PLACEHOLDERS = ("@BASELINE@",)
 # Every placeholder either script may carry, used for the post-render residue
-# check. Built from the same table so a new placeholder cannot be added to one
+# check. Built from the same tables so a new placeholder cannot be added to one
 # without the check learning about it.
 ALL_PLACEHOLDERS = tuple(sorted(set(
-    token for tokens in REQUIRED_PLACEHOLDERS.values() for token in tokens)))
+    [token for tokens in REQUIRED_PLACEHOLDERS.values() for token in tokens]
+    + list(RETIRED_PLACEHOLDERS))))
 
 
 def plist_prefix(scheme: str) -> str:
@@ -188,13 +195,11 @@ def render_maintainer_scripts(staging: Path, source: Path, scheme: str) -> list:
         text = text.replace("@LAUNCHD_PREFIX@", launchd_prefix)
         text = text.replace("@NEEDS_JBROOT@", needs_jbroot)
         # Same values the plist was patched with, from the same constants, so the
-        # script and the file it loads cannot disagree. The plist path carries the
-        # launchd prefix because launchctl is what resolves it; the baseline path
-        # is relative because the shell resolves that one against its own prefix.
+        # script and the file it loads cannot disagree. The path carries the
+        # launchd prefix because launchctl is what resolves it.
         text = text.replace("@LAUNCHD_LABEL@", LABEL)
         text = text.replace("@LAUNCHD_PLIST@",
                             launchd_prefix + "/" + PLIST_RELATIVE.as_posix())
-        text = text.replace("@BASELINE@", BASELINE_RELATIVE)
         # Substituted last, so its own text is never scanned for placeholders it
         # does not carry and cannot accidentally supply one.
         text = text.replace("@LAUNCHCTL_SUPPORT@", launchctl_support)

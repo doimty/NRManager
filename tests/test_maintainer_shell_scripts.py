@@ -43,6 +43,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 
@@ -223,7 +224,7 @@ class ShellScriptBase(unittest.TestCase):
     # distinguish "loaded" from "the command returned zero".
     # ------------------------------------------------------------------
     def install_launchctl(self, bootstrap_exit=0, bootout_works=True,
-                          kickstart_exit=0, loaded=False):
+                          loaded=False):
         self.launchctl_log = self.dir / "launchctl.log"
         state = self.dir / "launchd-loaded"
         if loaded:
@@ -240,7 +241,7 @@ class ShellScriptBase(unittest.TestCase):
             f' exit {bootstrap_exit} ;;\n'
             f'  bootout) [ {int(bootout_works)} -eq 1 ] && rm -f "{state}" ;'
             f' exit 0 ;;\n'
-            f'  kickstart) exit {kickstart_exit} ;;\n'
+            f'  kickstart) exit 0 ;;\n'
             'esac\n'
             'exit 0\n')
         path.chmod(0o755)
@@ -252,7 +253,7 @@ class ShellScriptBase(unittest.TestCase):
         return [line.split()[0]
                 for line in self.launchctl_log.read_text().splitlines() if line]
 
-    def install_launchctl_that_hangs(self, on="bootstrap"):
+    def install_launchctl_that_hangs(self, on="bootstrap", loaded=False):
         """A launchctl whose named subcommand never returns.
 
         Models the reporting device's hang directly. Every other subcommand
@@ -261,6 +262,8 @@ class ShellScriptBase(unittest.TestCase):
         """
         self.launchctl_log = self.dir / "launchctl.log"
         state = self.dir / "launchd-loaded"
+        if loaded:
+            state.write_text("")
         path = self.prefix / "usr/bin/launchctl"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
@@ -278,6 +281,28 @@ class ShellScriptBase(unittest.TestCase):
             '  kickstart) exit 0 ;;\n'
             'esac\n'
             'exit 0\n')
+        path.chmod(0o755)
+        return path
+
+    def install_launchctl_that_stops_answering(self):
+        """A launchctl that probes fine and then never answers launchd.
+
+        The state the reporting device was in. `version` asks launchd nothing and
+        returns, so the binary resolves; every subcommand that does ask launchd
+        hangs. This is what makes a per-call deadline insufficient on its own: the
+        script makes several such calls in a row, so the install pays the deadline
+        once per call unless the first one is taken as a verdict on launchd.
+        """
+        self.launchctl_log = self.dir / "launchctl.log"
+        path = self.prefix / "usr/bin/launchctl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            '#!/bin/sh\n'
+            f'printf "%s\\n" "$*" >> "{self.launchctl_log}"\n'
+            'case "$1" in\n'
+            '  version) exit 0 ;;\n'
+            'esac\n'
+            'while : ; do :; done\n')
         path.chmod(0o755)
         return path
 
@@ -749,11 +774,15 @@ class PostinstLaunchdLoadTests(ShellScriptBase):
 
     def test_launchd_decides_whether_the_load_worked_not_the_exit_code(self):
         # 37/EALREADY is a success for our purposes, so the verdict has to come
-        # from asking launchd.
+        # from asking launchd. That code only occurs for a job that is still
+        # bootstrapped, which is why bootout has to have failed here -- and that
+        # failure is separately reported, so the assertion is specifically that no
+        # load failure is claimed.
         self.install_launchctl(bootstrap_exit=37, loaded=True, bootout_works=False)
         result = self.run_script("configure")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertNoWarning(result)
+        self.assertNotIn("declined to load it", result.stderr)
+        self.assertIn("could not be removed", result.stderr)
 
     def test_a_load_launchd_refuses_is_reported_without_failing_configure(self):
         self.install_launchctl(bootstrap_exit=5)
@@ -762,43 +791,120 @@ class PostinstLaunchdLoadTests(ShellScriptBase):
         self.assertIn("launchd declined to load it", result.stderr)
         self.assertIn("bootstrap exit 5", result.stderr)
 
-    def test_the_job_is_started_now_only_when_the_baseline_exists(self):
-        # Without the baseline the daemon reads the policy as disabled and exits
-        # immediately, so kickstarting it would produce a pointless launch and a
-        # throttled restart. Its KeepAlive PathState watches the baseline, so
-        # launchd starts it by itself when one appears.
+    def test_the_install_never_kickstarts_the_job(self):
+        # kickstart was the only call that ever hit the deadline on the reporting
+        # device. It is also redundant: the plist's KeepAlive PathState names the
+        # policy baseline, so bootstrapping a job whose condition is already
+        # satisfied starts it, and bootout+bootstrap already replaced any earlier
+        # definition. Both with and without the baseline, because the old code
+        # made the call conditional on it.
         self.install_launchctl()
-        self.run_script("configure")
-        self.assertNotIn("kickstart", self.launchctl_calls())
+        result = self.run_script("configure")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNoWarning(result)
+        # A first install has nothing loaded, so there is nothing to boot out.
+        self.assertEqual(self.launchctl_calls(),
+                         ["version", "print", "bootstrap", "print"])
 
-        self.install_launchctl()
+        # Second install over the first, which is the state the device was in.
+        self.launchctl_log.unlink()
         self.install_baseline()
         result = self.run_script("configure")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNoWarning(result)
-        self.assertIn("kickstart", self.launchctl_calls())
+        self.assertEqual(self.launchctl_calls(),
+                         ["version", "print", "bootout", "print", "bootstrap",
+                          "print"])
 
-    def test_kickstart_never_waits_for_a_pid(self):
-        # `kickstart -p` waits for launchd to report a PID. The reporting device
-        # had the job in a crash-and-backoff loop with minimum runtime 1200, and
-        # -kp hung; -k alone returns immediately.
+    def test_a_kickstart_that_hangs_can_no_longer_delay_the_install(self):
+        # The exact shape of the second device report: bootstrap fine, job loaded,
+        # kickstart stuck. With no kickstart call left, this install must finish
+        # promptly and quietly rather than spending the deadline and warning.
+        self.install_launchctl_that_hangs(on="kickstart")
+        self.install_baseline()
+        started = time.monotonic()
+        result = self.run_script("configure", timeout=120)
+        elapsed = time.monotonic() - started
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNoWarning(result)
+        self.assertNotIn("kickstart", self.launchctl_calls())
+        self.assertLess(elapsed, 20, f"took {elapsed:.1f}s; a deadline was paid")
+
+    def test_a_launchd_that_stops_answering_costs_one_deadline_not_several(self):
+        # The reporting device's install stalled for far longer than one deadline,
+        # and this is why: bounding each call individually still lets the script
+        # spend the deadline once per call, and it makes several launchd calls in a
+        # row. The first unanswered request is taken as a verdict on launchd, so
+        # the rest are skipped.
+        self.install_launchctl_that_stops_answering()
+        self.install_baseline()
+        started = time.monotonic()
+        result = self.run_script("configure", timeout=300)
+        elapsed = time.monotonic() - started
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("launchd did not answer", result.stderr)
+        # One deadline plus the 2s escalation and process overhead, and nowhere
+        # near the two-plus deadlines the previous version would have paid.
+        self.assertLess(elapsed, 32, f"took {elapsed:.1f}s; more than one deadline")
+        # Every launchd-facing call after the first stuck one is skipped, so the
+        # log stops at the one that hung.
+        self.assertEqual(self.launchctl_calls(), ["version", "print"])
+
+    def test_a_stuck_bootout_still_costs_only_one_deadline(self):
+        # The latch has to hold across the rest of the script, not just within one
+        # helper: bootout hanging leaves bootstrap and its verification still to
+        # come, and each would otherwise pay the deadline again.
+        # Pre-loaded, or bootout is never reached: nothing is booted out on a
+        # first install, which is the whole point of the early return in
+        # launchd_bootout.
+        self.install_launchctl_that_hangs(on="bootout", loaded=True)
+        started = time.monotonic()
+        result = self.run_script("configure", timeout=300)
+        elapsed = time.monotonic() - started
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLess(elapsed, 32, f"took {elapsed:.1f}s; more than one deadline")
+        self.assertEqual(self.launchctl_calls(),
+                         ["version", "print", "bootout"])
+
+    def test_the_script_says_when_it_returns(self):
+        # Both device reports ended with a line of ours and an install that
+        # appeared to stop, and neither log could answer "is this script still
+        # running?". This line is that answer, and it has to be on the failure
+        # paths too, which is why it is a trap rather than a line before exit.
         self.install_launchctl()
-        self.install_baseline()
-        self.run_script("configure")
-        kickstart = [line for line in self.launchctl_log.read_text().splitlines()
-                     if line.startswith("kickstart")]
-        self.assertEqual(kickstart, [f"kickstart -k system/{LABEL}"])
-
-    def test_a_failed_start_leaves_the_job_loaded(self):
-        # Booting it out here would guarantee nothing runs until reboot, which is
-        # strictly worse than a failed immediate start: the job is bootstrapped
-        # and launchd can still start it from the PathState watch.
-        self.install_launchctl(kickstart_exit=3)
-        self.install_baseline()
         result = self.run_script("configure")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("could not be started now", result.stderr)
-        self.assertNotIn("bootout", self.launchctl_calls()[-1:])
+        self.assertTrue(result.stderr.rstrip().endswith("setup finished."),
+                        result.stderr)
+
+        # An early exit: no guard at all, which returns before any launchd work.
+        (self.prefix / "usr/libexec/networkmanager-install-guard").unlink()
+        result = self.run_script("configure")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(result.stderr.rstrip().endswith("setup finished."),
+                        result.stderr)
+
+    def test_a_stale_definition_that_cannot_be_removed_is_reported(self):
+        # The reporting device's jbroot identifier changed between two installs, so
+        # a definition left by the earlier one names an executable under a
+        # bootstrap that no longer exists. bootstrap returns EALREADY, launchd
+        # keeps the unstartable job, and the log would otherwise read as success.
+        self.install_launchctl(loaded=True, bootout_works=False)
+        result = self.run_script("configure")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("could not be removed", result.stderr)
+        self.assertIn("earlier jailbreak root", result.stderr)
+
+    def test_an_unanswered_bootout_is_not_reported_as_a_stale_definition(self):
+        # The other half of the three-outcome rule, and the direction that would
+        # invent evidence rather than lose it: a bootout whose verification never
+        # came back says only that launchd stopped answering. Claiming a surviving
+        # stale definition on that basis would point the user at the wrong problem.
+        self.install_launchctl_that_hangs(on="bootout", loaded=True)
+        result = self.run_script("configure", timeout=300)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("could not be removed", result.stderr)
+        self.assertIn("launchd did not answer", result.stderr)
 
     def test_an_unusable_launchctl_is_a_notice_not_a_warning(self):
         # No launchctl is installed at all here, which is the state of this
@@ -844,10 +950,10 @@ class PostinstLaunchdLoadTests(ShellScriptBase):
         self.install_launchctl_that_hangs(on="bootstrap")
         result = self.run_script("configure", timeout=120)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("did not return within", result.stderr)
-        # A timeout is not a verdict on the job. This stub marks it loaded before
-        # hanging, so the install must go on to ask launchd and find it loaded
-        # rather than boot it out.
+        self.assertIn("launchd did not answer", result.stderr)
+        # A timeout is not a verdict on the job, so it is not booted out. This
+        # stub marks it loaded before hanging, and launchd may equally have
+        # accepted the real one before the deadline.
         self.assertNotIn("bootout", self.launchctl_calls()[2:])
 
     def test_a_bootstrap_that_leaks_a_live_child_does_not_hang_the_install(self):

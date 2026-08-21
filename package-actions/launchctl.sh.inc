@@ -72,6 +72,17 @@ LAUNCHCTL_REPORT=''
 # performance limit.
 LAUNCHCTL_DEADLINE_SECONDS=20
 LAUNCHCTL_DELAY=''
+# Set once any bounded call fails to answer. Every later call is then skipped
+# instead of spending the deadline again.
+#
+# This is the second half of "a maintainer script must not hang the package
+# manager", and the reporting device needed it: bounding each call individually
+# still let one install spend 20s, and these scripts make up to six calls in a
+# row. A launchd that stops answering one request answers none of the rest, so
+# the honest reading of the first deadline is "launchd is not answering", not
+# "that particular request was slow". Without this, worst case is the deadline
+# times the number of calls; with it, the whole launchd section is bounded once.
+LAUNCHCTL_STUCK=''
 
 # A bounded wait needs a delay command. Absent one, the immediate load is skipped
 # rather than run unbounded: the plist on disk already makes the job loadable at
@@ -99,8 +110,18 @@ resolve_delay_command() {
 # a recycled PID. The window is sub-millisecond and needs PID reuse inside the
 # deadline. This is the standard shell timeout idiom and the alternatives need a
 # writable temp path, which is worse in a root maintainer script.
+# Residual risk, stated rather than hidden: if a child survives SIGKILL, the
+# wait() below does not return and this script does not exit. On Darwin SIGKILL
+# cannot be caught or blocked, so that requires a process wedged in an
+# uninterruptible kernel path -- a state this project cannot construct on a test
+# host and therefore cannot verify an escape hatch against. A bounded wait in
+# POSIX sh needs a trapped signal from a third watchdog stage, and shipping that
+# untested into a root maintainer script is the worse trade. The escalation below
+# is verified: a child that ignores TERM is killed 2s later and the call returns
+# 124.
 launchctl_run() {
     [ -n "$LAUNCHCTL_DELAY" ] || return 125
+    [ -z "$LAUNCHCTL_STUCK" ] || return 124
     "$@" </dev/null >/dev/null 2>&1 &
     _run_pid=$!
     (
@@ -117,6 +138,7 @@ launchctl_run() {
     # 128+signum. Any signal death means it did not finish on its own, which is
     # the same verdict as the deadline for every caller here.
     if [ "$_run_status" -ge 128 ]; then
+        LAUNCHCTL_STUCK=1
         return 124
     fi
     return "$_run_status"
@@ -157,6 +179,11 @@ resolve_launchctl() {
         fi
         if [ "$_status" -eq 124 ]; then
             _launchctl_report="${_launchctl_report}${_launchctl_report:+, }${_candidate}(did not return within ${LAUNCHCTL_DEADLINE_SECONDS}s)"
+            # Deliberately cleared, so probing continues to the next candidate.
+            # The latch means "launchd is not answering", and `version` does not
+            # ask launchd anything -- a candidate that hangs there is a bad or
+            # wrong binary on that path, which says nothing about the next one.
+            LAUNCHCTL_STUCK=''
         else
             _launchctl_report="${_launchctl_report}${_launchctl_report:+, }${_candidate}(exit ${_status})"
         fi
@@ -172,20 +199,44 @@ LAUNCHCTL_CANDIDATES
 # command that tried to load it. `bootstrap` returns 37 (EALREADY) for a job that
 # is already bootstrapped, which is a success for our purposes and was exactly
 # what the device reported.
+#
+# Three outcomes, not two: 0 loaded, 1 not loaded, 2 launchd did not answer.
+# Collapsing the third into "not loaded" is a false negative that reads as good
+# news -- it would let a bootout that timed out be reported as a job successfully
+# removed, which is the opposite of what happened.
 launchd_job_is_loaded() {
-    [ -n "$LAUNCHCTL" ] || return 1
+    [ -n "$LAUNCHCTL" ] || return 2
     launchctl_run "$LAUNCHCTL" print "$LAUNCHD_TARGET"
+    case $? in
+        0) return 0 ;;
+        124|125) return 2 ;;
+        *) return 1 ;;
+    esac
 }
 
-# Best-effort removal of any loaded definition. Returns nonzero only when the job
-# is still loaded afterwards, so "was not loaded to begin with" is a success.
+# Removes any loaded definition. Three outcomes, for the same reason
+# launchd_job_is_loaded has three: 0 the job is known not to be loaded, 1 it is
+# still loaded, 2 launchd did not answer so nothing is known.
+#
+# The distinction is not academic. Outcome 1 says a definition survived, which on
+# a device whose jailbreak root has changed since the last install means launchd
+# is holding a job whose executable no longer exists -- bootstrap returns EALREADY
+# without replacing it, and every later check reports it as loaded. Outcome 2 says
+# only that launchd stopped answering, and claiming a stale definition on that
+# evidence would be inventing one.
 launchd_bootout() {
-    [ -n "$LAUNCHCTL" ] || return 1
-    launchd_job_is_loaded || return 0
+    [ -n "$LAUNCHCTL" ] || return 2
+    launchd_job_is_loaded
+    case $? in
+        1) return 0 ;;
+        2) return 2 ;;
+    esac
     launchctl_run "$LAUNCHCTL" bootout "$LAUNCHD_TARGET"
-    if launchd_job_is_loaded; then
-        return 1
-    fi
-    return 0
+    launchd_job_is_loaded
+    case $? in
+        1) return 0 ;;
+        2) return 2 ;;
+    esac
+    return 1
 }
 # --- end launchctl support ----------------------------------------------------
