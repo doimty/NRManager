@@ -124,12 +124,25 @@ class ControlCenterServingLabelTests(unittest.TestCase):
             "refreshModulePresentation",
         ):
             self.assertIn(token, self.source)
-        # A sampler round that never reports back must not pin the tile forever.
-        self.assertIn("CCNMServingRefreshStallTimeout = 20.0", self.source)
+        # A sampler round that never reports back must not pin the tile forever,
+        # but the budget must clear the sampler's own worst case. Ten rounds at
+        # 0.5 s delay + 5 s refresh wait + 0.5 s settle + 5 s copy wait is about
+        # 110 s, so a 20 s budget declared ordinary slow rounds stalled and threw
+        # their results away.
+        self.assertIn("CCNMServingRefreshStallTimeout = 120.0", self.source)
         self.assertIn(
             "now - self.servingRefreshStartedAt > CCNMServingRefreshStallTimeout",
             self.source,
         )
+        stall = self.source[
+            self.source.index("- (void)clearStalledRefreshIfNeeded {"):
+            self.source.index("- (void)requestServingRefreshIfNeeded {")
+        ]
+        # Abandoning a round must not also charge it against the rate floor, or
+        # the immediate retry is swallowed and nothing is in flight for a whole
+        # timer period.
+        self.assertIn("self.servingRefreshLastAttempt = 0;", stall)
+        self.assertNotIn("self.servingRefreshLastAttempt = now;", stall)
         start = self.source.index("- (void)requestServingRefreshIfNeeded {")
         end = self.source.index("- (void)adoptPublishedServingSummary {", start)
         refresh = self.source[start:end]
@@ -161,11 +174,12 @@ class ControlCenterServingLabelTests(unittest.TestCase):
             "- (void)controlCenterWillPresent",
             "- (void)controlCenterDidDismiss",
             "- (void)viewWillAppear:",
+            "- (void)viewDidAppear:",
             "- (void)viewDidDisappear:",
             "- (void)beginVisibleSession",
             "- (void)endVisibleSession",
-            "scheduledTimerWithTimeInterval:CCNMServingVisibleRefreshInterval",
-            "scheduledTimerWithTimeInterval:CCNMServingRATDebounceSeconds",
+            "timerWithTimeInterval:CCNMServingVisibleRefreshInterval",
+            "timerWithTimeInterval:CCNMServingRATDebounceSeconds",
             "CTServiceRadioAccessTechnologyDidChangeNotification",
         ):
             self.assertIn(token, self.source)
@@ -174,7 +188,7 @@ class ControlCenterServingLabelTests(unittest.TestCase):
         # An off-screen tile must not keep sampling.
         request = self.source[
             self.source.index("- (void)requestServingRefreshIfNeeded {"):
-            self.source.index("- (void)adoptPublishedServingSummary {")
+            self.source.index("// Adopts whatever the shared provider last published.")
         ]
         self.assertIn("if (!self.visible || self.servingRefreshInProgress)", request)
         teardown = self.source[
@@ -185,6 +199,115 @@ class ControlCenterServingLabelTests(unittest.TestCase):
         self.assertIn("[self.visibleRefreshTimer invalidate]", teardown)
         self.assertIn("[self.ratDebounceTimer invalidate]", teardown)
         self.assertIn("[self removeObserversIfNeeded]", teardown)
+
+    def test_cc_bundle_links_nothing_beyond_the_device_verified_baseline(self):
+        """This bundle loads into SpringBoard, so its dependency set is pinned to the
+        device-verified roothide baseline and any addition fails the release gate.
+
+        CGRectMake and CGSizeMake are static inline in CGGeometry.h and are free.
+        CGRectIntegral is a real exported symbol, and calling it made the bundle
+        link CoreGraphics, which failed cloud run 32477871435 after the host tests
+        had already passed. This test moves that failure to the host.
+        """
+        # Exported CoreGraphics entry points that a glyph-drawing path might reach
+        # for. Each one pulls in the framework; the inline CG*Make constructors do
+        # not, which is why they are deliberately absent from this list.
+        for exported in (
+            "CGRectIntegral(",
+            "CGRectGetMinX(",
+            "CGRectGetMinY(",
+            "CGRectGetMaxX(",
+            "CGRectGetMaxY(",
+            "CGRectGetWidth(",
+            "CGRectGetHeight(",
+            "CGRectInset(",
+            "CGRectOffset(",
+            "CGRectStandardize(",
+            "CGContextSetFillColorWithColor(",
+            "CGColorCreate",
+            "CGImageCreate",
+        ):
+            self.assertNotIn(exported, self.source)
+        # The replacement must reproduce CGRectIntegral's semantics rather than
+        # quietly rounding differently.
+        integral = self.source[
+            self.source.index("static CGRect CCNMServingIntegralRect(CGRect rect) {"):
+            self.source.index("static UIImage *CCNMServingCenteredSymbolGlyphImage(")
+        ]
+        self.assertIn("CGFloat minX = floor(rect.origin.x);", integral)
+        self.assertIn("CGFloat minY = floor(rect.origin.y);", integral)
+        self.assertIn("CGFloat maxX = ceil(rect.origin.x + rect.size.width);", integral)
+        self.assertIn("CGFloat maxY = ceil(rect.origin.y + rect.size.height);", integral)
+        self.assertIn("return CGRectMake(minX, minY, maxX - minX, maxY - minY);", integral)
+        self.assertIn("[tinted drawInRect:CCNMServingIntegralRect(drawRect)]", self.source)
+
+    def test_timers_run_in_common_modes_so_gestures_cannot_stall_them(self):
+        """Control Center is gesture driven, so its run loop spends real time in
+        tracking mode. NSTimer's scheduled* convenience installs into the default
+        mode only, where a timer does not fire during tracking, which made the tile
+        look like it refreshed only when touched.
+        """
+        self.assertNotIn("scheduledTimerWithTimeInterval", self.source)
+        self.assertEqual(2, self.source.count("forMode:NSRunLoopCommonModes"))
+        self.assertIn("addTimer:self.visibleRefreshTimer", self.source)
+        self.assertIn("addTimer:strongSelf.ratDebounceTimer", self.source)
+
+    def test_a_presentation_is_not_charged_against_the_rate_floor(self):
+        """Opening Control Center is a user-initiated event like a tap.
+
+        Charging it against CCNMServingRefreshMinimumInterval silently skipped the
+        fresh sample whenever the previous round had just run, so the tile kept
+        showing whatever the cache held until the user tapped it.
+        """
+        begin = self.source[
+            self.source.index("- (void)beginVisibleSession {"):
+            self.source.index("- (void)endVisibleSession {")
+        ]
+        self.assertIn("self.servingRefreshLastAttempt = 0;", begin)
+        self.assertIn("[self adoptPublishedServingSummary]", begin)
+        self.assertIn("[self requestServingRefreshIfNeeded]", begin)
+
+    def test_dismissal_clears_any_in_flight_round(self):
+        """A leaked in-flight flag blocked every later trigger, including a tap,
+        until the stall budget expired. The provider round keeps running and still
+        publishes to the shared cache; only its report into this tile is dropped.
+        """
+        teardown = self.source[
+            self.source.index("- (void)endVisibleSession {"):
+            self.source.index("- (void)registerObserversIfNeeded {")
+        ]
+        self.assertIn("if (self.servingRefreshInProgress) {", teardown)
+        self.assertIn("self.servingRefreshInProgress = NO;", teardown)
+        self.assertIn("self.refreshGeneration++;", teardown)
+
+    def test_published_samples_are_adopted_even_while_a_round_is_in_flight(self):
+        """The provider publishes and posts its Darwin notification before this
+        tile's completion block runs, and a superseded or stalled round drops its
+        result entirely. Refusing the publish while busy therefore discarded good
+        samples. The monotonic published-at gate is what makes this safe.
+        """
+        adopt = self.source[
+            self.source.index("- (void)adoptPublishedServingSummary {"):
+            self.source.index("#pragma mark - Presentation")
+        ]
+        self.assertNotIn("if (self.servingRefreshInProgress)", adopt)
+        self.assertIn("requireNewerTimestamp:YES", adopt)
+        self.assertIn(
+            "if (requireNewerTimestamp && publishedAt <= self.appliedPublishedAtMilliseconds)",
+            adopt,
+        )
+        self.assertIn("CCNMServingSummaryPublishedAtMillisecondsKey", adopt)
+        # A policy change invalidates the drawn sample, so the gate must reset or
+        # the next publish would be rejected as not newer.
+        invalidate = self.source[
+            self.source.index("- (void)invalidateServingStatus {"):
+            self.source.index("- (void)clearStalledRefreshIfNeeded {")
+        ]
+        self.assertIn("self.appliedPublishedAtMilliseconds = -1;", invalidate)
+        self.assertIn("_appliedPublishedAtMilliseconds = -1;", self.source)
+        # The completion block owns the freshest result for its own round, so it
+        # must not be rejected by its own timestamp gate.
+        self.assertIn("requireNewerTimestamp:NO", self.source)
 
     def test_superseded_refresh_result_cannot_publish(self):
         """A stalled round that reports back late must not overwrite newer state."""

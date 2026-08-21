@@ -15,8 +15,17 @@ static const NSTimeInterval CCNMServingRATDebounceSeconds = 0.25;
 // Floor between two sampler requests so a notification burst or repeated taps
 // cannot hammer the read path.
 static const NSTimeInterval CCNMServingRefreshMinimumInterval = 2.0;
-// A sampler round that never reports back must not pin the tile on "...".
-static const NSTimeInterval CCNMServingRefreshStallTimeout = 20.0;
+// A sampler round that never reports back must not pin the tile forever. This
+// budget has to clear the sampler's own worst case, not merely feel short. A
+// full ten-round window costs, per round, up to 0.5 s of inter-sample delay,
+// one Cell Monitor refresh wait bounded at 5 s, 0.5 s of settling, and one copy
+// wait bounded at 5 s. That is about 110 s before a single round is genuinely
+// hung. The previous 20 s budget sat far below it, so an ordinary slow round was
+// declared stalled and its result discarded, which is a large part of why the
+// tile sat on the searching glyph until the user tapped it. Sitting in flight is
+// no longer expensive: the tile still adopts cross-process publishes while a
+// round runs, and a dismissal clears the flag outright.
+static const NSTimeInterval CCNMServingRefreshStallTimeout = 120.0;
 
 static BOOL CCNMPolicyIsRequested(NSDictionary *state) {
     return [state[CCNMN78PolicySummaryRequestedModeKey] isEqual:CCNMRequestedModeN78Preferred];
@@ -80,6 +89,20 @@ static UIImage *CCNMServingGlyphImage(NSString *text, UIColor *textColor) {
     return image;
 }
 
+// CGRectIntegral's semantics without CoreGraphics. CGRectMake and CGSizeMake are
+// static inline in CGGeometry.h and cost nothing at link time, but CGRectIntegral
+// is a real exported symbol, and calling it made this bundle link CoreGraphics.
+// That is an unreviewed dependency for a binary loaded into SpringBoard, so the
+// release gate rejected it. The rect this is applied to is always standardized by
+// construction, so plain arithmetic on the fields is exact here.
+static CGRect CCNMServingIntegralRect(CGRect rect) {
+    CGFloat minX = floor(rect.origin.x);
+    CGFloat minY = floor(rect.origin.y);
+    CGFloat maxX = ceil(rect.origin.x + rect.size.width);
+    CGFloat maxY = ceil(rect.origin.y + rect.size.height);
+    return CGRectMake(minX, minY, maxX - minX, maxY - minY);
+}
+
 static UIImage *CCNMServingCenteredSymbolGlyphImage(UIImage *symbol, UIColor *tintColor) {
     if (!symbol) {
         return nil;
@@ -97,7 +120,7 @@ static UIImage *CCNMServingCenteredSymbolGlyphImage(UIImage *symbol, UIColor *ti
     UIImage *tinted = [symbol imageWithTintColor:tintColor
         renderingMode:UIImageRenderingModeAlwaysOriginal];
     UIGraphicsBeginImageContextWithOptions(canvasSize, NO, 0.0);
-    [tinted drawInRect:CGRectIntegral(drawRect)];
+    [tinted drawInRect:CCNMServingIntegralRect(drawRect)];
     UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
     UIGraphicsEndImageContext();
     return image;
@@ -130,11 +153,16 @@ static UIImage *CCNMServingSearchingGlyphImage(UIColor *tintColor) {
 @property (nonatomic, assign) BOOL visible;
 @property (nonatomic, assign) BOOL observersRegistered;
 @property (nonatomic, assign) NSUInteger refreshGeneration;
+// Published timestamp of the summary currently drawn, so a cross-process publish
+// can be adopted exactly once and never regresses to an older sample.
+@property (nonatomic, assign) long long appliedPublishedAtMilliseconds;
 
 - (void)requestServingRefreshIfNeeded;
 - (void)invalidateServingStatus;
 - (void)refreshModulePresentation;
 - (void)adoptPublishedServingSummary;
+- (void)applyPublishedSummary:(NSDictionary<NSString *, id> *)summary
+        requireNewerTimestamp:(BOOL)requireNewerTimestamp;
 @end
 
 static void CCNMPolicyDidChangeCallback(CFNotificationCenterRef center,
@@ -177,6 +205,7 @@ static void CCNMServingStatusDidChangeCallback(CFNotificationCenterRef center,
     self = [super initWithNibName:nil bundle:nil];
     if (self) {
         _servingSummary = CCNMServingStatusEmptySummary();
+        _appliedPublishedAtMilliseconds = -1;
     }
     return self;
 }
@@ -189,6 +218,9 @@ static void CCNMServingStatusDidChangeCallback(CFNotificationCenterRef center,
     [super viewDidLoad];
     self.glyphColor = CCNMServingGlyphColor();
     self.selectedGlyphColor = UIColor.blackColor;
+    // Draw the last published sample straight away so a freshly built tile shows
+    // a band instead of the searching glyph while its first round runs.
+    [self adoptPublishedServingSummary];
     [self refreshModulePresentation];
 }
 
@@ -211,6 +243,15 @@ static void CCNMServingStatusDidChangeCallback(CFNotificationCenterRef center,
     [self beginVisibleSession];
 }
 
+// Third begin trigger on purpose. Which of the three the framework actually
+// delivers depends on how the tile is hosted, and beginVisibleSession is
+// idempotent, so covering all three costs nothing and removes the single point of
+// failure that leaves the tile with no refresh loop at all.
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    [self beginVisibleSession];
+}
+
 - (void)viewDidDisappear:(BOOL)animated {
     [super viewDidDisappear:animated];
     [self endVisibleSession];
@@ -220,15 +261,25 @@ static void CCNMServingStatusDidChangeCallback(CFNotificationCenterRef center,
     self.visible = YES;
     [self registerObserversIfNeeded];
     [self adoptPublishedServingSummary];
+    // A presentation is a user-initiated event just like a tap, so it is not
+    // charged against the rate floor. Without this, opening Control Center
+    // shortly after the previous round silently skipped the fresh sample and the
+    // tile kept showing whatever the cache held.
+    self.servingRefreshLastAttempt = 0;
     if (!self.visibleRefreshTimer) {
         __weak typeof(self) weakSelf = self;
         self.visibleRefreshTimer =
-            [NSTimer scheduledTimerWithTimeInterval:CCNMServingVisibleRefreshInterval
+            [NSTimer timerWithTimeInterval:CCNMServingVisibleRefreshInterval
                 repeats:YES
                 block:^(NSTimer *timer) {
                     (void)timer;
                     [weakSelf visibleRefreshTimerFired];
                 }];
+        // Control Center is gesture driven, so its run loop spends real time in
+        // tracking mode. A default-mode timer would simply not fire there, which
+        // is why the tile appeared to refresh only when touched.
+        [NSRunLoop.currentRunLoop addTimer:self.visibleRefreshTimer
+            forMode:NSRunLoopCommonModes];
     }
     [self requestServingRefreshIfNeeded];
 }
@@ -236,6 +287,18 @@ static void CCNMServingStatusDidChangeCallback(CFNotificationCenterRef center,
 - (void)endVisibleSession {
     self.visible = NO;
     self.refreshPending = NO;
+    // Abandon any in-flight round rather than carrying its flag into the next
+    // presentation. A leaked flag used to block every trigger on reopen until the
+    // stall budget expired, including a tap. The provider round itself keeps
+    // running and still publishes; the generation bump only stops it from
+    // reporting into this tile, and adoptPublishedServingSummary picks the result
+    // up from the shared cache instead. A second round started before the first
+    // one finishes cannot touch the modem: it fails to take the shared lock and
+    // deliberately publishes nothing.
+    if (self.servingRefreshInProgress) {
+        self.servingRefreshInProgress = NO;
+        self.refreshGeneration++;
+    }
     [self.visibleRefreshTimer invalidate];
     self.visibleRefreshTimer = nil;
     [self.ratDebounceTimer invalidate];
@@ -292,6 +355,14 @@ static void CCNMServingStatusDidChangeCallback(CFNotificationCenterRef center,
 
 - (void)visibleRefreshTimerFired {
     [self adoptPublishedServingSummary];
+    // Independent off-screen check. The framework's dismissal callbacks are the
+    // primary stop signal, but a view with no window is definitively not on
+    // screen, so this bounds sampling even if a dismissal callback is missed. A
+    // view that is on screen always has a window, so this cannot block the case
+    // it is meant to serve.
+    if (!self.view.window) {
+        return;
+    }
     [self requestServingRefreshIfNeeded];
 }
 
@@ -305,12 +376,14 @@ static void CCNMServingStatusDidChangeCallback(CFNotificationCenterRef center,
         }
         [strongSelf.ratDebounceTimer invalidate];
         strongSelf.ratDebounceTimer =
-            [NSTimer scheduledTimerWithTimeInterval:CCNMServingRATDebounceSeconds
+            [NSTimer timerWithTimeInterval:CCNMServingRATDebounceSeconds
                 repeats:NO
                 block:^(NSTimer *timer) {
                     (void)timer;
                     [weakSelf ratDebounceTimerFired];
                 }];
+        [NSRunLoop.currentRunLoop addTimer:strongSelf.ratDebounceTimer
+            forMode:NSRunLoopCommonModes];
     });
 }
 
@@ -346,6 +419,7 @@ static void CCNMServingStatusDidChangeCallback(CFNotificationCenterRef center,
 - (void)invalidateServingStatus {
     self.servingSummary = CCNMServingStatusEmptySummary();
     self.servingRefreshLastAttempt = 0;
+    self.appliedPublishedAtMilliseconds = -1;
 }
 
 - (void)clearStalledRefreshIfNeeded {
@@ -355,7 +429,11 @@ static void CCNMServingStatusDidChangeCallback(CFNotificationCenterRef center,
     NSTimeInterval now = NSDate.date.timeIntervalSince1970;
     if (now - self.servingRefreshStartedAt > CCNMServingRefreshStallTimeout) {
         self.servingRefreshInProgress = NO;
-        self.servingRefreshLastAttempt = now;
+        // Zero rather than now: the caller is about to re-evaluate the minimum
+        // interval, and charging the abandoned round against that floor used to
+        // swallow the immediate retry and leave the tile waiting a whole timer
+        // period with nothing in flight.
+        self.servingRefreshLastAttempt = 0;
         self.refreshGeneration++;
     }
 }
@@ -402,8 +480,8 @@ static void CCNMServingStatusDidChangeCallback(CFNotificationCenterRef center,
                 return;
             }
             strongSelf.servingRefreshInProgress = NO;
-            strongSelf.servingSummary = provider.currentSummary;
-            [strongSelf refreshModulePresentation];
+            [strongSelf applyPublishedSummary:provider.currentSummary
+                requireNewerTimestamp:NO];
             if (strongSelf.refreshPending && strongSelf.visible) {
                 strongSelf.refreshPending = NO;
                 [strongSelf requestServingRefreshIfNeeded];
@@ -412,14 +490,32 @@ static void CCNMServingStatusDidChangeCallback(CFNotificationCenterRef center,
     }];
 }
 
+// Adopts whatever the shared provider last published. This must stay reachable
+// while a round of this tile's own is in flight: the sampler publishes its result
+// and posts the Darwin notification before this tile's completion block runs, and
+// a round that is later declared stalled or superseded drops its result entirely.
+// Refusing the publish while busy therefore threw away good samples, so the band
+// only appeared once a tap forced a fresh round. The timestamp gate keeps a
+// notification from redrawing the same sample twice or regressing to an older one.
 - (void)adoptPublishedServingSummary {
-    if (self.servingRefreshInProgress) {
-        [self clearStalledRefreshIfNeeded];
-        if (self.servingRefreshInProgress) {
-            return;
-        }
+    [self clearStalledRefreshIfNeeded];
+    [self applyPublishedSummary:CCNMServingStatusProvider.sharedProvider.currentSummary
+        requireNewerTimestamp:YES];
+}
+
+- (void)applyPublishedSummary:(NSDictionary<NSString *, id> *)summary
+        requireNewerTimestamp:(BOOL)requireNewerTimestamp {
+    if (![summary isKindOfClass:NSDictionary.class]) {
+        return;
     }
-    self.servingSummary = CCNMServingStatusProvider.sharedProvider.currentSummary;
+    long long publishedAt =
+        [summary[CCNMServingSummaryPublishedAtMillisecondsKey] longLongValue];
+    if (requireNewerTimestamp && publishedAt <= self.appliedPublishedAtMilliseconds) {
+        return;
+    }
+    self.appliedPublishedAtMilliseconds =
+        MAX(self.appliedPublishedAtMilliseconds, publishedAt);
+    self.servingSummary = summary;
     [self refreshModulePresentation];
 }
 
