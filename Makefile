@@ -11,9 +11,9 @@ NetworkManager_INSTALL_PATH = /Library/ControlCenter/Bundles
 
 NetworkManager_CFLAGS += -fobjc-arc
 NetworkManager_CFLAGS += "-Wno-error=objc-method-access"
-# CCUIButtonModuleViewController exists in the ControlCenterUIKit private
-# framework but is not declared in the vendored headers, so the bundle carries a
-# minimal declaration under include/.
+# The bundle declares the private ControlCenterUIKit members it uses in
+# include/NetworkManagerControlCenterUIKitPrivate.h. See that header for why the
+# framework must not be imported as a Clang module here.
 NetworkManager_CFLAGS += -Iinclude
 
 # For non-roothide: link to ControlCenterUIKit

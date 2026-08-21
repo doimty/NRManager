@@ -5,9 +5,7 @@
 #import <roothide.h>
 #endif
 
-#import <ControlCenterUIKit/CCUIButtonModuleViewController.h>
-#import <ControlCenterUIKit/CCUIContentModule-Protocol.h>
-#import <ControlCenterUIKit/CCUIContentModuleContentViewController-Protocol.h>
+#import "NetworkManagerControlCenterUIKitPrivate.h"
 
 // The serving-band tile refreshes itself while Control Center is visible. The
 // module object only vends the view controller; the view controller owns the

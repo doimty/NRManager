@@ -8,6 +8,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 CC_SOURCE = ROOT / "CCNetworkManager.x"
 CC_HEADER = ROOT / "CCNetworkManager.h"
+PRIVATE_HEADER = ROOT / "include/NetworkManagerControlCenterUIKitPrivate.h"
 MAKEFILE = ROOT / "Makefile"
 POLICY_SOURCE = ROOT / "networkmanagerprefs/CCNMN78PolicyController.m"
 
@@ -27,9 +28,37 @@ class ControlCenterServingLabelTests(unittest.TestCase):
         # CCUIButtonModuleViewController is exported by the private framework but
         # is absent from the vendored headers, so the bundle declares it locally.
         self.assertIn("-Iinclude", self.makefile)
-        self.assertTrue(
-            (ROOT / "include/ControlCenterUIKit/CCUIButtonModuleViewController.h").is_file()
-        )
+        self.assertTrue(PRIVATE_HEADER.is_file())
+
+    def test_private_declarations_never_import_the_framework_as_a_module(self):
+        """Regression guard for the pinned macOS runner build failure.
+
+        The vendored ControlCenterUIKit headers carry a module.modulemap, while
+        the CCSupport templates install a second overlapping copy into
+        $(THEOS)/include. Any angle-bracket import of the framework makes the
+        build depend on which copy Clang finds first, which failed on the runner
+        with duplicate protocol definitions, ambiguous protocol references, and
+        an incomplete umbrella, all promoted to errors by -Werror. The bundle
+        must therefore use one self-contained local header.
+        """
+        self.assertNotIn("#import <ControlCenterUIKit/", self.header)
+        self.assertNotIn("#import <ControlCenterUIKit/", self.source)
+        self.assertNotIn('#import "ControlCenterUIKit/', self.header)
+        self.assertNotIn('#import "ControlCenterUIKit/', self.source)
+        self.assertIn('#import "NetworkManagerControlCenterUIKitPrivate.h"', self.header)
+        # A local directory named ControlCenterUIKit would reintroduce the
+        # ambiguity it is meant to avoid.
+        self.assertFalse((ROOT / "include/ControlCenterUIKit").exists())
+        private_header = PRIVATE_HEADER.read_text()
+        for declaration in (
+            "@protocol CCUIContentModuleContentViewController <NSObject>",
+            "@protocol CCUIContentModule <NSObject>",
+            "@interface CCUIButtonModuleViewController : UIViewController",
+            "@property (nonatomic, strong) UIImage *glyphImage;",
+            "- (void)buttonTapped:(id)button forEvent:(UIEvent *)event;",
+        ):
+            self.assertIn(declaration, private_header)
+        self.assertNotIn("#import <ControlCenterUIKit/", private_header)
 
     def test_stable_glyph_uses_fresh_serving_truth_not_policy_name(self):
         self.assertIn("CCNMServingGlyphText", self.source)
