@@ -69,11 +69,49 @@ class ControlCenterServingLabelTests(unittest.TestCase):
         self.assertNotIn('requested ? @"n78" : @"Auto"', stable)
 
     def test_unknown_loading_and_policy_priority_are_explicit(self):
-        self.assertIn('return @"...";', self.source)
-        self.assertIn('return @"?";', self.source)
+        """No serving band means the searching antenna, never a question mark.
+
+        CCNMServingGlyphText returns nil for every no-band case so the single
+        caller can pick the searching glyph, matching the split-out prototype.
+        """
+        text_fn = self.source[
+            self.source.index("static NSString *CCNMServingGlyphText"):
+            self.source.index("static UIImage *CCNMServingGlyphImage")
+        ]
+        self.assertNotIn('@"?"', text_fn)
+        self.assertEqual(3, text_fn.count("return nil;"))
+        self.assertIn("CCNMServingSearchingGlyphImage", self.source)
+        self.assertIn('systemImageNamed:@"antenna.radiowaves.left.and.right"', self.source)
+        self.assertIn('systemImageNamed:@"magnifyingglass"', self.source)
         self.assertIn("CCNMPolicyIsTransitioning", self.source)
         self.assertIn("CCNMPolicyNeedsRecovery", self.source)
         self.assertNotIn("policyOperationPending", self.source)
+
+    def test_glyph_uses_the_original_release_accent_colour(self):
+        """The pre-n78 release drew this colour through the toggle's
+        -selectedColor, which CCUIButtonModuleViewController does not have. It
+        now belongs to the glyph, so both the text and the searching antenna
+        carry it.
+        """
+        self.assertIn(
+            "return [UIColor colorWithRed:1.00 green:0.58 blue:0.00 alpha:1.0];",
+            self.source,
+        )
+        self.assertIn("self.glyphColor = CCNMServingGlyphColor();", self.source)
+        presentation = self.source[
+            self.source.index("- (void)refreshModulePresentation {"):
+            self.source.index("@implementation CCNetworkManager {")
+        ]
+        self.assertIn(
+            "self.glyphImage = CCNMServingGlyphImage(text, CCNMServingGlyphColor());",
+            presentation,
+        )
+        self.assertIn(
+            "self.glyphImage = CCNMServingSearchingGlyphImage(CCNMServingGlyphColor());",
+            presentation,
+        )
+        # Nothing in the tile may fall back to the old plain white glyph.
+        self.assertNotIn("UIColor.whiteColor", self.source)
 
     def test_refresh_is_async_bounded_and_never_writes_modem(self):
         for token in (

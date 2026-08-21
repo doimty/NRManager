@@ -32,17 +32,23 @@ static BOOL CCNMPolicyNeedsRecovery(NSDictionary *state) {
         ![recovery isEqual:CCNMRecoveryStateEnabledWithBaseline];
 }
 
-static NSString *CCNMServingGlyphText(NSDictionary *summary, BOOL refreshInProgress) {
-    if (refreshInProgress) {
-        return @"...";
-    }
+// The accent colour of the original pre-n78 release. It lived there as the
+// toggle's -selectedColor, an API CCUIButtonModuleViewController does not have,
+// so it now belongs to the glyph itself.
+static UIColor *CCNMServingGlyphColor(void) {
+    return [UIColor colorWithRed:1.00 green:0.58 blue:0.00 alpha:1.0];
+}
+
+// Returns nil when there is no serving band worth showing. The caller draws the
+// searching antenna in that case instead of a bare question mark.
+static NSString *CCNMServingGlyphText(NSDictionary *summary) {
     if (![summary[CCNMServingSummarySuccessKey] boolValue] ||
         [summary[CCNMServingSummaryStaleKey] boolValue]) {
-        return @"?";
+        return nil;
     }
     NSNumber *band = summary[CCNMServingSummaryBandKey];
     if (![band isKindOfClass:NSNumber.class] || band.longLongValue <= 0) {
-        return @"?";
+        return nil;
     }
     NSString *state = summary[CCNMServingSummaryStateKey];
     if ([state isEqual:CCNMServingStateLTE]) {
@@ -52,7 +58,7 @@ static NSString *CCNMServingGlyphText(NSDictionary *summary, BOOL refreshInProgr
         [state isEqual:CCNMServingStateNROther]) {
         return [NSString stringWithFormat:@"n%@", band];
     }
-    return @"?";
+    return nil;
 }
 
 static UIImage *CCNMServingGlyphImage(NSString *text, UIColor *textColor) {
@@ -72,6 +78,45 @@ static UIImage *CCNMServingGlyphImage(NSString *text, UIColor *textColor) {
     UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
     UIGraphicsEndImageContext();
     return image;
+}
+
+static UIImage *CCNMServingCenteredSymbolGlyphImage(UIImage *symbol, UIColor *tintColor) {
+    if (!symbol) {
+        return nil;
+    }
+    CGSize canvasSize = CGSizeMake(70.0, 70.0);
+    CGFloat maxDimension = 30.0;
+    CGFloat scale = MIN(maxDimension / MAX(symbol.size.width, 1.0),
+        maxDimension / MAX(symbol.size.height, 1.0));
+    CGSize drawSize = CGSizeMake(symbol.size.width * scale, symbol.size.height * scale);
+    CGRect drawRect = CGRectMake(
+        (canvasSize.width - drawSize.width) / 2.0,
+        (canvasSize.height - drawSize.height) / 2.0,
+        drawSize.width,
+        drawSize.height);
+    UIImage *tinted = [symbol imageWithTintColor:tintColor
+        renderingMode:UIImageRenderingModeAlwaysOriginal];
+    UIGraphicsBeginImageContextWithOptions(canvasSize, NO, 0.0);
+    [tinted drawInRect:CGRectIntegral(drawRect)];
+    UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    return image;
+}
+
+// Shown whenever no serving band is available, including while a sample is in
+// flight. This is the searching glyph the split-out prototype uses.
+static UIImage *CCNMServingSearchingGlyphImage(UIColor *tintColor) {
+    UIImageSymbolConfiguration *configuration =
+        [UIImageSymbolConfiguration configurationWithPointSize:25.0
+            weight:UIImageSymbolWeightMedium];
+    UIImage *symbol = [UIImage systemImageNamed:@"antenna.radiowaves.left.and.right"
+        withConfiguration:configuration];
+    if (!symbol) {
+        symbol = [UIImage systemImageNamed:@"magnifyingglass"
+            withConfiguration:configuration];
+    }
+    return CCNMServingCenteredSymbolGlyphImage(symbol, tintColor)
+        ?: CCNMServingGlyphImage(@"...", tintColor);
 }
 
 @interface CCNetworkManagerViewController ()
@@ -142,7 +187,7 @@ static void CCNMServingStatusDidChangeCallback(CFNotificationCenterRef center,
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.glyphColor = UIColor.whiteColor;
+    self.glyphColor = CCNMServingGlyphColor();
     self.selectedGlyphColor = UIColor.blackColor;
     [self refreshModulePresentation];
 }
@@ -389,10 +434,18 @@ static void CCNMServingStatusDidChangeCallback(CFNotificationCenterRef center,
     } else if (CCNMPolicyNeedsRecovery(state)) {
         text = requested ? @"n78\n!" : @"Auto\n!";
     } else {
-        text = CCNMServingGlyphText(self.servingSummary, self.servingRefreshInProgress);
+        text = CCNMServingGlyphText(self.servingSummary);
     }
-    self.glyphImage = CCNMServingGlyphImage(text, UIColor.whiteColor);
-    self.selectedGlyphImage = CCNMServingGlyphImage(text, UIColor.blackColor);
+    // No serving band to show, either because a sample is still in flight or
+    // because the last one came back empty. Draw the searching antenna instead
+    // of a bare question mark.
+    if (text.length > 0) {
+        self.glyphImage = CCNMServingGlyphImage(text, CCNMServingGlyphColor());
+        self.selectedGlyphImage = CCNMServingGlyphImage(text, UIColor.blackColor);
+    } else {
+        self.glyphImage = CCNMServingSearchingGlyphImage(CCNMServingGlyphColor());
+        self.selectedGlyphImage = CCNMServingSearchingGlyphImage(UIColor.blackColor);
+    }
     // Selection mirrors policy truth. It is display only; the tile never writes.
     self.selected = requested;
 }
