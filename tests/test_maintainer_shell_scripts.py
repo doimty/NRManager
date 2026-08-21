@@ -66,6 +66,17 @@ PLIST_RELATIVE = f"Library/LaunchDaemons/{LABEL}.plist"
 GUARD_SENTINEL = "launchd-contract-verified"
 _DEFAULT = object()
 
+# The bare half of the launchctl candidate list, removed by the harness before
+# every run. See ShellScriptBase.render for why. Kept as one literal so a change
+# to the shipped list fails the assertion in render rather than quietly letting
+# the host's own launchctl back in.
+BARE_LAUNCHCTL_CANDIDATES = """    printf '%s\\n' \\
+        /usr/bin/launchctl \\
+        /bin/launchctl \\
+        /usr/sbin/launchctl \\
+        /sbin/launchctl \\
+        /basebin/launchctl"""
+
 
 # The substitution mechanism this build retired, and the three tools it needed.
 # Matched on word boundaries: a plain substring test for "sed " also matches the
@@ -265,8 +276,8 @@ class ShellScriptBase(unittest.TestCase):
     def render(self, repoint_primary=False):
         """Render exactly as the packaging step does, then return the path.
 
-        Two documented harness substitutions, both of data lines only, never of
-        logic, and both asserted so a template rename cannot silently turn this
+        Three documented harness substitutions, all of data lines only, never of
+        logic, and all asserted so a template rename cannot silently turn this
         into a no-op:
 
         - The rootless lane's fixed prefix is /var/jb and a test may not create
@@ -275,6 +286,16 @@ class ShellScriptBase(unittest.TestCase):
           which on a real redirected device it does and on this host it cannot.
           Needed to reach the branch where the bare path resolves but jbroot
           fails.
+        - The bare launchctl candidates are removed. On the macOS packaging
+          runner /usr/bin/launchctl is real, answers `version` successfully, and
+          would then be handed this fixture's plist -- the runner reported
+          "Bootstrap failed: 5: Input/output error" for exactly that. Every test
+          below is about which sequence the script runs and what it reports, not
+          about the host's launchd, so the only reachable launchctl must be a stub
+          this harness controls. That is also the device's shape: bare candidates
+          were ENOENT there and <jbroot>/usr/bin/launchctl was the real binary.
+          The bare list itself is a source-level contract, asserted verbatim in
+          tests/test_launchctl_ownership.py.
         """
         staging = self.dir / "staging"
         (staging / "DEBIAN").mkdir(parents=True, exist_ok=True)
@@ -282,6 +303,10 @@ class ShellScriptBase(unittest.TestCase):
             staging, REPO / "package-actions", self.scheme)
         name = "postinst" if self.template == POSTINST_TEMPLATE else "prerm"
         script = staging / "DEBIAN" / name
+        text = script.read_text()
+        self.assertIn(BARE_LAUNCHCTL_CANDIDATES, text)
+        script.write_text(text.replace(BARE_LAUNCHCTL_CANDIDATES, "    :", 1))
+        script.chmod(0o755)
         if self.scheme == "rootless":
             text = script.read_text()
             needle = f"SCHEME_PREFIX='{patcher.ROOTLESS_PREFIX}'"
