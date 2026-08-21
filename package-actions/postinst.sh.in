@@ -12,7 +12,24 @@
 # is a process-level restriction, not permissions and not a read-only mount.
 #
 # So the shell half owns everything that depends on being the redirected process:
-# resolving the jailbreak root, and handing it to a helper that is not redirected.
+# resolving the jailbreak root, running launchctl, and handing the root to a
+# helper that is not redirected.
+#
+# Loading the job used to be the guard's job, and the reporting device showed why
+# that cannot work. Every launchctl candidate the guard found came back from
+# posix_spawn with EPERM (errno 1), including <jbroot>/usr/bin/launchctl, the real
+# binary:
+#
+#   probed <jbroot>/bin/launchctl(spawn errno 1),
+#          <jbroot>/usr/bin/launchctl(spawn errno 1);
+#          18 other probed paths do not exist
+#
+# Two facts from that same dpkg run settle the cause. The guard saw every bare
+# path as ENOENT while jbroot-absolute paths resolved, so it has no path
+# redirection; and this shell exec'd both `jbroot` and the guard itself without
+# trouble. The restriction is on the guard's process, not on the paths it tried,
+# so no amount of probing inside the guard could have fixed it. The guard now
+# reads and reports; the shell execs.
 #
 # What this script no longer does
 # -------------------------------
@@ -54,6 +71,25 @@ NEEDS_JBROOT='@NEEDS_JBROOT@'
 LAUNCHD_PREFIX='@LAUNCHD_PREFIX@'
 
 GUARD_RELATIVE='/usr/libexec/networkmanager-install-guard'
+# Rendered from the same constants the plist was patched with, so the script and
+# the file it loads cannot disagree about the label. A label copied by hand would
+# not be caught by the contract check either: launchctl would load the plist and
+# the verification would then ask launchd about a job nobody registered.
+LAUNCHD_LABEL='@LAUNCHD_LABEL@'
+# Carries the launchd prefix, because launchctl is what resolves this path, and on
+# roothide launchctl applies its own redirection to it. Bare here for the same
+# reason the plist is bare.
+LAUNCHD_PLIST='@LAUNCHD_PLIST@'
+# Relative, because this script resolves it against its own prefix.
+BASELINE_RELATIVE='@BASELINE@'
+# The only line the guard ever writes to stdout, and only when the installed
+# plist matches the launchd contract. Everything the guard says to a human goes
+# to stderr, so stdout carries this and nothing else.
+#
+# The shell must not load a job the guard has just reported as mismatched, and
+# whether the shipped binary plist matches is the one question this script cannot
+# answer for itself. Answering it here is what the retired plutil dependency was.
+GUARD_LAUNCHD_VERIFIED='launchd-contract-verified'
 
 note() {
     printf 'NetworkManagerReborn: %s\n' "$1" >&2
@@ -168,16 +204,20 @@ resolve() {
     return 0
 }
 
+@LAUNCHCTL_SUPPORT@
+LAUNCHD_TARGET="system/${LAUNCHD_LABEL}"
+
 # ---------------------------------------------------------------------------
-# The policy guard owns the rest: clearing the removal guard when that is safe,
-# validating the launchd contract against the installed plist, and loading the
-# job if launchctl is reachable. It only reads and reports, so it works without
-# the privileges this script needs.
+# The policy guard owns everything that only reads and reports: clearing the
+# removal guard when that is safe, and validating the launchd contract against
+# the installed plist. Loading the job is this script's job, because a compiled
+# guard cannot exec anything here -- see the launchctl support block above.
 # ---------------------------------------------------------------------------
 if ! resolve "$GUARD_RELATIVE"; then
-    warn "the install guard was not found under $(candidate_list), so band policy state was not validated. jbroot: ${JBROOT_STATUS}."
+    warn "the install guard was not found under $(candidate_list), so band policy state was not validated and the maintenance owner was not started. jbroot: ${JBROOT_STATUS}."
     exit 0
 fi
+guard="$RESOLVED_PATH"
 
 # Hand both prefixes over instead of letting the guard re-derive them. The guard
 # is invoked through a bare path, so its own executable path carries no .jbroot-
@@ -219,5 +259,70 @@ fi
 NETWORKMANAGER_LAUNCHD_PREFIX="$LAUNCHD_PREFIX"
 export NETWORKMANAGER_LAUNCHD_PREFIX
 
-"$RESOLVED_PATH" "$@"
-exit $?
+# stdout is captured and stderr is not, so everything the guard says to a human
+# still reaches the dpkg log in order, while the one machine-readable line it
+# emits stays out of that log.
+guard_output="$("$guard" "$@")"
+status=$?
+
+launchd_verified=no
+while IFS= read -r line; do
+    if [ "$line" = "$GUARD_LAUNCHD_VERIFIED" ]; then
+        launchd_verified=yes
+    fi
+done <<GUARD_OUTPUT
+$guard_output
+GUARD_OUTPUT
+
+# A nonzero verdict is propagated unchanged and nothing is loaded. The guard's
+# only nonzero exit is "not running as root", and launchctl would not work from
+# there either.
+if [ "$status" -ne 0 ]; then
+    exit "$status"
+fi
+
+# The guard has already explained the mismatch on stderr. Loading a plist it just
+# reported as not matching the contract would start something other than what was
+# reviewed, so this is a hard stop for the load and a no-op for the install:
+# configure still succeeds, because the package works without the daemon.
+if [ "$launchd_verified" != yes ]; then
+    warn "the maintenance owner was not started because the installed launchd job did not match the reviewed contract. Band policy changes work; automatic serving-state monitoring does not."
+    exit 0
+fi
+
+if ! resolve_launchctl; then
+    # The plist is correct on disk, which is what makes the job loadable when
+    # launchd next reads the jailbreak LaunchDaemons directory. Only the
+    # immediate load was impossible, so this is a notice, not a warning.
+    note "the maintenance owner is installed but not running yet; launchctl could not be run${LAUNCHCTL_REPORT:+ (tried ${LAUNCHCTL_REPORT})}. It starts automatically after the next reboot. Band policy changes work now; only automatic serving-state monitoring waits for that."
+    exit 0
+fi
+
+# Replace any definition left by a previous version, so the plist that ships with
+# this one is the plist launchd holds. Failure is not conclusive and is not
+# reported: on a first install there is nothing loaded to boot out.
+launchd_bootout || :
+
+"$LAUNCHCTL" bootstrap system "$LAUNCHD_PLIST"
+bootstrap_status=$?
+if ! launchd_job_is_loaded; then
+    warn "the maintenance owner is installed but launchd declined to load it (bootstrap exit ${bootstrap_status}). Band policy changes work now. Automatic serving-state monitoring is unavailable until launchd accepts the job, which it may do at the next reboot."
+    exit 0
+fi
+
+# Start it now only when there is something to monitor. Without the baseline the
+# daemon reads the policy as disabled and exits immediately, so kickstarting it
+# would produce a pointless launch and a throttled restart.
+if resolve "$BASELINE_RELATIVE"; then
+    "$LAUNCHCTL" kickstart -k "$LAUNCHD_TARGET" >/dev/null 2>&1
+    kickstart_status=$?
+    if [ "$kickstart_status" -ne 0 ]; then
+        # Deliberately left loaded. The job is bootstrapped and its KeepAlive
+        # PathState watches the baseline, so launchd can still start it without
+        # help; booting it out here would guarantee nothing runs until reboot,
+        # which is strictly worse than a failed immediate start.
+        warn "the maintenance owner is loaded but could not be started now (kickstart exit ${kickstart_status}). launchd will start it when it next sees the policy baseline, at the latest after a reboot."
+    fi
+fi
+
+exit 0

@@ -1,5 +1,6 @@
 #import <Foundation/Foundation.h>
 #import <dispatch/dispatch.h>
+#import <stdio.h>
 #import <unistd.h>
 
 #import "CCNMDpkgVersion.h"
@@ -95,18 +96,18 @@ int main(int argc, const char *argv[]) {
             return CCNMPrermBlocked;
         }
 
-        NSError *launchdError = nil;
-        if (!CCNMStopMaintenanceLaunchd(&launchdError)) {
-            // dpkg removes the plist with the package either way, so a job that
-            // cannot be booted out now also cannot come back after a reboot. The
-            // only live risk is a currently-running instance, which is why this
-            // is still reported.
-            fprintf(stderr,
-                "NetworkManagerReborn: warning — maintenance owner could not be stopped (%s).\n"
-                "  Proceeding with removal. The launchd plist is removed with the package,\n"
-                "  so the job will not return after a reboot.\n",
-                launchdError.localizedDescription.UTF8String ?: "unknown");
-        }
+        // Stopping the daemon is the shell's job, and it does it after this
+        // guard returns a clean verdict. It has to be the shell: posix_spawn
+        // refused the real launchctl binary from this process on the reporting
+        // device (EPERM), while the shell in the same dpkg run exec'd both
+        // `jbroot` and this guard without trouble.
+        //
+        // Ordering that way is safe in both directions. A live daemon cannot
+        // change this verdict or disturb a restore performed here: it only writes
+        // its own status and record files and never touches the modem. And on a
+        // blocked removal the daemon is deliberately left running, because the
+        // package stays installed and monitoring should keep working while the
+        // user performs the recovery they are being told to perform.
 
         // Upgrade to a restore-capable version keeps the recovery path
         // installed, so this script must not touch policy state at all: no

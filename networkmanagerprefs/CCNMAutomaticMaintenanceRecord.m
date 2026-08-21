@@ -1,7 +1,13 @@
 #import "CCNMAutomaticMaintenanceRecord.h"
 #import "CCNMN78PolicyReader.h"
 
-#if __has_include(<roothide.h>)
+#if defined(CCNM_MAINTENANCE_DAEMON)
+#import "../maintenance-daemon/CCNMDaemonRoot.h"
+// Same reason as CCNMN78PolicyReader.m: no jbroot() in a launchd daemon, because
+// libroothide is loaded through @loader_path/.jbroot and launchd does not inject
+// the bootstrap. See CCNMDaemonRoot.h.
+#define CCNMPolicyRoot(path) CCNMDaemonRootedPath(path)
+#elif __has_include(<roothide.h>)
 #import <roothide.h>
 #define CCNMPolicyRoot(path) jbroot(path)
 #else

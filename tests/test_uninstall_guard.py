@@ -82,14 +82,12 @@ class UninstallGuardTests(unittest.TestCase):
         # Fail-closed: an unusable guard blocks removal rather than allowing it.
         self.assertIn("exit 73", prerm)
 
-    def test_remove_upgrade_and_downgrade_path_stops_daemon_then_restores(self):
+    def test_remove_upgrade_and_downgrade_path_restores_before_allowing_removal(self):
         source = PRERM_SOURCE.read_text()
         for action in ('@"remove"', '@"upgrade"', '@"deconfigure"', '@"failed-upgrade"'):
             self.assertIn(action, source)
-        stop = source.index("CCNMStopMaintenanceLaunchd(&launchdError)")
         read = source.index("CCNMReadN78PolicyState()")
         recover = source.index("CCNMRecoverN78Preference")
-        self.assertLess(stop, read)
         self.assertLess(read, recover)
         self.assertIn("CCNMReadN78PolicyState()", source)
         self.assertIn("CCNMRecoverN78Preference", source)
@@ -100,6 +98,12 @@ class UninstallGuardTests(unittest.TestCase):
         self.assertIn("CCNMExitWhenSetterSettled(allowed ? CCNMRemovalAllowed", source)
         self.assertIn("CCNMN78PolicyHasOutstandingSetter()", source)
         self.assertIn("dispatch_after", source)
+        # Stopping the daemon is the shell's, after this guard returns a clean
+        # verdict; see tests/test_launchctl_ownership.py for why it cannot be
+        # here. The ordering is covered in tests/test_maintainer_shell_scripts.py.
+        self.assertNotIn("Launchd", "\n".join(
+            line for line in source.splitlines()
+            if not line.lstrip().startswith("//")))
 
     def test_durable_guard_closes_prerm_to_dpkg_race_and_postinst_clears_it(self):
         policy = POLICY_SOURCE.read_text()
@@ -237,22 +241,24 @@ class UninstallGuardTests(unittest.TestCase):
                            source.index("NSString *CCNMMaintainerRootedPath")]
         self.assertIn("prefix.length > 0 ? prefix : nil", root_body)
         rooted = source[source.index("NSString *CCNMMaintainerRootedPath"):
-                        source.index("// launchctl lookup.")]
+                        source.index("static NSString *CCNMMaintainerLaunchdPath")]
         self.assertIn("stringByAppendingString:path", rooted)
         self.assertNotIn("stringByAppendingPathComponent:path", rooted)
-        # launchctl must be handed the launchd path, not ours.
-        register = source[
-            source.index("CCNMMaintenanceRegistration CCNMRegisterMaintenanceLaunchd"):]
-        bootstrap = register.index('@"bootstrap"')
-        self.assertIn("CCNMMaintainerLaunchdPath(", register[:bootstrap])
+        # The contract check compares against the launchd path, not ours: they are
+        # different values on roothide and comparing the wrong one would reject a
+        # correct plist.
+        verify = source[source.index("BOOL CCNMVerifyMaintenanceLaunchdContract"):]
+        self.assertIn("CCNMMaintainerLaunchdPath(", verify)
+        self.assertLess(verify.index("CCNMMaintainerLaunchdPath("),
+                        verify.index("isEqualToString:expectedProgram"))
 
-    def test_postinst_attempts_guard_cleanup_before_registration(self):
+    def test_postinst_attempts_guard_cleanup_before_the_launchd_check(self):
         source = POSTINST_SOURCE.read_text()
         clear = source.index("CCNMClearN78PolicyRemovalGuardIfSafe()")
         guard_check = source.index('[summary[@"removalGuardPresent"] boolValue]')
-        register = source.index("CCNMRegisterMaintenanceLaunchd(&launchdError)")
+        verify = source.index("CCNMVerifyMaintenanceLaunchdContract(&launchdError)")
         self.assertLess(clear, guard_check)
-        self.assertLess(guard_check, register)
+        self.assertLess(guard_check, verify)
 
     def test_postinst_never_blocks_configure_on_policy_state(self):
         # postinst owns nothing that can strand a modified modem: an armed guard
@@ -270,14 +276,14 @@ class UninstallGuardTests(unittest.TestCase):
         # A still-armed guard must be reported rather than silently ignored.
         self.assertIn("package-removal guard is still armed", source)
 
-    def test_postinst_launchd_registration_is_non_fatal(self):
+    def test_postinst_launchd_verification_is_non_fatal(self):
         # The maintenance daemon only provides automatic serving-state
-        # monitoring. It owns no policy or modem state, so a host where
-        # launchctl/plist/executable paths are unavailable must still get a
-        # fully configured package instead of a permanently half-installed one.
+        # monitoring. It owns no policy or modem state, so a host whose plist or
+        # helper is unusable must still get a fully configured package instead of
+        # a permanently half-installed one.
         source = POSTINST_SOURCE.read_text()
-        register = source.index("CCNMRegisterMaintenanceLaunchd(&launchdError)")
-        tail = source[register:]
+        verify = source.index("CCNMVerifyMaintenanceLaunchdContract(&launchdError)")
+        tail = source[verify:]
         self.assertNotIn("return CCNMPostinstBlocked", tail)
         self.assertIn("warning", tail)
         self.assertIn("return CCNMInstallAllowed", tail)
@@ -323,29 +329,18 @@ class UninstallGuardTests(unittest.TestCase):
                         predicate.index("CCNMDpkgVersionIsAtLeast"))
         self.assertIn("CCNMDpkgVersion.c", ACTIONS_MAKEFILE.read_text())
 
-    def test_prerm_launchd_stop_is_non_fatal(self):
-        # Stopping the daemon is best-effort for the same reason. Removal must
-        # remain gated on verified policy restore, not on launchctl success.
-        source = PRERM_SOURCE.read_text()
-        stop = source.index("CCNMStopMaintenanceLaunchd(&launchdError)")
-        policy_read = source.index("CCNMReadN78PolicyState()")
-        self.assertLess(stop, policy_read)
-        self.assertNotIn("return CCNMPrermBlocked", source[stop:policy_read])
-        self.assertIn("warning", source[stop:policy_read])
-        # The policy restore gate itself is still fail-closed.
-        self.assertIn("return CCNMPrermBlocked", source[policy_read:])
-
     def test_launchd_owner_is_fail_closed_and_scheme_aware(self):
         source = MAINTAINER_SOURCE.read_text()
         for token in (
             "CCNMMaintainerInstallPrefix",
             "CCNMMaintainerLaunchdPrefix",
             "THEOS_PACKAGE_INSTALL_PREFIX",
-            "CCNMPrepareMaintenanceLaunchd",
-            "CCNMRunLaunchctl(@[@\"bootout\", target]",
-            "CCNMRunLaunchctl(@[@\"bootstrap\", @\"system\", plistPath]",
-            "CCNMRunLaunchctl(@[@\"kickstart\", @\"-k\", target]",
-            "CCNMJobIsLoaded()",
+            "CCNMVerifyMaintenanceLaunchdContract",
+            # Contract keys that must be checked, since a plist missing either one
+            # would load a daemon that is not the reviewed one: without
+            # DISABLE_TWEAKS the daemon gets the tweak injected into itself, and a
+            # SuccessfulExit KeepAlive would restart it forever instead of
+            # letting it exit when the policy is disabled.
             "DISABLE_TWEAKS",
             "SuccessfulExit",
         ):
@@ -357,57 +352,8 @@ class UninstallGuardTests(unittest.TestCase):
         for token in ("_NSGetExecutablePath", "/var/containers/Bundle/Application",
                       '".jbroot-"'):
             self.assertNotIn(token, source)
-
-    def test_launchctl_lookup_covers_every_filesystem_view(self):
-        # A jailbreak bootstrap is not obligated to ship launchctl under its own
-        # root, and on the reported device /bin/launchctl was a dangling symlink
-        # while /usr/bin/launchctl was the real binary. The ordering itself is
-        # covered behaviorally in tests/test_launchctl_probe_order.py; this only
-        # pins that the maintainer delegates to it rather than reintroducing an
-        # inline candidate list.
-        source = MAINTAINER_SOURCE.read_text()
-        self.assertIn("CCNMBuildLaunchctlProbeOrder", source)
-        self.assertNotIn("relativeCandidates[index]", source)
-        self.assertIn("CCNMLaunchctlProbe.h", source)
-
-    def test_prepare_reports_each_missing_input_separately(self):
-        # One combined "launchctl, plist, executable, or policy path" message is
-        # not actionable; these inputs fail for unrelated reasons and each needs
-        # a different fix on the device. launchctl is deliberately not among them
-        # anymore: preparing the plist does not need it, and requiring it would
-        # discard the durable work. See tests/test_launchctl_probe_order.py.
-        source = MAINTAINER_SOURCE.read_text()
-        body = source[source.index("BOOL CCNMPrepareMaintenanceLaunchd"):
-                      source.index("BOOL CCNMStopMaintenanceLaunchd")]
-        self.assertNotIn(
-            "A required launchctl, plist, executable, or policy path is unavailable.",
-            body)
-        self.assertIn("could not be resolved against the install prefix", body)
-        self.assertIn("is not readable at %@", body)
-        self.assertIn("is not executable at %@", body)
-        self.assertIn("is missing at %@", body)
-        # An unset or malformed prefix is its own failure, named per variable, so
-        # the dpkg log distinguishes "the shell did not tell me" from "the file
-        # is not there".
-        self.assertIn("The install prefix could not be determined", body)
-        self.assertIn("The launchd path prefix could not be determined", body)
-        self.assertIn("not set by the maintainer script", body)
-        # Diagnostics must name the path and the reason so a device report is
-        # enough. access(2) is deliberately absent: on this platform
-        # access(X_OK) returned EPERM for the freshly unpacked helper, so mode
-        # bits and the actual read are the only trustworthy evidence. The
-        # file-wide ban is enforced in tests/test_launchctl_probe_order.py.
-        code = "\n".join(
-            line for line in body.splitlines()
-            if not line.lstrip().startswith("//")
-        )
-        self.assertNotIn("access(", code)
-        self.assertIn("stat errno %d", body)
-        self.assertIn("mode %o", body)
-        self.assertIn("readError.localizedDescription", body)
-        # The plist contract checks stay after the path checks.
-        self.assertLess(body.index("is not executable at %@"),
-                        body.index("CCNMMaintainerErrorPlist"))
+        # Running launchctl belongs to the shell and the retired probe must not
+        # come back; both are pinned in tests/test_launchctl_ownership.py.
 
     def test_missing_baseline_only_cleans_a_verified_restore_checkpoint(self):
         source = POLICY_SOURCE.read_text()

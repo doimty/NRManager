@@ -8,7 +8,15 @@
 #import <time.h>
 #import <unistd.h>
 
-#if __has_include(<roothide.h>)
+#if defined(CCNM_MAINTENANCE_DAEMON)
+#import "../maintenance-daemon/CCNMDaemonRoot.h"
+// The daemon cannot use jbroot(). libroothide's install name is
+// @loader_path/.jbroot/usr/lib/libroothide.dylib, and launchd applies no
+// bootstrap injection, so dyld found nothing to load and the job crashed on every
+// one of its 108 launches with OS_REASON_DYLD. The prefix is recovered from the
+// daemon's own executable path instead; see CCNMDaemonRoot.h.
+#define CCNMPolicyRoot(path) CCNMDaemonRootedPath(path)
+#elif __has_include(<roothide.h>)
 #import <roothide.h>
 #define CCNMPolicyRoot(path) jbroot(path)
 #else

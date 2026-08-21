@@ -12,8 +12,17 @@ injected via DYLD_INSERT_LIBRARIES. A compiled maintainer script on the
 reporting device ran as euid 0 and could stat, read and parse inside the
 jailbreak root but got EPERM on every write and child exec, and saw bare paths
 as ENOENT. The shell half therefore owns everything that depends on being the
-redirected process: resolving the jailbreak root and handing it to a helper that
-is not redirected.
+redirected process: resolving the jailbreak root, running launchctl, and handing
+the root to a helper that is not redirected.
+
+Running launchctl is the part that moved here last. The compiled guard tried
+twenty candidate paths and posix_spawn refused every one that existed, including
+the real 113664-byte <jbroot>/usr/bin/launchctl, with EPERM -- while the shell
+that exec'd that guard ran both `jbroot` and the guard itself. The restriction
+was on the guard's process, so no probe table could have fixed it. What the guard
+still answers is the one question a shell cannot: whether the shipped binary
+plist matches the reviewed contract. It says so with a single line on stdout, and
+these tests cover both halves of that handoff.
 
 What these tests no longer cover, deliberately: postinst used to substitute an
 @JBROOT@ placeholder in the launchd plist with the live jailbreak root. That was
@@ -50,6 +59,12 @@ POSTINST_TEMPLATE = REPO / "package-actions" / "postinst.sh.in"
 PRERM_TEMPLATE = REPO / "package-actions" / "prerm.sh.in"
 LABEL = "me.nixuge.networkmanager.maintenance"
 PLIST_RELATIVE = f"Library/LaunchDaemons/{LABEL}.plist"
+# The single line postinst reads from the guard's stdout as permission to load
+# the job. Defined here from the same literal both halves use, so a divergence
+# shows up as a failing test rather than as a device that silently never starts
+# the daemon.
+GUARD_SENTINEL = "launchd-contract-verified"
+_DEFAULT = object()
 
 
 # The substitution mechanism this build retired, and the three tools it needed.
@@ -142,11 +157,24 @@ class ShellScriptBase(unittest.TestCase):
         path.write_text(body)
         path.chmod(0o755)
 
-    def install_guard(self, exit_code, body=None):
+    def install_guard(self, exit_code, body=None, verdict=_DEFAULT):
+        """Install a stub guard.
+
+        The install guard emits the launchd contract verdict by default, because
+        the default fixture is a device where the shipped plist is correct and
+        postinst refuses to load the job without that line on stdout. Pass
+        verdict=None to model a guard that rejected the plist. The removal guard
+        emits nothing: prerm never reads stdout, it boots the job out once the
+        policy verdict is clean.
+        """
+        if verdict is _DEFAULT:
+            verdict = (GUARD_SENTINEL if self.template == POSTINST_TEMPLATE
+                       else None)
         path = self.prefix / "usr/libexec" / self.guard_name
         path.write_text(body or (
             f'#!/bin/sh\nprintf "%s\\n" "$*" >> "{self.guard_log}"\n'
-            f'exit {exit_code}\n'))
+            + (f'printf "%s\\n" "{verdict}"\n' if verdict else "")
+            + f'exit {exit_code}\n'))
         path.chmod(0o755)
         return path
 
@@ -164,7 +192,60 @@ class ShellScriptBase(unittest.TestCase):
             f'  printf "install=%s\\n" "${{NETWORKMANAGER_INSTALL_PREFIX-absent}}"\n'
             f'  printf "launchd=%s\\n" "${{NETWORKMANAGER_LAUNCHD_PREFIX-absent}}"\n'
             f'}} >> "{self.guard_log}"\n'
-            'exit 0\n'))
+            + (f'printf "%s\\n" "{GUARD_SENTINEL}"\n'
+               if self.template == POSTINST_TEMPLATE else "")
+            + 'exit 0\n'))
+
+    # ------------------------------------------------------------------
+    # launchctl
+    #
+    # Reachable only on the roothide lane, and that is a property of the design
+    # rather than of the harness: the candidate list is fixed absolute paths and
+    # deliberately not $PATH, so the jbroot-absolute forms are the only ones a
+    # test can create on the host. That is also the shape the device has, where
+    # <jbroot>/usr/bin/launchctl is the real 113664-byte binary and every bare
+    # candidate is absent.
+    #
+    # The stub keeps real load state rather than fixed exit codes, because the
+    # behaviour under test is a sequence -- boot out a stale definition, then
+    # bootstrap, then ask launchd whether that worked -- and fixed codes cannot
+    # distinguish "loaded" from "the command returned zero".
+    # ------------------------------------------------------------------
+    def install_launchctl(self, bootstrap_exit=0, bootout_works=True,
+                          kickstart_exit=0, loaded=False):
+        self.launchctl_log = self.dir / "launchctl.log"
+        state = self.dir / "launchd-loaded"
+        if loaded:
+            state.write_text("")
+        path = self.prefix / "usr/bin/launchctl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            '#!/bin/sh\n'
+            f'printf "%s\\n" "$*" >> "{self.launchctl_log}"\n'
+            'case "$1" in\n'
+            f'  version) exit 0 ;;\n'
+            f'  print) [ -e "{state}" ] && exit 0 ; exit 113 ;;\n'
+            f'  bootstrap) [ {bootstrap_exit} -eq 0 ] && : > "{state}" ;'
+            f' exit {bootstrap_exit} ;;\n'
+            f'  bootout) [ {int(bootout_works)} -eq 1 ] && rm -f "{state}" ;'
+            f' exit 0 ;;\n'
+            f'  kickstart) exit {kickstart_exit} ;;\n'
+            'esac\n'
+            'exit 0\n')
+        path.chmod(0o755)
+        return path
+
+    def launchctl_calls(self):
+        if not getattr(self, "launchctl_log", None) or not self.launchctl_log.exists():
+            return []
+        return [line.split()[0]
+                for line in self.launchctl_log.read_text().splitlines() if line]
+
+    def install_baseline(self):
+        path = self.prefix / patcher.BASELINE_RELATIVE.lstrip("/")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(plistlib.dumps({"createdAt": 0}))
+        return path
 
     def guard_environment(self):
         report = {}
@@ -517,6 +598,217 @@ class PostinstGuardDelegationTests(ShellScriptBase):
         before = self.plist.read_bytes()
         self.assertEqual(self.run_script("configure").returncode, 74)
         self.assertEqual(self.plist.read_bytes(), before)
+
+
+class PostinstLaunchdLoadTests(ShellScriptBase):
+    """Loading the job: the sequence, and what each failure is allowed to cost.
+
+    Nothing here may fail configure. The daemon only provides automatic
+    serving-state monitoring and owns no policy or modem state, so a host where
+    launchctl or the plist is unusable must still end up with a fully configured
+    package rather than a permanently half-installed one whose Settings UI -- the
+    only way to run a recovery -- is unavailable.
+    """
+
+    def test_the_job_is_booted_out_before_it_is_bootstrapped(self):
+        # bootstrap returns 37/EALREADY for an already-bootstrapped job and does
+        # not reload it, so without the bootout launchd would keep the previous
+        # version's definition. On the reporting device that is also what carried
+        # runs = 108 and the 1200-second crash backoff across attempts.
+        self.install_launchctl(loaded=True)
+        result = self.run_script("configure")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNoWarning(result)
+        calls = self.launchctl_calls()
+        self.assertIn("bootout", calls)
+        self.assertIn("bootstrap", calls)
+        self.assertLess(calls.index("bootout"), calls.index("bootstrap"))
+
+    def test_a_first_install_does_not_report_the_missing_stale_definition(self):
+        # Nothing is loaded on a first install, so bootout has nothing to do and
+        # its failure is not evidence of anything.
+        self.install_launchctl(loaded=False)
+        result = self.run_script("configure")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNoWarning(result)
+        self.assertIn("bootstrap", self.launchctl_calls())
+
+    def test_the_plist_is_bootstrapped_by_the_path_launchctl_resolves(self):
+        # Bare on roothide: launchctl is itself redirected and prepends the
+        # jailbreak root to every absolute path in the file on load. Passing a
+        # rooted path here is what produced the doubled program path.
+        self.install_launchctl()
+        self.run_script("configure")
+        bootstrap = [line for line in self.launchctl_log.read_text().splitlines()
+                     if line.startswith("bootstrap")]
+        self.assertEqual(bootstrap,
+                         [f"bootstrap system {self.plist_prefix()}/{PLIST_RELATIVE}"])
+
+    def test_launchd_decides_whether_the_load_worked_not_the_exit_code(self):
+        # 37/EALREADY is a success for our purposes, so the verdict has to come
+        # from asking launchd.
+        self.install_launchctl(bootstrap_exit=37, loaded=True, bootout_works=False)
+        result = self.run_script("configure")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNoWarning(result)
+
+    def test_a_load_launchd_refuses_is_reported_without_failing_configure(self):
+        self.install_launchctl(bootstrap_exit=5)
+        result = self.run_script("configure")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("launchd declined to load it", result.stderr)
+        self.assertIn("bootstrap exit 5", result.stderr)
+
+    def test_the_job_is_started_now_only_when_the_baseline_exists(self):
+        # Without the baseline the daemon reads the policy as disabled and exits
+        # immediately, so kickstarting it would produce a pointless launch and a
+        # throttled restart. Its KeepAlive PathState watches the baseline, so
+        # launchd starts it by itself when one appears.
+        self.install_launchctl()
+        self.run_script("configure")
+        self.assertNotIn("kickstart", self.launchctl_calls())
+
+        self.install_launchctl()
+        self.install_baseline()
+        result = self.run_script("configure")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNoWarning(result)
+        self.assertIn("kickstart", self.launchctl_calls())
+
+    def test_kickstart_never_waits_for_a_pid(self):
+        # `kickstart -p` waits for launchd to report a PID. The reporting device
+        # had the job in a crash-and-backoff loop with minimum runtime 1200, and
+        # -kp hung; -k alone returns immediately.
+        self.install_launchctl()
+        self.install_baseline()
+        self.run_script("configure")
+        kickstart = [line for line in self.launchctl_log.read_text().splitlines()
+                     if line.startswith("kickstart")]
+        self.assertEqual(kickstart, [f"kickstart -k system/{LABEL}"])
+
+    def test_a_failed_start_leaves_the_job_loaded(self):
+        # Booting it out here would guarantee nothing runs until reboot, which is
+        # strictly worse than a failed immediate start: the job is bootstrapped
+        # and launchd can still start it from the PathState watch.
+        self.install_launchctl(kickstart_exit=3)
+        self.install_baseline()
+        result = self.run_script("configure")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("could not be started now", result.stderr)
+        self.assertNotIn("bootout", self.launchctl_calls()[-1:])
+
+    def test_an_unusable_launchctl_is_a_notice_not_a_warning(self):
+        # No launchctl is installed at all here, which is the state of this
+        # harness by default and a real possibility on a stripped bootstrap. The
+        # plist is correct on disk, which is what makes the job loadable when
+        # launchd next reads the jailbreak LaunchDaemons directory, so this is not
+        # a warning.
+        result = self.run_script("configure")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNoWarning(result)
+        self.assertIn("not running yet", result.stderr)
+        self.assertIn("after the next reboot", result.stderr)
+
+    def test_a_launchctl_that_cannot_be_exec_d_is_reported_with_what_was_tried(self):
+        # 126 is the shell's "found but not executable". The exec attempt is the
+        # authority here, because access(X_OK) returned EPERM for the real binary
+        # on device and is not a usable oracle.
+        path = self.prefix / "usr/bin/launchctl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("not a program")
+        path.chmod(0o644)
+        result = self.run_script("configure")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("launchctl could not be run", result.stderr)
+        self.assertIn(str(path), result.stderr)
+
+    def test_nothing_is_loaded_when_the_guard_rejects_the_plist(self):
+        # Loading a plist the guard just reported as not matching the contract
+        # would start something other than what was reviewed. Hard stop for the
+        # load, no-op for the install.
+        self.install_launchctl()
+        self.install_guard(0, verdict=None)
+        result = self.run_script("configure")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("did not match the reviewed contract", result.stderr)
+        self.assertEqual(self.launchctl_calls(), [])
+
+    def test_a_guard_verdict_line_is_not_confused_with_its_prose(self):
+        # stdout is the verdict channel and stderr is the log. A guard that only
+        # talks about the contract on stderr has not verified it.
+        self.install_launchctl()
+        self.install_guard(0, body=(
+            '#!/bin/sh\n'
+            f'printf "%s\\n" "{GUARD_SENTINEL}" >&2\n'
+            'exit 0\n'))
+        result = self.run_script("configure")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("did not match the reviewed contract", result.stderr)
+        self.assertEqual(self.launchctl_calls(), [])
+
+    def test_the_guards_prose_still_reaches_the_dpkg_log(self):
+        # stdout is captured to read the verdict, so the human-readable half has
+        # to be on stderr or it would vanish from the install log.
+        self.install_launchctl()
+        self.install_guard(0, body=(
+            '#!/bin/sh\n'
+            'printf "something worth reading\\n" >&2\n'
+            f'printf "%s\\n" "{GUARD_SENTINEL}"\n'
+            'exit 0\n'))
+        result = self.run_script("configure")
+        self.assertIn("something worth reading", result.stderr)
+        self.assertNotIn(GUARD_SENTINEL, result.stdout)
+
+    def test_a_blocking_guard_stops_before_launchctl_runs(self):
+        self.install_launchctl()
+        self.install_guard(74, verdict=None)
+        self.assertEqual(self.run_script("configure").returncode, 74)
+        self.assertEqual(self.launchctl_calls(), [])
+
+
+class PrermLaunchdBootoutTests(ShellScriptBase):
+    template = PRERM_TEMPLATE
+    guard_name = "networkmanager-removal-guard"
+
+    def test_the_daemon_is_stopped_only_after_the_guard_allows_removal(self):
+        # Stopping it on a blocked path would be a side effect on a path that just
+        # refused to proceed: the package stays installed, the user is told to
+        # recover in Settings, and monitoring should keep working while they do.
+        self.install_launchctl(loaded=True)
+        self.install_guard(73)
+        self.assertEqual(self.run_script("remove").returncode, 73)
+        self.assertEqual(self.launchctl_calls(), [])
+
+        self.install_launchctl(loaded=True)
+        self.install_guard(0)
+        result = self.run_script("remove")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("bootout", self.launchctl_calls())
+
+    def test_a_daemon_that_will_not_stop_does_not_block_removal(self):
+        # dpkg removes the plist with the package, so a job that cannot be booted
+        # out now cannot come back after a reboot either. The only live risk is a
+        # still-running instance, which is why it is still reported.
+        self.install_launchctl(loaded=True, bootout_works=False)
+        result = self.run_script("remove")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("could not be stopped", result.stderr)
+        self.assertIn("will not return", result.stderr)
+
+    def test_an_absent_launchctl_does_not_block_removal(self):
+        result = self.run_script("remove")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("launchctl could not be run", result.stderr)
+
+    def test_prerm_never_reads_the_guards_stdout(self):
+        # It has no verdict to read: prerm boots the job out unconditionally once
+        # the policy verdict is clean, so a guard printing anything at all must
+        # not change the outcome.
+        self.install_launchctl(loaded=True)
+        self.install_guard(0, verdict="unexpected chatter")
+        result = self.run_script("remove")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("bootout", self.launchctl_calls())
 
 
 class PrermTests(ShellScriptBase):

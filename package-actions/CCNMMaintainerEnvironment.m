@@ -1,22 +1,26 @@
 #import "CCNMMaintainerEnvironment.h"
 
-#import "CCNMLaunchctlProbe.h"
-
 #import <dispatch/dispatch.h>
 #import <errno.h>
-#import <fcntl.h>
-#import <spawn.h>
 #import <stdint.h>
 #import <stdlib.h>
 #import <string.h>
 #import <sys/stat.h>
-#import <sys/wait.h>
 #import <unistd.h>
-
-extern char **environ;
 
 NSString *const CCNMMaintenanceLaunchdLabel =
     @"me.nixuge.networkmanager.maintenance";
+
+// The one machine-readable line the install guard writes to stdout, and only
+// after the shipped plist has been verified against the reviewed contract.
+// Everything else the guard says goes to stderr, so the shell can read stdout as
+// a verdict rather than parse prose.
+//
+// The shell must not load a job this file has just reported as mismatched, and
+// whether the shipped binary plist matches is the one question a shell cannot
+// answer for itself. Answering it here is what the retired plutil dependency was.
+NSString *const CCNMMaintenanceLaunchdVerifiedSentinel =
+    @"launchd-contract-verified";
 
 static NSString *const CCNMMaintenanceLaunchdRelativePath =
     @"/Library/LaunchDaemons/me.nixuge.networkmanager.maintenance.plist";
@@ -32,7 +36,6 @@ typedef NS_ENUM(NSInteger, CCNMMaintainerErrorCode) {
     CCNMMaintainerErrorRoot = 1,
     CCNMMaintainerErrorPath,
     CCNMMaintainerErrorPlist,
-    CCNMMaintainerErrorLaunchctl,
 };
 
 static BOOL CCNMSetError(NSError **error,
@@ -293,240 +296,39 @@ static NSString *CCNMMaintainerLaunchdPath(NSString *path) {
     return resolved ? [prefix stringByAppendingString:path] : nil;
 }
 
-// launchctl lookup.
+// ---------------------------------------------------------------------------
+// launchctl used to be run from here. It is not any more, and it must not come
+// back.
 //
-// The shipped probe table settled this. Two candidates came back with errno 1
-// (EPERM), not 2 (ENOENT):
+// The shipped probe table settled the question. Every candidate the guard found
+// was refused by posix_spawn itself, including the real binary:
 //
-//   <jbroot>/bin/launchctl(errno 1)      the relative symlink
-//   <jbroot>/usr/bin/launchctl(errno 1)  the real 113664-byte binary
+//   probed <jbroot>/bin/launchctl(spawn errno 1),
+//          <jbroot>/usr/bin/launchctl(spawn errno 1);
+//          18 other probed paths do not exist
 //
-// The binary exists and access(X_OK) refuses to answer for it. On this platform
-// the X_OK check is routed through an exec-authorization hook, so it can fail
-// for a binary that spawns perfectly well; it is not a usable oracle. Every
-// bare-root candidate was ENOENT, which separately proves the maintainer
-// script's `/` is not the jbroot even though the user's shell sees it that way,
-// so jbroot-relative probing is required.
+// errno 1 is EPERM, not ENOENT, and <jbroot>/usr/bin/launchctl is the real
+// 113664-byte binary. Two further facts from the same dpkg run identify the
+// cause. This process saw every bare path as ENOENT while jbroot-absolute paths
+// resolved, so it has no path redirection; and the shell that exec'd it ran both
+// `jbroot` and this guard without trouble. On roothide the redirection and the
+// exec exemption both arrive through basebin/bootstrap.dylib via
+// DYLD_INSERT_LIBRARIES, and a compiled maintainer-script child does not get it.
 //
-// Therefore: stat(2) answers only "is this definitively absent", and the real
-// arbiter for "can I run it" is the operation itself. Candidates are spawned in
-// order until one execs. A failed spawn runs nothing, so trying is free of side
-// effects, and each failure is recorded with its errno so a future failure is
-// still diagnosable from the dpkg log alone.
+// The restriction is therefore on this process, not on the paths it tried, so no
+// probe table could have fixed it. The shell maintainer scripts are the injected
+// half and own every launchctl invocation now; see package-actions/launchctl.sh.inc.
+// What is left here reads and reports: the launchd contract check below decides
+// whether the shipped plist is loadable at all, and the shell refuses to load one
+// this file has rejected.
+// ---------------------------------------------------------------------------
 
-// Bounds both the probe table and the reported list so one failed lookup cannot
-// flood dpkg output. PATH contributes at most a handful of directories.
-static const size_t CCNMLaunchctlProbeCapacity = 64;
-static const NSUInteger CCNMLaunchctlReportLimit = 24;
-
-// Index into the probe order at which PATH-derived candidates begin. PATH is
-// inherited from dpkg, so those candidates are held to a stricter trust standard
-// than the known prefixes: a root process must not exec a binary that a non-root
-// user could have replaced.
-static NSUInteger CCNMLaunchctlPathSourcedFrom;
-
-static NSArray<NSString *> *CCNMLaunchctlProbeOrder(void) {
-    static NSArray<NSString *> *order;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        char **buffer = calloc(CCNMLaunchctlProbeCapacity, sizeof(char *));
-        if (!buffer) {
-            order = @[];
-            return;
-        }
-        NSString *root = CCNMMaintainerJailbreakRoot();
-        size_t pathSourcedFrom = 0;
-        size_t count = CCNMBuildLaunchctlProbeOrder(
-            root.length > 0 ? root.fileSystemRepresentation : NULL,
-            getenv("PATH"), buffer, CCNMLaunchctlProbeCapacity,
-            &pathSourcedFrom);
-        NSMutableArray<NSString *> *paths =
-            [NSMutableArray arrayWithCapacity:count];
-        BOOL boundaryRecorded = NO;
-        for (size_t index = 0; index < count; index++) {
-            NSString *candidate = [NSString stringWithUTF8String:buffer[index]];
-            if (candidate) {
-                if (!boundaryRecorded && index >= pathSourcedFrom) {
-                    CCNMLaunchctlPathSourcedFrom = paths.count;
-                    boundaryRecorded = YES;
-                }
-                [paths addObject:candidate];
-            }
-            free(buffer[index]);
-        }
-        if (!boundaryRecorded) {
-            // PATH contributed nothing, so no candidate is PATH-sourced.
-            CCNMLaunchctlPathSourcedFrom = paths.count;
-        }
-        free(buffer);
-        order = paths;
-    });
-    return order;
-}
-
-// Spawns one candidate and waits for it. Returns the exit status, and reports
-// the exec failure separately: a nonzero exit means launchctl ran and answered,
-// while a nonzero spawnErrno means this path is not runnable and the next
-// candidate should be tried.
-static int CCNMSpawnLaunchctl(NSString *launchctl,
-                              NSArray<NSString *> *arguments,
-                              BOOL quiet,
-                              int *spawnErrno) {
-    *spawnErrno = 0;
-    char **argv = calloc(arguments.count + 2, sizeof(char *));
-    if (!argv) {
-        *spawnErrno = ENOMEM;
-        return -1;
-    }
-    argv[0] = (char *)launchctl.fileSystemRepresentation;
-    for (NSUInteger index = 0; index < arguments.count; index++) {
-        argv[index + 1] = (char *)arguments[index].UTF8String;
-    }
-
-    posix_spawn_file_actions_t actions;
-    BOOL actionsInitialized = NO;
-    posix_spawn_file_actions_t *actionsPointer = NULL;
-    if (quiet && posix_spawn_file_actions_init(&actions) == 0) {
-        actionsInitialized = YES;
-        if (posix_spawn_file_actions_addopen(
-                &actions, STDOUT_FILENO, "/dev/null", O_WRONLY, 0) == 0 &&
-            posix_spawn_file_actions_addopen(
-                &actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0) == 0) {
-            actionsPointer = &actions;
-        }
-    }
-
-    pid_t pid = 0;
-    // On Darwin posix_spawn is a single syscall, so exec failures are returned
-    // here rather than surfacing as a child that exits nonzero. That is what
-    // makes the spawn attempt usable as the authoritative runnability check.
-    int spawnResult = posix_spawn(&pid, launchctl.fileSystemRepresentation,
-        actionsPointer, NULL, argv, environ);
-    if (actionsInitialized) {
-        posix_spawn_file_actions_destroy(&actions);
-    }
-    free(argv);
-    if (spawnResult != 0) {
-        *spawnErrno = spawnResult;
-        return -1;
-    }
-    int status = 0;
-    while (waitpid(pid, &status, 0) == -1) {
-        if (errno != EINTR) {
-            return -1;
-        }
-    }
-    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-}
-
-// The candidate that successfully execed, and the failure table from the
-// resolving attempt. Resolution is cached both ways: a maintainer script is
-// short-lived and nothing on disk changes underneath it, so re-probing would
-// only repeat the spawn attempts and rebuild the same report.
-static NSString *CCNMLaunchctlResolved;
-static NSString *CCNMLaunchctlProbeReport;
-static BOOL CCNMLaunchctlResolutionFailed;
-
-static int CCNMRunLaunchctl(NSArray<NSString *> *arguments, BOOL quiet) {
-    if (CCNMLaunchctlResolved) {
-        int spawnErrno = 0;
-        int status = CCNMSpawnLaunchctl(CCNMLaunchctlResolved, arguments,
-            quiet, &spawnErrno);
-        return spawnErrno == 0 ? status : -1;
-    }
-    if (CCNMLaunchctlResolutionFailed) {
-        return -1;
-    }
-
-    NSArray<NSString *> *order = CCNMLaunchctlProbeOrder();
-    // Two buckets. A path that simply does not exist carries no information
-    // beyond "not here", and listing twenty of them buries the two entries that
-    // matter. Paths that exist and still could not be run are reported in full.
-    NSMutableArray<NSString *> *failures = [NSMutableArray array];
-    NSUInteger absent = 0;
-    NSUInteger position = 0;
-    for (NSString *candidate in order) {
-        BOOL pathSourced = position >= CCNMLaunchctlPathSourcedFrom;
-        position++;
-        int probeErrno = 0;
-        if (CCNMLaunchctlCandidateIsUnusable(
-                candidate.fileSystemRepresentation, pathSourced, &probeErrno)) {
-            if (probeErrno == ENOENT || probeErrno == ENOTDIR) {
-                absent++;
-                continue;
-            }
-            if (failures.count < CCNMLaunchctlReportLimit) {
-                [failures addObject:[NSString stringWithFormat:
-                    @"%@(stat errno %d)", candidate, probeErrno]];
-            }
-            continue;
-        }
-        int spawnErrno = 0;
-        int status = CCNMSpawnLaunchctl(candidate, arguments, quiet, &spawnErrno);
-        if (spawnErrno == 0) {
-            CCNMLaunchctlResolved = candidate;
-            CCNMLaunchctlProbeReport = nil;
-            return status;
-        }
-        if (failures.count < CCNMLaunchctlReportLimit) {
-            [failures addObject:[NSString stringWithFormat:
-                @"%@(spawn errno %d)", candidate, spawnErrno]];
-        }
-    }
-
-    if (failures.count == 0) {
-        CCNMLaunchctlProbeReport = [NSString stringWithFormat:
-            @"no launchctl exists at any of the %lu probed paths",
-            (unsigned long)order.count];
-        CCNMLaunchctlResolutionFailed = YES;
-        return -1;
-    }
-    NSMutableString *report = [NSMutableString stringWithFormat:@"probed %@",
-        [failures componentsJoinedByString:@", "]];
-    NSUInteger reported = failures.count + absent;
-    if (order.count > reported) {
-        [report appendFormat:@" and %lu more",
-            (unsigned long)(order.count - reported)];
-    }
-    if (absent > 0) {
-        [report appendFormat:@"; %lu other probed path%@ do%@ not exist",
-            (unsigned long)absent, absent == 1 ? @"" : @"s",
-            absent == 1 ? @"es" : @""];
-    }
-    CCNMLaunchctlProbeReport = report;
-    CCNMLaunchctlResolutionFailed = YES;
-    return -1;
-}
-
-// Availability check. `version` is side-effect free, so this can resolve the
-// binary before any real command is issued. Only the exec result matters, not
-// the exit status: an unrecognized subcommand still proves the binary runs.
-static BOOL CCNMLaunchctlIsUsable(void) {
-    if (!CCNMLaunchctlResolved && !CCNMLaunchctlResolutionFailed) {
-        (void)CCNMRunLaunchctl(@[@"version"], YES);
-    }
-    return CCNMLaunchctlResolved != nil;
-}
-
-// Builds the user-facing message for a failed lookup, including the probe table.
-static NSString *CCNMLaunchctlUnavailableMessage(void) {
-    (void)CCNMLaunchctlIsUsable();
-    return [NSString stringWithFormat:
-        @"launchctl could not be run from any known location; %@.",
-        CCNMLaunchctlProbeReport.length > 0
-            ? CCNMLaunchctlProbeReport : @"no candidate path was probed"];
-}
-
-static BOOL CCNMJobIsLoaded(void) {
-    NSString *target = [@"system/" stringByAppendingString:CCNMMaintenanceLaunchdLabel];
-    return CCNMRunLaunchctl(@[@"print", target], YES) == 0;
-}
-
-BOOL CCNMPrepareMaintenanceLaunchd(NSError **error) {
+BOOL CCNMVerifyMaintenanceLaunchdContract(NSError **error) {
     // Verification only, and now there is nothing else it could be: the plist
-    // ships complete. It used to be verification of a substitution the shell
-    // postinst performed, which was itself the bug -- on roothide the plist must
-    // hold bare paths, because launchctl prepends the jailbreak root on load.
+    // ships complete and the shell owns launchctl. It used to be verification of
+    // a substitution the shell postinst performed, which was itself the bug -- on
+    // roothide the plist must hold bare paths, because launchctl prepends the
+    // jailbreak root on load.
     //
     // Writing was never an option here anyway: the reporting device showed a
     // maintainer-script child running as euid 0 whose every read succeeded and
@@ -569,9 +371,9 @@ BOOL CCNMPrepareMaintenanceLaunchd(NSError **error) {
         return CCNMSetError(error, CCNMMaintainerErrorPath,
             @"A required maintenance path could not be resolved against the install prefix.");
     }
-    // Deliberately no launchctl requirement here. A correct plist on disk is
-    // what makes the job loadable at the next boot, so demanding launchctl would
-    // discard the durable part of the work because the immediate load failed.
+    // Deliberately no launchctl requirement here, and none is possible: this
+    // process cannot exec. A correct plist on disk is what makes the job loadable
+    // at the next boot, and the shell decides whether to load it now.
     //
     // Report each failing input separately. They fail for unrelated reasons and
     // each needs a different fix on the device; one combined message is not
@@ -654,77 +456,4 @@ BOOL CCNMPrepareMaintenanceLaunchd(NSError **error) {
                 expectedProgram, expectedBaseline]);
     }
     return YES;
-}
-
-BOOL CCNMStopMaintenanceLaunchd(NSError **error) {
-    if (!CCNMLaunchctlIsUsable()) {
-        return CCNMSetError(error, CCNMMaintainerErrorLaunchctl,
-            CCNMLaunchctlUnavailableMessage());
-    }
-    if (!CCNMJobIsLoaded()) {
-        return YES;
-    }
-    NSString *target = [@"system/" stringByAppendingString:CCNMMaintenanceLaunchdLabel];
-    if (CCNMRunLaunchctl(@[@"bootout", target], NO) != 0 || CCNMJobIsLoaded()) {
-        return CCNMSetError(error, CCNMMaintainerErrorLaunchctl,
-            @"The maintenance launchd job could not be stopped and verified.");
-    }
-    return YES;
-}
-
-CCNMMaintenanceRegistration CCNMRegisterMaintenanceLaunchd(NSError **error) {
-    // Preparing the plist is the only step whose failure is permanent. Once it
-    // has succeeded the durable half of the work is on disk and launchd can load
-    // the job at the next boot, so nothing after this point may report Failed:
-    // that code means "will not load now or later", which would be a false
-    // statement about a plist this function just validated.
-    if (!CCNMPrepareMaintenanceLaunchd(error)) {
-        return CCNMMaintenanceRegistrationFailed;
-    }
-    if (!CCNMLaunchctlIsUsable()) {
-        (void)CCNMSetError(error, CCNMMaintainerErrorLaunchctl,
-            CCNMLaunchctlUnavailableMessage());
-        return CCNMMaintenanceRegistrationDeferred;
-    }
-    if (!CCNMStopMaintenanceLaunchd(error)) {
-        return CCNMMaintenanceRegistrationRejected;
-    }
-    // launchctl gets the launchd-prefixed path, which on roothide is bare.
-    // launchctl resolves it through its own jbroot redirection -- the same
-    // rewriting that forbids a prefix inside the plist -- so handing it an
-    // already-prefixed path would make it look for the file under a doubled
-    // root.
-    NSString *plistPath = CCNMMaintainerLaunchdPath(
-        CCNMMaintenanceLaunchdRelativePath);
-    if (!plistPath) {
-        // Unreachable in practice: prepare already required this prefix. Kept as
-        // a guard rather than an assertion, and reported as Rejected because the
-        // plist it validated is still on disk.
-        (void)CCNMSetError(error, CCNMMaintainerErrorRoot,
-            @"The launchd path prefix could not be determined, so the job cannot be bootstrapped.");
-        return CCNMMaintenanceRegistrationRejected;
-    }
-    if (CCNMRunLaunchctl(@[@"bootstrap", @"system", plistPath], NO) != 0 ||
-        !CCNMJobIsLoaded()) {
-        (void)CCNMStopMaintenanceLaunchd(NULL);
-        (void)CCNMSetError(error, CCNMMaintainerErrorLaunchctl,
-            @"The maintenance launchd job could not be registered and verified.");
-        return CCNMMaintenanceRegistrationRejected;
-    }
-    // Read through the install prefix: this is our own stat, not launchd's.
-    NSString *baselinePath = CCNMMaintainerRootedPath(
-        CCNMMaintenanceBaselineRelativePath);
-    if (baselinePath &&
-        [[NSFileManager defaultManager] fileExistsAtPath:baselinePath]) {
-        NSString *target = [@"system/"
-            stringByAppendingString:CCNMMaintenanceLaunchdLabel];
-        if (CCNMRunLaunchctl(@[@"kickstart", @"-k", target], NO) != 0 ||
-            !CCNMJobIsLoaded()) {
-            (void)CCNMStopMaintenanceLaunchd(NULL);
-            (void)CCNMSetError(error, CCNMMaintainerErrorLaunchctl,
-                @"The policy-scoped maintenance job could not be started.");
-            return CCNMMaintenanceRegistrationRejected;
-        }
-    }
-    return CCNMMaintenanceRegistrationActive;
 }

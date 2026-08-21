@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#import <stdio.h>
 #import <unistd.h>
 
 #import "CCNMMaintainerEnvironment.h"
@@ -51,39 +52,24 @@ int main(int argc, const char *argv[]) {
         }
 
         NSError *launchdError = nil;
-        switch (CCNMRegisterMaintenanceLaunchd(&launchdError)) {
-        case CCNMMaintenanceRegistrationActive:
-            break;
-        case CCNMMaintenanceRegistrationDeferred:
-            // The plist is correct on disk, so launchd will pick the job up at
-            // the next boot. Only the immediate load was impossible.
+        if (CCNMVerifyMaintenanceLaunchdContract(&launchdError)) {
+            // The one line on stdout, and the shell reads it as the permission
+            // to load the job. Everything above went to stderr, so this cannot
+            // be confused with a diagnostic.
+            printf("%s\n", CCNMMaintenanceLaunchdVerifiedSentinel.UTF8String);
+            fflush(stdout);
+        } else {
+            // No sentinel, so the shell will not load the job, and it says so
+            // itself. Configure still succeeds: the daemon only provides
+            // automatic serving-state monitoring and owns no policy or modem
+            // state, so a host where the plist or the helper is unusable must
+            // still end up with a fully configured package rather than a
+            // permanently half-installed one.
             fprintf(stderr,
-                "NetworkManagerReborn: notice — the maintenance owner is installed but not\n"
-                "  running yet (%s).\n"
-                "  It will start automatically after the next reboot. Band policy changes\n"
-                "  work now; only automatic serving-state monitoring waits for that.\n",
+                "NetworkManagerReborn: warning — the maintenance owner will not be started (%s).\n"
+                "  Band policy changes work. Automatic serving-state monitoring is\n"
+                "  unavailable until this is corrected.\n",
                 launchdError.localizedDescription.UTF8String ?: "unknown");
-            break;
-        case CCNMMaintenanceRegistrationRejected:
-            // launchctl ran and launchd declined. The plist is validated and on
-            // disk, so the next boot may still load it — but launchd has already
-            // refused once, so this must not borrow the deferred wording and
-            // promise that it will.
-            fprintf(stderr,
-                "NetworkManagerReborn: warning — the maintenance owner is installed but\n"
-                "  launchd declined to load it (%s).\n"
-                "  Band policy changes work now. Automatic serving-state monitoring is\n"
-                "  unavailable until launchd accepts the job, which it may do at the next\n"
-                "  reboot.\n",
-                launchdError.localizedDescription.UTF8String ?: "unknown");
-            break;
-        case CCNMMaintenanceRegistrationFailed:
-            fprintf(stderr,
-                "NetworkManagerReborn: warning — maintenance owner could not be registered (%s).\n"
-                "  The package works without it, but automatic serving-state monitoring\n"
-                "  will be unavailable.\n",
-                launchdError.localizedDescription.UTF8String ?: "unknown");
-            break;
         }
         return CCNMInstallAllowed;
     }

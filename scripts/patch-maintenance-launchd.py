@@ -4,7 +4,13 @@
 Two jobs, both scheme-dependent.
 
 1. The maintenance launchd plist gets its install prefix.
-2. postinst and prerm are rendered from the shell templates.
+2. postinst and prerm are rendered from the shell templates, which includes the
+   launchd label, plist path and baseline path they need in order to run
+   launchctl themselves. That last part is not cosmetic: the compiled guards
+   cannot exec anything on roothide, because the bootstrap injection that grants
+   the exemption is not applied to them. The reporting device returned EPERM from
+   posix_spawn for the real <jbroot>/usr/bin/launchctl while the shell in the
+   same dpkg run exec'd both `jbroot` and the guard without trouble.
 
 The prefix that belongs in a roothide plist is *empty*, and getting this
 backwards was the original defect. It is not a guess: roothide's launchctl is a
@@ -83,6 +89,33 @@ ROOTLESS_PREFIX = "/var/jb"
 # wrong roothide contract look verified.
 TEMPLATE_SENTINEL = "@PLIST_PREFIX@"
 MAINTAINER_SCRIPTS = ("postinst", "prerm")
+# One copy of the launchctl exec logic, substituted into both scripts. Two
+# hand-maintained copies in two maintainer scripts is how the halves drift apart,
+# and this logic is the part that had to move out of the compiled guards.
+LAUNCHCTL_INCLUDE = "launchctl.sh.inc"
+
+# Placeholders each rendered script must contain, so a template that stops using
+# one is caught at package time rather than by a silently skipped substitution.
+#
+# The launchd identifiers are rendered rather than written into the templates by
+# hand: the shell half now runs launchctl itself, and a label copied by hand
+# could drift from the one inside the plist. The drift would not be caught by the
+# contract check either -- launchctl would load the plist and the verification
+# would then ask about a job nobody registered.
+COMMON_PLACEHOLDERS = ("@PREFIX@", "@LAUNCHD_PREFIX@", "@NEEDS_JBROOT@",
+                       "@LAUNCHD_LABEL@", "@LAUNCHCTL_SUPPORT@")
+REQUIRED_PLACEHOLDERS = {
+    # Only postinst loads the job, so only postinst needs the plist it loads and
+    # the baseline whose presence decides whether to start it now. prerm boots
+    # the job out, which needs the label alone.
+    "postinst": COMMON_PLACEHOLDERS + ("@LAUNCHD_PLIST@", "@BASELINE@"),
+    "prerm": COMMON_PLACEHOLDERS,
+}
+# Every placeholder either script may carry, used for the post-render residue
+# check. Built from the same table so a new placeholder cannot be added to one
+# without the check learning about it.
+ALL_PLACEHOLDERS = tuple(sorted(set(
+    token for tokens in REQUIRED_PLACEHOLDERS.values() for token in tokens)))
 
 
 def plist_prefix(scheme: str) -> str:
@@ -139,11 +172,12 @@ def render_maintainer_scripts(staging: Path, source: Path, scheme: str) -> list:
     prefix = script_prefix(scheme)
     launchd_prefix = plist_prefix(scheme)
     needs_jbroot = "" if scheme == "rootless" else "1"
+    launchctl_support = (source / LAUNCHCTL_INCLUDE).read_text().rstrip("\n")
     written = []
     for name in MAINTAINER_SCRIPTS:
         template = source / f"{name}.sh.in"
         text = template.read_text()
-        for placeholder in ("@PREFIX@", "@LAUNCHD_PREFIX@"):
+        for placeholder in REQUIRED_PLACEHOLDERS[name]:
             if placeholder not in text:
                 raise SystemExit(f"{template} is missing {placeholder}")
         text = text.replace("@PREFIX@", prefix)
@@ -153,6 +187,24 @@ def render_maintainer_scripts(staging: Path, source: Path, scheme: str) -> list:
         # property of the lane alone.
         text = text.replace("@LAUNCHD_PREFIX@", launchd_prefix)
         text = text.replace("@NEEDS_JBROOT@", needs_jbroot)
+        # Same values the plist was patched with, from the same constants, so the
+        # script and the file it loads cannot disagree. The plist path carries the
+        # launchd prefix because launchctl is what resolves it; the baseline path
+        # is relative because the shell resolves that one against its own prefix.
+        text = text.replace("@LAUNCHD_LABEL@", LABEL)
+        text = text.replace("@LAUNCHD_PLIST@",
+                            launchd_prefix + "/" + PLIST_RELATIVE.as_posix())
+        text = text.replace("@BASELINE@", BASELINE_RELATIVE)
+        # Substituted last, so its own text is never scanned for placeholders it
+        # does not carry and cannot accidentally supply one.
+        text = text.replace("@LAUNCHCTL_SUPPORT@", launchctl_support)
+        # Nothing unresolved may ship. These scripts run as root during dpkg, and
+        # a skipped substitution would leave a literal @TOKEN@ in a path or a
+        # launchctl target, where it would be a silent no-op at best.
+        residue = [token for token in ALL_PLACEHOLDERS if token in text]
+        if residue:
+            raise SystemExit(
+                f"{name} still contains {', '.join(sorted(residue))} after rendering")
         target = control / name
         target.write_text(text)
         target.chmod(0o755)

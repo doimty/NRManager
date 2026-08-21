@@ -23,6 +23,9 @@ LAUNCHD_PREFIX='@LAUNCHD_PREFIX@'
 
 GUARD_RELATIVE='/usr/libexec/networkmanager-removal-guard'
 OVERRIDE_RELATIVE='/var/lib/dpkg/info/me.nixuge.networkmanager.prerm'
+# Rendered from the same constant the plist carries, so this script and the plist
+# cannot disagree about which job to boot out.
+LAUNCHD_LABEL='@LAUNCHD_LABEL@'
 
 # jbroot's output is an external input. An implausible but non-empty value must
 # not become PREFIX_FALLBACK: a bogus prefix that happens to hold a stale copy of
@@ -138,6 +141,9 @@ warn() {
     printf 'NetworkManagerReborn: warning — %s\n' "$1" >&2
 }
 
+@LAUNCHCTL_SUPPORT@
+LAUNCHD_TARGET="system/${LAUNCHD_LABEL}"
+
 block() {
     printf 'NetworkManagerReborn: removal blocked; %s\n' "$1" >&2
     printf '  Reinstall the package to restore the guard, or delete %s and retry to override.\n' \
@@ -201,4 +207,33 @@ if [ "$status" -eq 126 ] || [ "$status" -eq 127 ]; then
     block "the removal guard at ${guard} could not be started (exit ${status}), so the live band configuration cannot be proven clean."
 fi
 
-exit $status
+# A nonzero verdict stops here with the guard's own code, and the daemon is left
+# running. Stopping it would be a side effect on a path that just refused to
+# proceed: the package stays installed, the user is told to recover in Settings,
+# and automatic serving-state monitoring should still be working while they do.
+if [ "$status" -ne 0 ]; then
+    exit "$status"
+fi
+
+# Removal is going ahead, so stop the daemon before dpkg unlinks its binary. This
+# is the last point at which the job can be booted out by a script that is still
+# installed.
+#
+# Deliberately not a blocking condition. dpkg removes the plist along with the
+# package, so a job that cannot be booted out now also cannot come back after a
+# reboot; the only live risk is a still-running instance, which is why each
+# failure is still reported.
+#
+# Running the guard first is safe in the other direction too: the guard reads the
+# durable policy records, while the daemon only writes its own status and record
+# files and never touches the modem, so a live daemon cannot change the verdict or
+# interfere with the restore the guard may have just performed.
+if resolve_launchctl; then
+    if ! launchd_bootout; then
+        warn "the maintenance owner could not be stopped and may keep running until the next reboot. Removal continues, and the launchd job is removed with the package, so it will not return."
+    fi
+else
+    warn "launchctl could not be run${LAUNCHCTL_REPORT:+ (tried ${LAUNCHCTL_REPORT})}, so a running maintenance owner was left alone. It stops at the next reboot, and the launchd job is removed with the package."
+fi
+
+exit 0
