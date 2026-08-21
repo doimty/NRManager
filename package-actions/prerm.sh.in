@@ -197,7 +197,10 @@ fi
 NETWORKMANAGER_LAUNCHD_PREFIX="$LAUNCHD_PREFIX"
 export NETWORKMANAGER_LAUNCHD_PREFIX
 
-"$guard" "$@"
+# stdin is closed so a maintainer-script child cannot sit on dpkg's descriptors.
+# stdout and stderr are deliberately left attached: this guard's verdict text is
+# the whole point of running it and belongs in the dpkg log.
+"$guard" "$@" </dev/null
 status=$?
 
 # 126 and 127 are the shell's own "found but not executable" and "not found"
@@ -228,7 +231,12 @@ fi
 # durable policy records, while the daemon only writes its own status and record
 # files and never touches the modem, so a live daemon cannot change the verdict or
 # interfere with the restore the guard may have just performed.
-if resolve_launchctl; then
+if ! resolve_delay_command; then
+    # Nothing can be bounded without a delay command, and an unbounded launchctl
+    # call is what hung an install. Removal continues: dpkg unlinks the plist with
+    # the package, so a job left running now cannot return after a reboot.
+    warn "no usable sleep command was found, so launchctl could not be run under a deadline and a running maintenance owner was left alone. It stops at the next reboot, and the launchd job is removed with the package."
+elif resolve_launchctl; then
     if ! launchd_bootout; then
         warn "the maintenance owner could not be stopped and may keep running until the next reboot. Removal continues, and the launchd job is removed with the package, so it will not return."
     fi

@@ -262,7 +262,11 @@ export NETWORKMANAGER_LAUNCHD_PREFIX
 # stdout is captured and stderr is not, so everything the guard says to a human
 # still reaches the dpkg log in order, while the one machine-readable line it
 # emits stays out of that log.
-guard_output="$("$guard" "$@")"
+#
+# stdin is closed for the same reason every launchctl call is detached: a
+# maintainer-script child must not be able to sit on dpkg's descriptors. Here the
+# capture already handles stdout, so only stdin needs saying.
+guard_output="$("$guard" "$@" </dev/null)"
 status=$?
 
 launchd_verified=no
@@ -290,6 +294,15 @@ if [ "$launchd_verified" != yes ]; then
     exit 0
 fi
 
+if ! resolve_delay_command; then
+    # Without a delay command no launchctl call can be bounded, and an unbounded
+    # one is what hung the install. The plist on disk is what makes the job
+    # loadable at the next boot, so skipping the immediate load costs a reboot and
+    # risks nothing.
+    note "the maintenance owner is installed but not started now: no usable sleep command was found, so launchctl could not be run under a deadline. It starts automatically after the next reboot. Band policy changes work now."
+    exit 0
+fi
+
 if ! resolve_launchctl; then
     # The plist is correct on disk, which is what makes the job loadable when
     # launchd next reads the jailbreak LaunchDaemons directory. Only the
@@ -303,8 +316,15 @@ fi
 # reported: on a first install there is nothing loaded to boot out.
 launchd_bootout || :
 
-"$LAUNCHCTL" bootstrap system "$LAUNCHD_PLIST"
+launchctl_run "$LAUNCHCTL" bootstrap system "$LAUNCHD_PLIST"
 bootstrap_status=$?
+if [ "$bootstrap_status" -eq 124 ]; then
+    # This is the call that hung the reporting device's install. It is bounded now,
+    # and a timeout is not a verdict on the job: launchd may well have accepted it
+    # before the deadline, so the next check decides and the job is deliberately
+    # not booted out.
+    warn "launchctl bootstrap did not return within ${LAUNCHCTL_DEADLINE_SECONDS}s and was stopped. The plist is installed either way, so launchd starts the maintenance owner at the next reboot. Band policy changes work now."
+fi
 if ! launchd_job_is_loaded; then
     warn "the maintenance owner is installed but launchd declined to load it (bootstrap exit ${bootstrap_status}). Band policy changes work now. Automatic serving-state monitoring is unavailable until launchd accepts the job, which it may do at the next reboot."
     exit 0
@@ -314,14 +334,18 @@ fi
 # daemon reads the policy as disabled and exits immediately, so kickstarting it
 # would produce a pointless launch and a throttled restart.
 if resolve "$BASELINE_RELATIVE"; then
-    "$LAUNCHCTL" kickstart -k "$LAUNCHD_TARGET" >/dev/null 2>&1
+    launchctl_run "$LAUNCHCTL" kickstart -k "$LAUNCHD_TARGET"
     kickstart_status=$?
     if [ "$kickstart_status" -ne 0 ]; then
         # Deliberately left loaded. The job is bootstrapped and its KeepAlive
         # PathState watches the baseline, so launchd can still start it without
         # help; booting it out here would guarantee nothing runs until reboot,
         # which is strictly worse than a failed immediate start.
-        warn "the maintenance owner is loaded but could not be started now (kickstart exit ${kickstart_status}). launchd will start it when it next sees the policy baseline, at the latest after a reboot."
+        if [ "$kickstart_status" -eq 124 ]; then
+            warn "the maintenance owner is loaded but launchctl kickstart did not return within ${LAUNCHCTL_DEADLINE_SECONDS}s and was stopped. launchd will start it when it next sees the policy baseline, at the latest after a reboot."
+        else
+            warn "the maintenance owner is loaded but could not be started now (kickstart exit ${kickstart_status}). launchd will start it when it next sees the policy baseline, at the latest after a reboot."
+        fi
     fi
 fi
 

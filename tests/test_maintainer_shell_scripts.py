@@ -252,6 +252,79 @@ class ShellScriptBase(unittest.TestCase):
         return [line.split()[0]
                 for line in self.launchctl_log.read_text().splitlines() if line]
 
+    def install_launchctl_that_hangs(self, on="bootstrap"):
+        """A launchctl whose named subcommand never returns.
+
+        Models the reporting device's hang directly. Every other subcommand
+        behaves, so a test can show that the sequence continues past the stuck
+        call instead of stopping the install.
+        """
+        self.launchctl_log = self.dir / "launchctl.log"
+        state = self.dir / "launchd-loaded"
+        path = self.prefix / "usr/bin/launchctl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            '#!/bin/sh\n'
+            f'printf "%s\\n" "$*" >> "{self.launchctl_log}"\n'
+            f'if [ "$1" = "{on}" ]; then\n'
+            f'  [ "{on}" = bootstrap ] && : > "{state}"\n'
+            '  while : ; do :; done\n'
+            'fi\n'
+            'case "$1" in\n'
+            '  version) exit 0 ;;\n'
+            f'  print) [ -e "{state}" ] && exit 0 ; exit 113 ;;\n'
+            f'  bootstrap) : > "{state}" ; exit 0 ;;\n'
+            f'  bootout) rm -f "{state}" ; exit 0 ;;\n'
+            '  kickstart) exit 0 ;;\n'
+            'esac\n'
+            'exit 0\n')
+        path.chmod(0o755)
+        return path
+
+    def install_launchctl_that_leaks_a_child(self):
+        """A launchctl that returns immediately but leaves a child running.
+
+        This is what launchd does on a successful bootstrap: the daemon it starts
+        outlives the command. If that child inherits dpkg's stdout, the package
+        manager waits on the pipe long after the maintainer script has exited --
+        the install appears stuck at "Configuring" with the script already gone.
+        The child here holds whatever descriptors it was given for well past any
+        test timeout, so an inherited one is a hang and a detached one is not.
+        """
+        self.launchctl_log = self.dir / "launchctl.log"
+        state = self.dir / "launchd-loaded"
+        self.leaked_child_pid = self.dir / "leaked.pid"
+        path = self.prefix / "usr/bin/launchctl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            '#!/bin/sh\n'
+            f'printf "%s\\n" "$*" >> "{self.launchctl_log}"\n'
+            'case "$1" in\n'
+            '  version) exit 0 ;;\n'
+            f'  print) [ -e "{state}" ] && exit 0 ; exit 113 ;;\n'
+            '  bootstrap)\n'
+            f'    : > "{state}"\n'
+            '    sleep 120 &\n'
+            f'    printf "%s\\n" "$!" > "{self.leaked_child_pid}"\n'
+            '    exit 0 ;;\n'
+            f'  bootout) rm -f "{state}" ; exit 0 ;;\n'
+            '  kickstart) exit 0 ;;\n'
+            'esac\n'
+            'exit 0\n')
+        path.chmod(0o755)
+        self.addCleanup(self._reap_leaked_child)
+        return path
+
+    def _reap_leaked_child(self):
+        try:
+            pid = int(self.leaked_child_pid.read_text().strip())
+        except (OSError, ValueError, AttributeError):
+            return
+        try:
+            os.kill(pid, 9)
+        except OSError:
+            pass
+
     def install_baseline(self):
         path = self.prefix / patcher.BASELINE_RELATIVE.lstrip("/")
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -323,12 +396,17 @@ class ShellScriptBase(unittest.TestCase):
             script.chmod(0o755)
         return script
 
-    def run_script(self, *args, path_extra=None, cwd=None, repoint_primary=False):
+    def run_script(self, *args, path_extra=None, cwd=None, repoint_primary=False,
+                   timeout=120):
         script = self.render(repoint_primary=repoint_primary)
         env = dict(os.environ)
         env["PATH"] = f"{path_extra or self.bin}:{env['PATH']}"
+        # capture_output reads both pipes to EOF, which is exactly how the package
+        # manager decides the script is finished. A child that inherits a
+        # descriptor therefore hangs this call the same way it hung the device, so
+        # the timeout is a real assertion and not just harness hygiene.
         return subprocess.run([str(script), *args], capture_output=True,
-                              text=True, env=env, cwd=cwd)
+                              text=True, env=env, cwd=cwd, timeout=timeout)
 
     def assertNoWarning(self, result):
         self.assertNotIn("warning —", result.stderr)
@@ -746,6 +824,106 @@ class PostinstLaunchdLoadTests(ShellScriptBase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("launchctl could not be run", result.stderr)
         self.assertIn(str(path), result.stderr)
+
+    # ------------------------------------------------------------------
+    # The hung install. A reinstall on the reporting device stopped at
+    # "Configuring me.nixuge.networkmanager" and never returned.
+    #
+    # Both mechanisms below produce that same symptom, both were possible in the
+    # shipped script, and both are covered here because the evidence did not
+    # distinguish them: the install had to be recovered by rebooting, so no
+    # process listing was ever taken.
+    #
+    # This is also the first release in which the daemon does not die instantly in
+    # dyld, so a successful bootstrap that leaves a live child is a new state that
+    # had never been reached before.
+    # ------------------------------------------------------------------
+    def test_a_launchctl_that_never_returns_does_not_hang_the_install(self):
+        # bootstrap was the one call in the shipped script with no redirection and
+        # no bound. If launchd blocks, an unbounded call blocks dpkg forever.
+        self.install_launchctl_that_hangs(on="bootstrap")
+        result = self.run_script("configure", timeout=120)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("did not return within", result.stderr)
+        # A timeout is not a verdict on the job. This stub marks it loaded before
+        # hanging, so the install must go on to ask launchd and find it loaded
+        # rather than boot it out.
+        self.assertNotIn("bootout", self.launchctl_calls()[2:])
+
+    def test_a_bootstrap_that_leaks_a_live_child_does_not_hang_the_install(self):
+        # The mechanism that needs no failure at all: bootstrap succeeds, and the
+        # daemon launchd started inherits dpkg's stdout. The script exits, the
+        # pipe stays open, and the package manager waits on a descriptor held by a
+        # process it has never heard of. run_script reads both pipes to EOF, so an
+        # inherited descriptor makes this time out.
+        self.install_launchctl_that_leaks_a_child()
+        self.install_baseline()
+        result = self.run_script("configure", timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNoWarning(result)
+        self.assertIn("bootstrap", self.launchctl_calls())
+        # And the child really did outlive the script, or this proves nothing.
+        pid = int(self.leaked_child_pid.read_text().strip())
+        os.kill(pid, 0)
+
+    def test_every_launchctl_call_is_bounded_and_detached(self):
+        # Source-level backstop for the two behavioural tests above. They cover
+        # bootstrap; this covers the whole set, because the next call added here
+        # would otherwise reintroduce the bug silently. Every launchctl invocation
+        # must go through launchctl_run, which owns both the deadline and the
+        # redirection.
+        text = (REPO / "package-actions" / "launchctl.sh.inc").read_text()
+        body = "\n".join(line for line in text.splitlines()
+                         if not line.lstrip().startswith("#"))
+        self.assertIn("launchctl_run()", body)
+        self.assertIn('</dev/null >/dev/null 2>&1 &', body)
+        for script in (POSTINST_TEMPLATE, PRERM_TEMPLATE):
+            script_body = "\n".join(
+                line for line in script.read_text().splitlines()
+                if not line.lstrip().startswith("#"))
+            for line in script_body.splitlines():
+                if '"$LAUNCHCTL"' not in line:
+                    continue
+                self.assertIn(
+                    "launchctl_run", line,
+                    f"{script.name} invokes launchctl outside launchctl_run: {line}")
+
+    def test_the_guard_cannot_hold_dpkgs_stdin(self):
+        # Same class of defect, other child process. The guard's stdout is
+        # captured and its stderr is meant to reach the log, so stdin is the one
+        # descriptor that needs closing explicitly.
+        for script in (POSTINST_TEMPLATE, PRERM_TEMPLATE):
+            body = script.read_text()
+            invocation = [line for line in body.splitlines()
+                          if '"$guard" "$@"' in line]
+            self.assertTrue(invocation, script.name)
+            for line in invocation:
+                self.assertIn("</dev/null", line, script.name)
+
+    def test_the_immediate_load_is_skipped_when_it_cannot_be_bounded(self):
+        # No usable delay command means no deadline is enforceable. Running
+        # launchctl unbounded to save a reboot is exactly the trade that caused
+        # this bug, so the load is skipped and the plist is left to do its job at
+        # boot. The delay command is looked up by absolute path rather than through
+        # PATH -- $PATH is not trustworthy in a maintainer script -- so it cannot be
+        # hidden by emptying PATH, and the resolver's candidate list is repointed
+        # instead.
+        self.install_launchctl()
+        script = self.render()
+        text = script.read_text()
+        needle = "    for _delay in /bin/sleep /usr/bin/sleep; do"
+        self.assertIn(needle, text)
+        script.write_text(text.replace(
+            needle, "    for _delay in /nonexistent/sleep; do", 1))
+        script.chmod(0o755)
+        env = dict(os.environ)
+        env["PATH"] = f"{self.bin}:{env['PATH']}"
+        result = subprocess.run([str(script), "configure"], capture_output=True,
+                                text=True, env=env, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("no usable sleep command", result.stderr)
+        self.assertIn("after the next reboot", result.stderr)
+        self.assertEqual(self.launchctl_calls(), [])
 
     def test_nothing_is_loaded_when_the_guard_rejects_the_plist(self):
         # Loading a plist the guard just reported as not matching the contract
