@@ -170,6 +170,20 @@ class DaemonRootSourceTests(unittest.TestCase):
         # unresolved jbroot symbol is to link the library back in.
         self.assertIn("OS_REASON_DYLD", makefile)
 
+    def test_the_daemon_link_does_not_defer_missing_symbols(self):
+        # -undefined dynamic_lookup turns an absent symbol into a successful link
+        # and a runtime death when dyld binds it -- the same failure shape as the
+        # libroothide crash, from a different cause. Verified by removing
+        # CCNMDaemonRoot.m from the file list: with the flag the link succeeds,
+        # without it the link fails on _CCNMDaemonRootedPath.
+        code = "\n".join(line for line in MAKEFILE.read_text().splitlines()
+                         if not line.lstrip().startswith("#"))
+        self.assertNotIn("dynamic_lookup", code)
+        self.assertNotIn("flat_namespace", code)
+        # No lane may reintroduce it, so there must be no scheme conditional left
+        # in this makefile at all.
+        self.assertNotIn("THEOS_PACKAGE_SCHEME", code)
+
     def test_both_prefix_sources_are_built_into_the_daemon(self):
         makefile = MAKEFILE.read_text()
         self.assertIn("CCNMDaemonRoot.c", makefile)

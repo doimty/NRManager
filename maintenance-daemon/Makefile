@@ -38,8 +38,18 @@ networkmanager-maintenance_INSTALL_PATH = /usr/libexec
 # -DCCNM_MAINTENANCE_DAEMON is what switches the shared policy sources onto that
 # path, and it must be set on every lane, not only roothide -- rootless installs
 # under /var/jb and needs the same prefix, just a different value.
-ifeq ($(THEOS_PACKAGE_SCHEME),roothide)
-networkmanager-maintenance_LDFLAGS += -undefined dynamic_lookup
-endif
+#
+# There is deliberately no lane-specific link flag. The roothide branch used to
+# carry `-undefined dynamic_lookup` next to the libroothide link, and it outlived
+# the library. It was never needed: this tool references nothing outside
+# libSystem, libobjc, Foundation, CoreFoundation and CoreTelephony, and it links
+# clean without it. Worse, it masked the one class of defect this release exists
+# to fix. Dropping CCNMDaemonRoot.m from the file list above links successfully
+# with the flag and fails with `Undefined symbols: _CCNMDaemonRootedPath` without
+# it, so a genuinely missing symbol would have shipped as a binary that loads and
+# then dies when dyld has to bind it -- the same runtime-only failure shape as the
+# libroothide crash, from a different cause. It also demoted _objc_msgSend to the
+# flat namespace in the arm64 slice of the shipped build. If a private framework
+# is ever genuinely needed here, declare it; do not reintroduce a blanket flag.
 
 include $(THEOS_MAKE_PATH)/tool.mk

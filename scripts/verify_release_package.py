@@ -171,10 +171,11 @@ UNLINKED_ROOTHIDE_TOOLS = (
 # A separate and deliberately narrower exemption: which roothide binaries may
 # carry LC_DYLD_CHAINED_FIXUPS. Not the same question as libroothide, and
 # conflating the two would have silently dropped the daemon's fixup-format check
-# at the moment it stopped linking the library. The daemon keeps
-# LC_DYLD_INFO_ONLY, which is the device-verified shape for this project and a
-# consequence of the -undefined dynamic_lookup its roothide link uses; chained
-# fixups cannot express that, so the format is real evidence about how it linked.
+# at the moment it stopped linking the library. The daemon keeps LC_DYLD_INFO_ONLY
+# because it links against the iOS 14 minimum with a two-level namespace and no
+# chained-fixups opt-in; that is the device-verified shape for this project, and
+# on this daemon it is also the signal that no blanket -undefined dynamic_lookup
+# crept back into its link.
 CHAINED_FIXUPS_ALLOWED_TOOLS = (
     "networkmanager-install-guard",
     "networkmanager-removal-guard",
