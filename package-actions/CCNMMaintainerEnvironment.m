@@ -373,7 +373,10 @@ BOOL CCNMVerifyMaintenanceLaunchdContract(NSError **error) {
     }
     // Deliberately no launchctl requirement here, and none is possible: this
     // process cannot exec. A correct plist on disk is what makes the job loadable
-    // at the next boot, and the shell decides whether to load it now.
+    // at the next install, and the shell decides whether to load it now. Not at
+    // the next boot: nothing in the jailbreak walks this LaunchDaemons directory
+    // on the way up, and a re-jailbreak relocates the whole tree to a fresh
+    // jailbreak root, so a maintainer script is the only loader this job has.
     //
     // Report each failing input separately. They fail for unrelated reasons and
     // each needs a different fix on the device; one combined message is not

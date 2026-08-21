@@ -378,16 +378,41 @@ class ShellOwnsLaunchctlTests(unittest.TestCase):
         self.assertNotIn("launchd_bootout || :", postinst)
 
     def test_an_unusable_launchctl_is_a_notice_rather_than_a_warning(self):
-        # The plist is correct on disk, which is what makes the job loadable when
-        # launchd next reads the jailbreak LaunchDaemons directory. Only the
-        # immediate load was impossible.
+        # The plist is correct on disk and this package's own postinst is the only
+        # thing that loads it, so only the immediate load was impossible.
         postinst = POSTINST_TEMPLATE.read_text()
         branch = postinst[postinst.index("if ! resolve_launchctl; then"):
                           postinst.index("launchd_bootout")]
         self.assertIn("note ", branch)
         self.assertNotIn("warn ", branch)
-        self.assertIn("after the next reboot", branch)
+        self.assertIn("Reinstall the package", branch)
         self.assertIn("LAUNCHCTL_REPORT", branch)
+
+    def test_no_message_offers_a_reboot_as_the_way_to_start_the_daemon(self):
+        # Wrong advice this project shipped once and must not ship again. Two
+        # independent reasons, both specific to this platform: nothing in the
+        # jailbreak walks <jbroot>/Library/LaunchDaemons at startup -- the ordinary
+        # daemons in the bootstrap tarball are loaded by their own extrainst_, and
+        # basebin's by bootstrapd through the native API -- and a plain reboot ends
+        # the jailbreak entirely, with re-jailbreaking relocating the tree to a
+        # freshly randomised jailbreak root. So a reboot is the one thing that
+        # cannot start this job. Reinstalling is the retry.
+        #
+        # Scoped to starting, because the opposite direction is true and prerm says
+        # it: a reboot does stop a daemon that is already running.
+        starting = ("start", "load", "running", "begin")
+        for template in (POSTINST_TEMPLATE, PRERM_TEMPLATE):
+            messages = [line for line in template.read_text().splitlines()
+                        if line.lstrip().startswith(("note ", "warn "))]
+            self.assertTrue(messages, template)
+            for line in messages:
+                for claim in ("after the next reboot", "at the next reboot",
+                              "at the next boot"):
+                    if claim not in line:
+                        continue
+                    clause = line[:line.index(claim)].rsplit(".", 1)[-1].lower()
+                    for verb in starting:
+                        self.assertNotIn(verb, clause, line)
 
     def test_the_label_and_plist_path_are_rendered_not_hand_copied(self):
         # A label copied by hand could drift from the one inside the plist, and

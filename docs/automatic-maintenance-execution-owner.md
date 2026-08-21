@@ -112,13 +112,22 @@ The policy reader/controller use the same convention, so launchd and the daemon 
 
 The read-only monitor builds as `/usr/libexec/networkmanager-maintenance` relative to the active jailbreak root. It requires `--daemon`, reads the existing validated policy summary, samples only under the exact stable-enabled predicate, retains two independent summaries, and evaluates the shared pure decision module. Its entry source contains no enable, disable, recover, durable-record writer, or active-band setter call.
 
-A root launchd plist is now packaged with one `KeepAlive/PathState` baseline condition. The shell `postinst` substitutes the jailbreak root into it, then the install guard validates the contract and bootstraps the job after removal-guard cleanup; `prerm` stops and verifies it before any restore work. A failure to register is a warning, not an install failure: the daemon owns no policy or modem state, and a correct plist on disk is what makes the job loadable at the next boot. Baseline retirement explicitly stops the daemon run loop because `PathState` alone does not terminate an already-running process. The read-only daemon persists its maintenance record and bounded status plist after each refresh. `CorrectOnce` remains disconnected from every setter, so this activation adds observation only.
+A root launchd plist is now packaged with one `KeepAlive/PathState` baseline condition. The shell `postinst` hands the jailbreak root to the guards, the install guard validates the contract, and the shell bootstraps the job after removal-guard cleanup; `prerm` stops and verifies it before any restore work. A failure to register is a warning, not an install failure: the daemon owns no policy or modem state, so band policy changes keep working without it. What a failed registration does **not** buy is a free retry at the next boot — see below. Baseline retirement explicitly stops the daemon run loop because `PathState` alone does not terminate an already-running process. The read-only daemon persists its maintenance record and bounded status plist after each refresh. `CorrectOnce` remains disconnected from every setter, so this activation adds observation only.
+
+### A reboot is not the recovery path
+
+Early wording in this project promised that a job which failed to load would start "at the next boot". That was wrong on this platform, in two independent ways:
+
+- Nothing in the jailbreak walks `<jbroot>/Library/LaunchDaemons` at startup. The two ordinary daemons shipped in the bootstrap tarball are loaded by their own `extrainst_` maintainer script (`shshd.extrainst_` calls `/bin/launchctl load -w`), and basebin's daemons are loaded by `bootstrapd` through the native API. For a package like this one, its own maintainer script is the only loader that exists.
+- A plain reboot ends the jailbreak. Re-jailbreaking calls `ReRandomizeBootstrap`, which moves the tree to a freshly randomised `/var/containers/Bundle/Application/.jbroot-<16 hex>` and rebuilds basebin. The reporting device went through three distinct jailbreak roots in a single day of installs, which is what exposed the wrong advice.
+
+So the recovery for a registration failure is to install the package again, and every message says that instead.
 
 Registration reports four outcomes, and the distinction between the last three is a reporting requirement rather than a control-flow convenience:
 
 - `Active` — the job is loaded and running now.
-- `Deferred` — the plist is validated and on disk but `launchctl` could not be run at all, so launchd has not yet seen the job. The next boot is a genuine prediction, and the install log says so.
-- `Rejected` — `launchctl` ran and launchd declined to load the job. The durable half of the work is still intact, so this is not a permanent failure, but launchd has already refused once and the message must not borrow the deferred wording and promise the next boot will work.
+- `Deferred` — the plist is validated and on disk but `launchctl` could not be run at all, so launchd has never seen the job. Reinstalling the package is the retry, and the install log says so rather than promising a boot will do it.
+- `Rejected` — `launchctl` ran and launchd declined to load the job. The durable half of the work is still intact, so this is not permanent, but launchd has already refused once and the message must not borrow the deferred wording or promise that anything fixes itself unattended.
 - `Failed` — the plist itself could not be validated, so the job will not load now or later.
 
 `Failed` is therefore reachable only from the prepare step. Reusing it for post-`launchctl` problems told the user the daemon would never run while a correct plist sat on disk, and collapsed "launchctl is missing" together with "launchd looked at the job and said no", which have different remedies. The `switch` in the install guard is exhaustive with no `default`, so the compiler rejects an unhandled outcome; that was verified by deleting a case and observing the build fail.

@@ -916,7 +916,7 @@ class PostinstLaunchdLoadTests(ShellScriptBase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNoWarning(result)
         self.assertIn("not running yet", result.stderr)
-        self.assertIn("after the next reboot", result.stderr)
+        self.assertIn("Reinstall the package", result.stderr)
 
     def test_a_launchctl_that_cannot_be_exec_d_is_reported_with_what_was_tried(self):
         # 126 is the shell's "found but not executable". The exec attempt is the
@@ -1028,7 +1028,7 @@ class PostinstLaunchdLoadTests(ShellScriptBase):
                                 text=True, env=env, timeout=120)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("no usable sleep command", result.stderr)
-        self.assertIn("after the next reboot", result.stderr)
+        self.assertIn("Reinstall the package", result.stderr)
         self.assertEqual(self.launchctl_calls(), [])
 
     def test_nothing_is_loaded_when_the_guard_rejects_the_plist(self):

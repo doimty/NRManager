@@ -18,7 +18,7 @@ Status: release candidate source, not yet approved for distribution.
 - A 20-second setter deadline returns control while retaining the lock until a late private call resolves; uncertain outcomes forbid another same-boot write.
 - Disabling restores the exact original NR list while preserving current non-NR arrays.
 - Shell `postinst` and `prerm` do the privileged work, and compiled policy guards decide the verdict: restore runs before removal, or before a downgrade below 1.5.0, and a durable removal marker closes the post-`prerm` race.
-- Maintenance-daemon registration reports its outcome honestly: running now, waiting for the next boot because `launchctl` could not run, declined by launchd, or not loadable at all. Only the last means the plist is wrong, and only the second promises the next reboot will fix it.
+- Maintenance-daemon registration reports its outcome honestly: running now, not started because `launchctl` could not run, declined by launchd, or not loadable at all. Where the daemon did not start, the install says to reinstall the package rather than promising that a reboot will start it: nothing in the jailbreak loads this directory at boot, and re-jailbreaking relocates the tree to a new jailbreak root.
 - Malformed, missing, foreign, or inconsistent evidence fails closed. There is no ordinary-user clear-state action.
 
 ## Compatibility

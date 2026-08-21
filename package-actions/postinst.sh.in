@@ -306,18 +306,29 @@ fi
 
 if ! resolve_delay_command; then
     # Without a delay command no launchctl call can be bounded, and an unbounded
-    # one is what hung the install. The plist on disk is what makes the job
-    # loadable at the next boot, so skipping the immediate load costs a reboot and
-    # risks nothing.
-    note "the maintenance owner is installed but not started now: no usable sleep command was found, so launchctl could not be run under a deadline. It starts automatically after the next reboot. Band policy changes work now."
+    # one is what hung the install. Skipping the immediate load costs only the
+    # monitoring, and a later reinstall retries it -- see the note below on why a
+    # reboot is not the recovery path here.
+    note "the maintenance owner is installed but not started now: no usable sleep command was found, so launchctl could not be run under a deadline. Band policy changes work now. Reinstall the package to start automatic serving-state monitoring."
     exit 0
 fi
 
+# A reboot is deliberately not offered as the recovery path anywhere below.
+#
+# On a jailbreak whose root is re-randomised, a plain reboot ends the jailbreak
+# altogether, and re-jailbreaking moves the whole tree to a new
+# /var/containers/Bundle/Application/.jbroot-<16 hex> and then rebuilds basebin,
+# so nothing here is loaded by launchd on the way back up: no jailbreak component
+# walks this directory at boot, and the only loader for a package like this one is
+# a maintainer script. "It starts at the next reboot" was therefore wrong advice,
+# and the reporting device is what showed it -- three different jailbreak roots
+# across one day of installs.
+#
+# The honest recovery is a reinstall, which runs this script again.
 if ! resolve_launchctl; then
-    # The plist is correct on disk, which is what makes the job loadable when
-    # launchd next reads the jailbreak LaunchDaemons directory. Only the
-    # immediate load was impossible, so this is a notice, not a warning.
-    note "the maintenance owner is installed but not running yet; launchctl could not be run${LAUNCHCTL_REPORT:+ (tried ${LAUNCHCTL_REPORT})}. It starts automatically after the next reboot. Band policy changes work now; only automatic serving-state monitoring waits for that."
+    # The plist is correct on disk and this package's own postinst is what loads
+    # it, so only the immediate load was impossible. A notice, not a warning.
+    note "the maintenance owner is installed but not running yet; launchctl could not be run${LAUNCHCTL_REPORT:+ (tried ${LAUNCHCTL_REPORT})}. Band policy changes work now; only automatic serving-state monitoring waits. Reinstall the package to start it."
     exit 0
 fi
 
@@ -338,7 +349,7 @@ if [ "$bootout_status" -eq 1 ]; then
     # Status 2 means launchd stopped answering and nothing is known; the bounded
     # calls below report that themselves, and claiming a stale definition on that
     # evidence would be inventing one.
-    warn "a previously loaded definition of the maintenance owner could not be removed. If it points into an earlier jailbreak root, launchd keeps refusing to start it until the next reboot."
+    warn "a previously loaded definition of the maintenance owner could not be removed. If it points into an earlier jailbreak root, launchd keeps refusing to start it, and reinstalling the package is what replaces it."
 fi
 
 launchctl_run "$LAUNCHCTL" bootstrap system "$LAUNCHD_PLIST"
@@ -348,17 +359,17 @@ if [ "$bootstrap_status" -eq 124 ]; then
     # only spend another deadline, and the latch inside launchctl_run skips it
     # anyway. The job is deliberately not booted out -- launchd may well have
     # accepted the definition before the deadline.
-    warn "launchd did not answer within ${LAUNCHCTL_DEADLINE_SECONDS}s and the request was stopped, so the maintenance owner may or may not be running. The plist is installed either way, so launchd starts it at the next reboot. Band policy changes work now."
+    warn "launchd did not answer within ${LAUNCHCTL_DEADLINE_SECONDS}s and the request was stopped, so the maintenance owner may or may not be running. Band policy changes work now. If automatic serving-state monitoring turns out not to be running, reinstall the package."
     exit 0
 fi
 launchd_job_is_loaded
 loaded_status=$?
 if [ "$loaded_status" -eq 2 ]; then
-    warn "launchd did not answer within ${LAUNCHCTL_DEADLINE_SECONDS}s when asked whether the maintenance owner loaded, so the request was stopped. The plist is installed either way, so launchd starts it at the next reboot. Band policy changes work now."
+    warn "launchd did not answer within ${LAUNCHCTL_DEADLINE_SECONDS}s when asked whether the maintenance owner loaded, so the request was stopped. Band policy changes work now. If automatic serving-state monitoring turns out not to be running, reinstall the package."
     exit 0
 fi
 if [ "$loaded_status" -ne 0 ]; then
-    warn "the maintenance owner is installed but launchd declined to load it (bootstrap exit ${bootstrap_status}). Band policy changes work now. Automatic serving-state monitoring is unavailable until launchd accepts the job, which it may do at the next reboot."
+    warn "the maintenance owner is installed but launchd declined to load it (bootstrap exit ${bootstrap_status}). Band policy changes work now. Automatic serving-state monitoring is unavailable until launchd accepts the job; reinstall the package to try again."
     exit 0
 fi
 
@@ -373,5 +384,10 @@ fi
 # previous one. So kickstart only ever meant "and start it a second time", at the
 # cost of a call that can block the package manager and a ThrottleInterval-delayed
 # restart when it lands on a job launchd had just started.
+#
+# This also means the bootstrap above is the only thing that ever starts the
+# maintenance owner. Nothing in the jailbreak walks this LaunchDaemons directory
+# at boot, and a re-jailbreak moves the tree to a fresh jailbreak root, so if the
+# load above did not happen, the recovery is another install, not a reboot.
 
 exit 0
