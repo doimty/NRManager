@@ -7,6 +7,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 CC_SOURCE = ROOT / "CCNetworkManager.x"
+CC_HEADER = ROOT / "CCNetworkManager.h"
 MAKEFILE = ROOT / "Makefile"
 POLICY_SOURCE = ROOT / "networkmanagerprefs/CCNMN78PolicyController.m"
 
@@ -15,6 +16,7 @@ class ControlCenterServingLabelTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.source = CC_SOURCE.read_text()
+        cls.header = CC_HEADER.read_text()
         cls.makefile = MAKEFILE.read_text()
         cls.policy = POLICY_SOURCE.read_text()
 
@@ -22,6 +24,12 @@ class ControlCenterServingLabelTests(unittest.TestCase):
         self.assertIn("networkmanagerprefs/CCNMServingStatusProvider.m", self.makefile)
         self.assertIn("networkmanagerprefs/CCNMServingCellSampler.m", self.makefile)
         self.assertIn('#import "networkmanagerprefs/CCNMServingStatusProvider.h"', self.source)
+        # CCUIButtonModuleViewController is exported by the private framework but
+        # is absent from the vendored headers, so the bundle declares it locally.
+        self.assertIn("-Iinclude", self.makefile)
+        self.assertTrue(
+            (ROOT / "include/ControlCenterUIKit/CCUIButtonModuleViewController.h").is_file()
+        )
 
     def test_stable_glyph_uses_fresh_serving_truth_not_policy_name(self):
         self.assertIn("CCNMServingGlyphText", self.source)
@@ -46,13 +54,22 @@ class ControlCenterServingLabelTests(unittest.TestCase):
             "refreshWithCompletion",
             "CCNMServingSummaryStaleKey",
             "dispatch_get_main_queue",
-            "refreshState",
+            "refreshModulePresentation",
         ):
             self.assertIn(token, self.source)
-        self.assertIn("now - self.servingRefreshStartedAt > 20.0", self.source)
-        start = self.source.index("- (void)requestServingRefreshIfNeeded")
-        end = self.source.index("- (UIImage *)iconGlyph", start)
+        # A sampler round that never reports back must not pin the tile forever.
+        self.assertIn("CCNMServingRefreshStallTimeout = 20.0", self.source)
+        self.assertIn(
+            "now - self.servingRefreshStartedAt > CCNMServingRefreshStallTimeout",
+            self.source,
+        )
+        start = self.source.index("- (void)requestServingRefreshIfNeeded {")
+        end = self.source.index("- (void)adoptPublishedServingSummary {", start)
         refresh = self.source[start:end]
+        # The tile must never sample while the settings page owns the modem.
+        self.assertIn("CCNMN78PolicyHasOutstandingSetter()", refresh)
+        self.assertIn("CCNMPolicyIsTransitioning(policy)", refresh)
+        self.assertIn("CCNMPolicyNeedsRecovery(policy)", refresh)
         for forbidden in (
             "CCNMEnableN78Preference",
             "CCNMDisableN78Preference",
@@ -62,42 +79,121 @@ class ControlCenterServingLabelTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, refresh)
 
+    def test_refresh_loop_is_driven_by_visibility_not_by_drawing(self):
+        """The tile refreshes itself while Control Center is on screen.
+
+        The previous CCUIToggleModule implementation only refreshed when the
+        framework happened to re-read its read-only iconGlyph, so the displayed
+        band lagged behind reality. Refresh triggers must now be visibility,
+        a timer, radio-technology changes, and taps.
+        """
+        self.assertIn("CCNMServingVisibleRefreshInterval = 15.0", self.source)
+        self.assertIn("CCNMServingRATDebounceSeconds = 0.25", self.source)
+        self.assertIn("CCNMServingRefreshMinimumInterval", self.source)
+        for token in (
+            "- (void)controlCenterWillPresent",
+            "- (void)controlCenterDidDismiss",
+            "- (void)viewWillAppear:",
+            "- (void)viewDidDisappear:",
+            "- (void)beginVisibleSession",
+            "- (void)endVisibleSession",
+            "scheduledTimerWithTimeInterval:CCNMServingVisibleRefreshInterval",
+            "scheduledTimerWithTimeInterval:CCNMServingRATDebounceSeconds",
+            "CTServiceRadioAccessTechnologyDidChangeNotification",
+        ):
+            self.assertIn(token, self.source)
+        # iconGlyph was the old lazy trigger. Nothing may refresh from a draw.
+        self.assertNotIn("iconGlyph", self.source)
+        # An off-screen tile must not keep sampling.
+        request = self.source[
+            self.source.index("- (void)requestServingRefreshIfNeeded {"):
+            self.source.index("- (void)adoptPublishedServingSummary {")
+        ]
+        self.assertIn("if (!self.visible || self.servingRefreshInProgress)", request)
+        teardown = self.source[
+            self.source.index("- (void)endVisibleSession {"):
+            self.source.index("- (void)registerObserversIfNeeded {")
+        ]
+        self.assertIn("self.visible = NO", teardown)
+        self.assertIn("[self.visibleRefreshTimer invalidate]", teardown)
+        self.assertIn("[self.ratDebounceTimer invalidate]", teardown)
+        self.assertIn("[self removeObserversIfNeeded]", teardown)
+
+    def test_superseded_refresh_result_cannot_publish(self):
+        """A stalled round that reports back late must not overwrite newer state."""
+        self.assertIn("refreshGeneration", self.source)
+        self.assertIn("NSUInteger generation = ++self.refreshGeneration", self.source)
+        self.assertIn("if (generation != strongSelf.refreshGeneration)", self.source)
+
     def test_cache_notification_uses_only_safe_public_refresh(self):
         for token in (
             "CCNMServingStatusDidChangeDarwinNotification",
             "CCNMServingStatusDidChangeCallback",
             "refreshModulePresentation",
-            "[self refreshState]",
+            "self.glyphImage = CCNMServingGlyphImage",
         ):
             self.assertIn(token, self.source)
         for forbidden in (
-            "contentViewController",
             "class_getInstanceVariable",
             "object_getIvar",
             "reconfigureView",
         ):
             self.assertNotIn(forbidden, self.source)
 
-    def test_system_set_selected_callback_is_read_only(self):
-        start = self.source.index("- (void)setSelected:")
-        callback = self.source[start:self.source.index("@end", start)]
-        self.assertNotIn("CCNMEnableN78Preference", callback)
-        self.assertNotIn("CCNMDisableN78Preference", callback)
-        self.assertNotIn("CCNMRecoverN78Preference", callback)
-        self.assertNotIn("refreshState", callback)
-        self.assertNotIn("refreshModulePresentation", callback)
-        self.assertIn("(void)selected", callback)
+    def test_module_only_vends_the_serving_tile_view_controller(self):
+        self.assertIn("@interface CCNetworkManager : NSObject <CCUIContentModule>", self.header)
+        self.assertIn(
+            "@interface CCNetworkManagerViewController : CCUIButtonModuleViewController",
+            self.header,
+        )
+        self.assertNotIn("CCUIToggleModule", self.header)
+        self.assertNotIn("CCUIToggleModule", self.source)
+        module = self.source[self.source.index("@implementation CCNetworkManager {"):]
+        self.assertIn("_servingTileViewController", module)
+        self.assertIn(
+            "- (UIViewController<CCUIContentModuleContentViewController> *)contentViewController",
+            module,
+        )
+
+    def test_content_view_controller_is_implemented_never_sent(self):
+        """Regression guard for the three SpringBoard SIGABRT crashes.
+
+        Sending -contentViewController to the framework's module object aborted on
+        iOS 15.1.1 because CCUIToggleModule does not expose that getter. The
+        module now owns and implements the accessor, so it must never appear as a
+        message send or property access anywhere in the bundle source.
+        """
+        self.assertNotIn("contentViewController]", self.source)
+        self.assertNotIn(".contentViewController", self.source)
+        self.assertEqual(
+            self.source.count("*)contentViewController"),
+            1,
+            "contentViewController must appear exactly once, as the implementation",
+        )
+        self.assertNotIn("_viewController", self.source)
+        self.assertNotIn("reconfigureView", self.source)
+        self.assertNotIn("refreshState", self.source)
+
+    def test_tap_only_forces_a_sample_and_never_writes_policy(self):
+        start = self.source.index("- (void)buttonTapped:")
+        callback = self.source[start:self.source.index("#pragma mark - Refresh", start)]
+        # The tap must not reach the framework's own selection handling, which
+        # would flip the displayed state without any policy change behind it.
+        self.assertNotIn("[super buttonTapped:", callback)
+        self.assertIn("[self requestServingRefreshIfNeeded]", callback)
         for writer in (
             "CCNMEnableN78Preference",
             "CCNMDisableN78Preference",
             "CCNMRecoverN78Preference",
         ):
+            self.assertNotIn(writer, callback)
             self.assertNotIn(writer, self.source)
 
-    def test_selected_color_remains_policy_truth(self):
-        selected = self.source[self.source.index("- (BOOL)isSelected"):self.source.index("- (void)setSelected:")]
-        self.assertIn("CCNMPolicyIsRequested", selected)
-        self.assertNotIn("CCNMServing", selected)
+    def test_selection_mirrors_policy_truth_and_is_display_only(self):
+        presentation = self.source[self.source.index("- (void)refreshModulePresentation {"):]
+        self.assertIn("BOOL requested = CCNMPolicyIsRequested(state)", presentation)
+        self.assertIn("self.selected = requested", presentation)
+        self.assertNotIn("CCNMServingSummarySuccessKey", presentation)
 
 
 if __name__ == "__main__":

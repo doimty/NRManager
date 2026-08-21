@@ -5,7 +5,15 @@
 #import <roothide.h>
 #endif
 
-#import <ControlCenterUIKit/CCUIToggleModule.h>
+#import <ControlCenterUIKit/CCUIButtonModuleViewController.h>
+#import <ControlCenterUIKit/CCUIContentModule-Protocol.h>
+#import <ControlCenterUIKit/CCUIContentModuleContentViewController-Protocol.h>
 
-@interface CCNetworkManager : CCUIToggleModule
+// The serving-band tile refreshes itself while Control Center is visible. The
+// module object only vends the view controller; the view controller owns the
+// visibility-driven refresh loop.
+@interface CCNetworkManagerViewController : CCUIButtonModuleViewController
+@end
+
+@interface CCNetworkManager : NSObject <CCUIContentModule>
 @end

@@ -117,10 +117,11 @@ class FormalPolicyStaticTests(unittest.TestCase):
         self.assertIn("No baseline, intent, in-flight marker, or setter call", preflight_failure)
 
     def test_control_center_uses_only_public_state_refresh_api(self):
-        self.assertIn("refreshState", self.cc_source)
+        # The tile publishes its own glyph now instead of asking the framework to
+        # re-read a read-only property, but it still may not touch private ivars.
         self.assertIn("refreshModulePresentation", self.cc_source)
+        self.assertIn("self.glyphImage = CCNMServingGlyphImage", self.cc_source)
         for forbidden in (
-            "contentViewController",
             "class_getInstanceVariable",
             "object_getIvar",
             "reconfigureView",
