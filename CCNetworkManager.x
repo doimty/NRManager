@@ -41,11 +41,18 @@ static BOOL CCNMPolicyNeedsRecovery(NSDictionary *state) {
         ![recovery isEqual:CCNMRecoveryStateEnabledWithBaseline];
 }
 
-// The accent colour of the original pre-n78 release. It lived there as the
-// toggle's -selectedColor, an API CCUIButtonModuleViewController does not have,
-// so it now belongs to the glyph itself.
+// The glyph is white in every state, matching the split-out prototype and the
+// stock tiles beside it.
+//
+// The amber accent of the original pre-n78 release was the toggle's
+// -selectedColor, which fills the tile background while a toggle is on. It was
+// never the glyph tint. CCUIButtonModuleViewController has no equivalent
+// property, and moving the amber onto the glyph instead forced the selected
+// state to find a second colour that could be told apart from it, which is where
+// the dark text came from. Control Center draws its own selection treatment, so
+// the glyph does not need to carry that distinction at all.
 static UIColor *CCNMServingGlyphColor(void) {
-    return [UIColor colorWithRed:1.00 green:0.58 blue:0.00 alpha:1.0];
+    return UIColor.whiteColor;
 }
 
 // Returns nil when there is no serving band worth showing. The caller draws the
@@ -126,6 +133,10 @@ static UIImage *CCNMServingCenteredSymbolGlyphImage(UIImage *symbol, UIColor *ti
     return image;
 }
 
+// Cache key standing for the searching antenna. It is not a valid band string,
+// so it cannot collide with one.
+static NSString *const CCNMServingSearchingGlyphKey = @"__searching__";
+
 // Shown whenever no serving band is available, including while a sample is in
 // flight. This is the searching glyph the split-out prototype uses.
 static UIImage *CCNMServingSearchingGlyphImage(UIColor *tintColor) {
@@ -156,11 +167,18 @@ static UIImage *CCNMServingSearchingGlyphImage(UIColor *tintColor) {
 // Published timestamp of the summary currently drawn, so a cross-process publish
 // can be adopted exactly once and never regresses to an older sample.
 @property (nonatomic, assign) long long appliedPublishedAtMilliseconds;
+// Last policy state read from disk. The drawing path uses this instead of going
+// back to the filesystem; see -refreshPolicySnapshot.
+@property (nonatomic, copy) NSDictionary<NSString *, id> *policySnapshot;
+// Glyph string the current images were rendered for, so an unchanged string does
+// not pay for two fresh bitmaps.
+@property (nonatomic, copy) NSString *drawnGlyphKey;
 
 - (void)requestServingRefreshIfNeeded;
 - (void)invalidateServingStatus;
 - (void)refreshModulePresentation;
 - (void)adoptPublishedServingSummary;
+- (NSDictionary<NSString *, id> *)refreshPolicySnapshot;
 - (void)applyPublishedSummary:(NSDictionary<NSString *, id> *)summary
         requireNewerTimestamp:(BOOL)requireNewerTimestamp;
 @end
@@ -178,6 +196,9 @@ static void CCNMPolicyDidChangeCallback(CFNotificationCenterRef center,
         (__bridge CCNetworkManagerViewController *)observer;
     dispatch_async(dispatch_get_main_queue(), ^{
         [module invalidateServingStatus];
+        // The policy is what just changed, so the snapshot the drawing path reads
+        // is stale by definition and has to be re-read here.
+        [module refreshPolicySnapshot];
         [module refreshModulePresentation];
         [module requestServingRefreshIfNeeded];
     });
@@ -216,8 +237,16 @@ static void CCNMServingStatusDidChangeCallback(CFNotificationCenterRef center,
 
 - (void)viewDidLoad {
     [super viewDidLoad];
+    // Both tints are deliberately the same colour. Whether the framework draws
+    // the bitmap as supplied or re-tints it as a template, and whichever of the
+    // two it picks for the current state, the glyph comes out white.
     self.glyphColor = CCNMServingGlyphColor();
-    self.selectedGlyphColor = UIColor.blackColor;
+    self.selectedGlyphColor = CCNMServingGlyphColor();
+    // The glyph properties are passthroughs to a button view owned by the
+    // framework, so a reloaded view starts with no glyph at all. Dropping the
+    // render cache here is what guarantees the next presentation actually draws
+    // instead of assuming the previous view's image is still installed.
+    self.drawnGlyphKey = nil;
     // Draw the last published sample straight away so a freshly built tile shows
     // a band instead of the searching glyph while its first round runs.
     [self adoptPublishedServingSummary];
@@ -258,6 +287,15 @@ static void CCNMServingStatusDidChangeCallback(CFNotificationCenterRef center,
 }
 
 - (void)beginVisibleSession {
+    // All three presentation callbacks lead here because which one Control Center
+    // delivers depends on how the tile is hosted. That redundancy must not turn
+    // into three times the work: each pass costs a cross-process cache read, a
+    // policy read and a presentation pass, and they land in the middle of the
+    // open animation. Repeats after the first return immediately, and
+    // -endVisibleSession clears the flag, so the next presentation runs in full.
+    if (self.visible) {
+        return;
+    }
     self.visible = YES;
     [self registerObserversIfNeeded];
     [self adoptPublishedServingSummary];
@@ -303,6 +341,11 @@ static void CCNMServingStatusDidChangeCallback(CFNotificationCenterRef center,
     self.visibleRefreshTimer = nil;
     [self.ratDebounceTimer invalidate];
     self.ratDebounceTimer = nil;
+    // The policy can change while the tile is off screen, and the change
+    // notification is not observed then, so the cached snapshot must not survive
+    // a dismissal. Clearing it here rather than re-reading on the way back in
+    // keeps the read lazy: whichever path draws or samples first pays for it once.
+    self.policySnapshot = nil;
     [self removeObserversIfNeeded];
 }
 
@@ -450,7 +493,12 @@ static void CCNMServingStatusDidChangeCallback(CFNotificationCenterRef center,
     // Never sample across a policy transition, a pending recovery, or an
     // outstanding setter. This guard predates the auto-refresh loop and is the
     // reason the tile can never contend with the modem write path.
-    NSDictionary *policy = CCNMReadN78PolicyState();
+    // Deliberately a fresh read rather than the cached snapshot. This is the
+    // guard that keeps the tile off the modem while the settings page owns it,
+    // and it must never act on a stale copy. It is also not on the drawing path:
+    // it runs on a timer tick, a tap or a technology change, not on every
+    // presentation pass.
+    NSDictionary *policy = [self refreshPolicySnapshot];
     if (CCNMPolicyIsTransitioning(policy) || CCNMPolicyNeedsRecovery(policy) ||
         CCNMN78PolicyHasOutstandingSetter()) {
         return;
@@ -521,8 +569,22 @@ static void CCNMServingStatusDidChangeCallback(CFNotificationCenterRef center,
 
 #pragma mark - Presentation
 
+// Re-reads the durable policy state and caches it for the drawing path. Every
+// call is up to five plist loads off the filesystem, on the main thread, so the
+// drawing path must not do it: presentation runs on adoption, on every timer
+// tick, on every notification and on every completion, all of which can land
+// during the open animation. It is re-read only where the value can actually
+// have changed, which is a policy-change notification and the sampling guard,
+// and the cache is dropped on dismissal because notifications are not observed
+// off screen.
+- (NSDictionary<NSString *, id> *)refreshPolicySnapshot {
+    NSDictionary<NSString *, id> *state = CCNMReadN78PolicyState();
+    self.policySnapshot = state;
+    return state;
+}
+
 - (void)refreshModulePresentation {
-    NSDictionary *state = CCNMReadN78PolicyState();
+    NSDictionary *state = self.policySnapshot ?: [self refreshPolicySnapshot];
     BOOL requested = CCNMPolicyIsRequested(state);
     NSString *text = nil;
     if (CCNMPolicyIsTransitioning(state)) {
@@ -535,15 +597,27 @@ static void CCNMServingStatusDidChangeCallback(CFNotificationCenterRef center,
     // No serving band to show, either because a sample is still in flight or
     // because the last one came back empty. Draw the searching antenna instead
     // of a bare question mark.
-    if (text.length > 0) {
-        self.glyphImage = CCNMServingGlyphImage(text, CCNMServingGlyphColor());
-        self.selectedGlyphImage = CCNMServingGlyphImage(text, UIColor.blackColor);
-    } else {
-        self.glyphImage = CCNMServingSearchingGlyphImage(CCNMServingGlyphColor());
-        self.selectedGlyphImage = CCNMServingSearchingGlyphImage(UIColor.blackColor);
+    NSString *glyphKey = text.length > 0 ? text : CCNMServingSearchingGlyphKey;
+    // Rendering a glyph means an offscreen bitmap context and either a layer
+    // render or a symbol draw. Presentation is called far more often than the
+    // glyph actually changes, and redrawing the identical bitmap during the open
+    // animation is pure jank. Both tints are the same colour now, so one image
+    // serves both states.
+    if (![glyphKey isEqualToString:self.drawnGlyphKey]) {
+        UIImage *glyph = text.length > 0
+            ? CCNMServingGlyphImage(text, CCNMServingGlyphColor())
+            : CCNMServingSearchingGlyphImage(CCNMServingGlyphColor());
+        self.glyphImage = glyph;
+        self.selectedGlyphImage = glyph;
+        self.drawnGlyphKey = glyphKey;
     }
     // Selection mirrors policy truth. It is display only; the tile never writes.
-    self.selected = requested;
+    // Assigned only on change: the framework reacts to this setter by running its
+    // own state-change pass over the button view, and presentation is called far
+    // more often than the policy changes.
+    if (self.selected != requested) {
+        self.selected = requested;
+    }
 }
 
 @end

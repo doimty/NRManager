@@ -87,31 +87,100 @@ class ControlCenterServingLabelTests(unittest.TestCase):
         self.assertIn("CCNMPolicyNeedsRecovery", self.source)
         self.assertNotIn("policyOperationPending", self.source)
 
-    def test_glyph_uses_the_original_release_accent_colour(self):
-        """The pre-n78 release drew this colour through the toggle's
-        -selectedColor, which CCUIButtonModuleViewController does not have. It
-        now belongs to the glyph, so both the text and the searching antenna
-        carry it.
+    def test_glyph_is_white_in_every_state(self):
+        """The split-out prototype's glyph is white, and so are the stock tiles
+        beside it.
+
+        The amber in the original pre-n78 release was the toggle's
+        -selectedColor, which fills the tile background while a toggle is on; it
+        was never the glyph tint. CCUIButtonModuleViewController has no such
+        property, and tinting the glyph amber instead forced the selected state
+        to pick a second colour that could be told apart from it, which produced
+        the black text the user reported. Control Center draws its own selection
+        treatment, so one white glyph serves both states.
         """
-        self.assertIn(
-            "return [UIColor colorWithRed:1.00 green:0.58 blue:0.00 alpha:1.0];",
-            self.source,
-        )
+        self.assertIn("return UIColor.whiteColor;", self.source)
+        self.assertNotIn("colorWithRed:1.00 green:0.58 blue:0.00", self.source)
+        # No state may reach a dark glyph. Both tints and both images are the
+        # same white, so it cannot matter which one the framework picks.
+        self.assertNotIn("UIColor.blackColor", self.source)
+        self.assertNotIn("blackColor", self.source)
         self.assertIn("self.glyphColor = CCNMServingGlyphColor();", self.source)
+        self.assertIn("self.selectedGlyphColor = CCNMServingGlyphColor();", self.source)
         presentation = self.source[
             self.source.index("- (void)refreshModulePresentation {"):
             self.source.index("@implementation CCNetworkManager {")
         ]
+        self.assertIn("CCNMServingGlyphImage(text, CCNMServingGlyphColor())", presentation)
         self.assertIn(
-            "self.glyphImage = CCNMServingGlyphImage(text, CCNMServingGlyphColor());",
-            presentation,
+            "CCNMServingSearchingGlyphImage(CCNMServingGlyphColor())", presentation
         )
+        # One rendered image feeds both properties; a second tint would
+        # reintroduce the two-colour split this test exists to prevent.
+        self.assertIn("self.glyphImage = glyph;", presentation)
+        self.assertIn("self.selectedGlyphImage = glyph;", presentation)
+
+    def test_presentation_does_no_filesystem_or_drawing_work_per_call(self):
+        """Presentation runs on adoption, every timer tick, every notification and
+        every completion, and those land during the Control Center open
+        animation. It must be cheap.
+
+        Reading the policy is up to five plist loads on the main thread, and
+        rendering a glyph is an offscreen bitmap context plus a layer render or a
+        symbol draw. Neither may happen on a pass where nothing changed.
+        """
+        presentation = self.source[
+            self.source.index("- (void)refreshModulePresentation {"):
+            self.source.index("@implementation CCNetworkManager {")
+        ]
+        # The policy comes from the cached snapshot, never from a fresh read.
+        self.assertNotIn("CCNMReadN78PolicyState()", presentation)
+        self.assertIn("self.policySnapshot ?: [self refreshPolicySnapshot]", presentation)
+        # The snapshot is refreshed exactly where the policy can have changed:
+        # the change notification and the sampling guard. It is dropped on
+        # dismissal, because the notification is not observed off screen, so the
+        # next session cannot draw from a stale copy.
+        self.assertEqual(self.source.count("CCNMReadN78PolicyState()"), 1)
+        self.assertIn("[module refreshPolicySnapshot];", self.source)
+        end = self.source[self.source.index("- (void)endVisibleSession {"):]
+        self.assertIn("self.policySnapshot = nil;", end)
+        # Redrawing an unchanged glyph is pure jank, so the rendered string is
+        # cached and compared.
+        self.assertIn("drawnGlyphKey", self.source)
+        self.assertIn('CCNMServingSearchingGlyphKey = @"__searching__"', self.source)
         self.assertIn(
-            "self.glyphImage = CCNMServingSearchingGlyphImage(CCNMServingGlyphColor());",
-            presentation,
+            "if (![glyphKey isEqualToString:self.drawnGlyphKey]) {", presentation
         )
-        # Nothing in the tile may fall back to the old plain white glyph.
-        self.assertNotIn("UIColor.whiteColor", self.source)
+        self.assertIn("self.drawnGlyphKey = glyphKey;", presentation)
+        # The glyph properties are passthroughs to a framework-owned button view,
+        # so a reloaded view has no glyph installed. The cache must be dropped
+        # there or the very next presentation would skip the draw and leave the
+        # tile blank.
+        load = self.source[
+            self.source.index("- (void)viewDidLoad {"):
+            self.source.index("#pragma mark - Visible session")
+        ]
+        self.assertIn("self.drawnGlyphKey = nil;", load)
+        # -setSelected: makes the framework run its own state-change pass, so it
+        # is assigned only on an actual change.
+        self.assertIn("if (self.selected != requested) {", presentation)
+
+    def test_visible_session_is_idempotent_not_merely_harmless(self):
+        """Three callbacks lead to -beginVisibleSession because which one Control
+        Center delivers depends on how the tile is hosted. Without an early
+        return, opening Control Center paid for three cache reads, three policy
+        reads and three presentation passes during the open animation.
+        """
+        begin = self.source[
+            self.source.index("- (void)beginVisibleSession {"):
+            self.source.index("- (void)endVisibleSession {")
+        ]
+        self.assertIn("if (self.visible) {", begin)
+        self.assertIn("return;", begin[:begin.index("self.visible = YES;")])
+        # The early return is only correct because the flag is cleared on the way
+        # out; otherwise the next presentation would be skipped entirely.
+        end = self.source[self.source.index("- (void)endVisibleSession {"):]
+        self.assertIn("self.visible = NO;", end)
 
     def test_refresh_is_async_bounded_and_never_writes_modem(self):
         for token in (
@@ -320,7 +389,7 @@ class ControlCenterServingLabelTests(unittest.TestCase):
             "CCNMServingStatusDidChangeDarwinNotification",
             "CCNMServingStatusDidChangeCallback",
             "refreshModulePresentation",
-            "self.glyphImage = CCNMServingGlyphImage",
+            "CCNMServingGlyphImage(text, CCNMServingGlyphColor())",
         ):
             self.assertIn(token, self.source)
         for forbidden in (
@@ -384,7 +453,6 @@ class ControlCenterServingLabelTests(unittest.TestCase):
         self.assertIn("BOOL requested = CCNMPolicyIsRequested(state)", presentation)
         self.assertIn("self.selected = requested", presentation)
         self.assertNotIn("CCNMServingSummarySuccessKey", presentation)
-
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

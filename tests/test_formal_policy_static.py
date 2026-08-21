@@ -120,7 +120,14 @@ class FormalPolicyStaticTests(unittest.TestCase):
         # The tile publishes its own glyph now instead of asking the framework to
         # re-read a read-only property, but it still may not touch private ivars.
         self.assertIn("refreshModulePresentation", self.cc_source)
-        self.assertIn("self.glyphImage = CCNMServingGlyphImage", self.cc_source)
+        # The tile assigns the glyph itself, from its own renderers. The
+        # assignment is deliberately not pinned to a single expression: the glyph
+        # is rendered once and reused for both the plain and the selected image,
+        # so the renderer call and the assignment are separate statements.
+        self.assertIn("self.glyphImage = ", self.cc_source)
+        self.assertIn(
+            "CCNMServingGlyphImage(text, CCNMServingGlyphColor())", self.cc_source
+        )
         for forbidden in (
             "class_getInstanceVariable",
             "object_getIvar",
