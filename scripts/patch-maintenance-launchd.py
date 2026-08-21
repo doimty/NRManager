@@ -36,15 +36,14 @@ which then failed in dyld, because @loader_path resolved into a directory that
 does not exist, so libroothide.dylib could not be found beside it. One
 mechanism, both symptoms.
 
-The earlier version of this file cited
-Bootstrap-basebin/bootstrapd/layout/DEBIAN/postinst as precedent for an @JBROOT@
-placeholder plus a sed in postinst. That precedent does not transfer: basebin
-daemons are loaded by bootstrapd through the native API, not by the patched
-launchctl, so they genuinely need a pre-expanded path. Ordinary packages must
-not pre-expand. The two ordinary daemons shipped in the bootstrap tarball agree.
-us.diatr.shshd.plist names /bin/sh and /usr/libexec/shshd-wrapper, and
-com.apple.atrun.plist names /usr/libexec/atrun, with no jbroot and no
-placeholder anywhere.
+The earlier version of this file cited a basebin daemon's own DEBIAN/postinst as
+precedent for an @JBROOT@ placeholder plus a sed in postinst. That precedent does
+not transfer: basebin daemons are loaded by the jailbreak itself through the
+native API, not by the patched launchctl, so they genuinely need a pre-expanded
+path. Ordinary packages must not pre-expand. The two ordinary daemons shipped in
+the bootstrap tarball agree. us.diatr.shshd.plist names /bin/sh and
+/usr/libexec/shshd-wrapper, and com.apple.atrun.plist names /usr/libexec/atrun,
+with no jbroot and no placeholder anywhere.
 
 A second, independent reason the bare form is the only correct one: the jbroot
 identifier changes every time the device is re-jailbroken. Observed directly

@@ -89,7 +89,7 @@ ProgramArguments[0] = <jbroot>/<jbroot>/usr/libexec/networkmanager-maintenance
 
 which then failed in `dyld`, because `@loader_path` resolved into a directory that does not exist so `libroothide.dylib` could not be found beside it. One mechanism, both symptoms.
 
-The earlier design cited `Bootstrap-basebin/bootstrapd/layout/DEBIAN/postinst` as precedent for an `@JBROOT@` placeholder plus a `sed` in `postinst`. That precedent does not transfer: basebin daemons are loaded by `bootstrapd` through the native API, not by the patched `launchctl`, so they genuinely need a pre-expanded path. The two ordinary daemons shipped in the bootstrap tarball agree with the new contract — `us.diatr.shshd.plist` names `/bin/sh` and `/usr/libexec/shshd-wrapper`, `com.apple.atrun.plist` names `/usr/libexec/atrun`, with no jbroot and no placeholder anywhere.
+The earlier design cited a basebin daemon's own `DEBIAN/postinst` as precedent for an `@JBROOT@` placeholder plus a `sed` in `postinst`. That precedent does not transfer: basebin daemons are loaded by the jailbreak itself through the native API, not by the patched `launchctl`, so they genuinely need a pre-expanded path. The two ordinary daemons shipped in the bootstrap tarball agree with the new contract — `us.diatr.shshd.plist` names `/bin/sh` and `/usr/libexec/shshd-wrapper`, `com.apple.atrun.plist` names `/usr/libexec/atrun`, with no jbroot and no placeholder anywhere.
 
 Retiring the substitution removed three separate ways to ship a broken package, and it is worth recording why each was dangerous rather than merely redundant:
 
@@ -118,8 +118,10 @@ A root launchd plist is now packaged with one `KeepAlive/PathState` baseline con
 
 Early wording in this project promised that a job which failed to load would start "at the next boot". That was wrong on this platform, in two independent ways:
 
-- Nothing in the jailbreak walks `<jbroot>/Library/LaunchDaemons` at startup. The two ordinary daemons shipped in the bootstrap tarball are loaded by their own `extrainst_` maintainer script (`shshd.extrainst_` calls `/bin/launchctl load -w`), and basebin's daemons are loaded by `bootstrapd` through the native API. For a package like this one, its own maintainer script is the only loader that exists.
-- A plain reboot ends the jailbreak. Re-jailbreaking calls `ReRandomizeBootstrap`, which moves the tree to a freshly randomised `/var/containers/Bundle/Application/.jbroot-<16 hex>` and rebuilds basebin. The reporting device went through three distinct jailbreak roots in a single day of installs, which is what exposed the wrong advice.
+- Nothing in the jailbreak walks `<jbroot>/Library/LaunchDaemons` at startup. The two ordinary daemons shipped in the bootstrap tarball are loaded by their own `extrainst_` maintainer script (`shshd.extrainst_` calls `/bin/launchctl load -w`), and basebin's daemons are loaded by the jailbreak through the native API. For a package like this one, its own maintainer script is the only loader that exists.
+- A plain reboot ends the jailbreak. Re-jailbreaking re-randomises the root, moving the tree to a fresh `/var/containers/Bundle/Application/.jbroot-<16 hex>`. The reporting device went through four distinct jailbreak roots in a single day, which is what exposed the wrong advice.
+
+This is a property of the roothide family rather than of one jailbreak app, which matters because the reporting device runs Dopamine's roothide fork rather than roothide Bootstrap. Both ship byte-identical bootstrap tarballs, derive the root name from `arc4random`, and re-randomise it on every jailbreak by moving the tree. Dopamine states the loader contract outright: its launchd hook injects `<jbroot>/basebin/LaunchDaemons` into the `LaunchDaemons` and `Paths` keys, while the equivalent block for `<jbroot>/Library/LaunchDaemons` sits commented out with the annotation "should be loaded by procursus launchctl". That `launchctl` is the one this `postinst` invokes.
 
 So the recovery for a registration failure is to install the package again, and every message says that instead.
 

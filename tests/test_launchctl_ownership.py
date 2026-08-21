@@ -412,10 +412,16 @@ class ShellOwnsLaunchctlTests(unittest.TestCase):
         # independent reasons, both specific to this platform: nothing in the
         # jailbreak walks <jbroot>/Library/LaunchDaemons at startup -- the ordinary
         # daemons in the bootstrap tarball are loaded by their own extrainst_, and
-        # basebin's by bootstrapd through the native API -- and a plain reboot ends
-        # the jailbreak entirely, with re-jailbreaking relocating the tree to a
+        # basebin's by the jailbreak through the native API -- and a plain reboot
+        # ends the jailbreak entirely, with re-jailbreaking relocating the tree to a
         # freshly randomised jailbreak root. So a reboot is the one thing that
         # cannot start this job. Reinstalling is the retry.
+        #
+        # True of the roothide family rather than of one jailbreak app: Dopamine's
+        # roothide fork hooks launchd to inject <jbroot>/basebin/LaunchDaemons and
+        # leaves the <jbroot>/Library/LaunchDaemons block commented out, annotated
+        # "should be loaded by procursus launchctl" -- the launchctl this postinst
+        # runs.
         #
         # Scoped to starting, because the opposite direction is true and prerm says
         # it: a reboot does stop a daemon that is already running.

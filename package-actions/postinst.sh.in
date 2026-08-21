@@ -49,13 +49,18 @@
 # The plist now ships with bare paths on roothide and launchctl supplies the
 # root, which is what the two ordinary daemons in the bootstrap tarball do
 # (us.diatr.shshd.plist names /bin/sh, com.apple.atrun.plist names
-# /usr/libexec/atrun). The @JBROOT@ precedent came from bootstrapd's own postinst,
-# and it does not transfer: basebin daemons are loaded by bootstrapd through the
-# native API rather than by the patched launchctl.
+# /usr/libexec/atrun). The @JBROOT@ precedent came from a basebin daemon's own
+# postinst, and it does not transfer: basebin daemons are loaded by the jailbreak
+# itself through the native API rather than by the patched launchctl.
 #
 # Independent second reason: the jbroot identifier changes on every re-jailbreak.
 # A baked-in absolute path expires at the next boot into a new bootstrap, and the
 # daemon stops being found. Only the bare form survives that.
+#
+# This holds across the roothide family rather than for one jailbreak app. Both
+# roothide Bootstrap and Dopamine's roothide fork ship byte-identical bootstrap
+# tarballs, name the root .jbroot-<16 hex> from arc4random, and re-randomise it on
+# every jailbreak by moving the tree. The reporting device runs the Dopamine fork.
 #
 # Consequence worth stating plainly: no dependency on plutil, on grep's binary
 # behaviour, or on a textual rewrite of a length-prefixed binary plist. Those
@@ -317,12 +322,17 @@ fi
 #
 # On a jailbreak whose root is re-randomised, a plain reboot ends the jailbreak
 # altogether, and re-jailbreaking moves the whole tree to a new
-# /var/containers/Bundle/Application/.jbroot-<16 hex> and then rebuilds basebin,
-# so nothing here is loaded by launchd on the way back up: no jailbreak component
-# walks this directory at boot, and the only loader for a package like this one is
-# a maintainer script. "It starts at the next reboot" was therefore wrong advice,
-# and the reporting device is what showed it -- three different jailbreak roots
-# across one day of installs.
+# /var/containers/Bundle/Application/.jbroot-<16 hex>, so nothing here is loaded
+# by launchd on the way back up: no jailbreak component walks this directory at
+# boot, and the only loader for a package like this one is a maintainer script.
+# "It starts at the next reboot" was therefore wrong advice, and the reporting
+# device is what showed it -- four different jailbreak roots across one day.
+#
+# Both roothide-family jailbreaks say so directly. roothide Bootstrap has no
+# boot-time walk of this directory at all, and Dopamine's roothide fork hooks
+# launchd to inject <jbroot>/basebin/LaunchDaemons while keeping the equivalent
+# block for <jbroot>/Library/LaunchDaemons commented out, annotated "should be
+# loaded by procursus launchctl". That is exactly the loader this script is.
 #
 # The honest recovery is a reinstall, which runs this script again.
 if ! resolve_launchctl; then
