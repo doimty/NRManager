@@ -25,7 +25,7 @@ env:
 
 jobs:
   host-tests:
-    name: LiveCC host gates (12 prototype / 100 root)
+    name: LiveCC host gates (12 prototype / 279 root minimum)
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -38,10 +38,32 @@ jobs:
           set -euo pipefail
           livecc_log="$RUNNER_TEMP/livecc-tests.log"
           root_log="$RUNNER_TEMP/root-tests.log"
+
+          # A green unittest run is already enforced by pipefail. This checks the
+          # opposite failure: a discovery pattern or import error that collects
+          # far fewer tests than the suite actually has and still exits zero. So
+          # the assertion is a floor, not an equality -- pinning an exact count
+          # made the gate fail every time a test was legitimately added, which is
+          # what stalled this lane at the stale literal 100 while tests/ held 279.
+          assert_test_floor() {
+            local log="$1" floor="$2" label="$3" count
+            count="$(sed -n 's/^Ran \([0-9]\{1,\}\) tests in .*/\1/p' "$log" | tail -n 1)"
+            if [ -z "$count" ]; then
+              printf '%s: no "Ran N tests" line was produced\n' "$label" >&2
+              exit 1
+            fi
+            printf '%s_tests=%s floor=%s\n' "$label" "$count" "$floor"
+            if [ "$count" -lt "$floor" ]; then
+              printf '%s: suite collected %s tests, below its pinned floor of %s\n' \
+                "$label" "$count" "$floor" >&2
+              exit 1
+            fi
+          }
+
           python3 -m unittest discover -s livecc/tests -v 2>&1 | tee "$livecc_log"
-          grep -Eq '^Ran 12 tests in ' "$livecc_log"
+          assert_test_floor "$livecc_log" 12 livecc
           python3 -m unittest discover -s tests -v 2>&1 | tee "$root_log"
-          grep -Eq '^Ran 100 tests in ' "$root_log"
+          assert_test_floor "$root_log" 279 root
 
       - name: Compile Python gates and verify source policy
         run: |
