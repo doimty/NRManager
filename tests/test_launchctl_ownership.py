@@ -388,6 +388,25 @@ class ShellOwnsLaunchctlTests(unittest.TestCase):
         self.assertIn("Reinstall the package", branch)
         self.assertIn("LAUNCHCTL_REPORT", branch)
 
+    def test_no_message_blames_a_stale_jailbreak_root(self):
+        # Retracted explanation, and it must not come back through a message.
+        # launchd is pid 1 and its system-domain job table does not survive a
+        # reboot; both ways the jailbreak root changes -- a reboot followed by
+        # re-running the bootstrap app, and `launchctl reboot userspace` -- restart
+        # launchd. So a loaded definition naming an executable under a root that no
+        # longer exists is only reachable inside one boot, which is exactly the case
+        # where the root did not change. Blaming it is inventing a cause.
+        #
+        # Comments may still discuss it, and one does, to keep the retraction
+        # findable. Only what reaches the user is constrained here.
+        for template in (POSTINST_TEMPLATE, PRERM_TEMPLATE):
+            for line in template.read_text().splitlines():
+                if not line.lstrip().startswith(("note ", "warn ")):
+                    continue
+                for claim in ("earlier jailbreak root", "previous jailbreak root",
+                              "stale jailbreak root", "jailbreak root that no longer"):
+                    self.assertNotIn(claim, line, template)
+
     def test_no_message_offers_a_reboot_as_the_way_to_start_the_daemon(self):
         # Wrong advice this project shipped once and must not ship again. Two
         # independent reasons, both specific to this platform: nothing in the

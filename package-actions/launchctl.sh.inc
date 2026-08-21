@@ -218,12 +218,11 @@ launchd_job_is_loaded() {
 # launchd_job_is_loaded has three: 0 the job is known not to be loaded, 1 it is
 # still loaded, 2 launchd did not answer so nothing is known.
 #
-# The distinction is not academic. Outcome 1 says a definition survived, which on
-# a device whose jailbreak root has changed since the last install means launchd
-# is holding a job whose executable no longer exists -- bootstrap returns EALREADY
-# without replacing it, and every later check reports it as loaded. Outcome 2 says
-# only that launchd stopped answering, and claiming a stale definition on that
-# evidence would be inventing one.
+# The distinction is not academic. Outcome 1 says a definition survived, and
+# bootstrap returns EALREADY without replacing one launchd already holds, so the
+# job launchd runs stays the previous version's while every later check here
+# reports it as loaded. Outcome 2 says only that launchd stopped answering, and
+# claiming a surviving definition on that evidence would be inventing one.
 launchd_bootout() {
     [ -n "$LAUNCHCTL" ] || return 2
     launchd_job_is_loaded

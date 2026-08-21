@@ -338,18 +338,24 @@ fi
 launchd_bootout
 bootout_status=$?
 if [ "$bootout_status" -eq 1 ]; then
-    # Not fatal, and not silent either. A definition left by a previous install
-    # can name an executable under a jailbreak root that no longer exists -- the
-    # reporting device's changed between two installs -- and bootstrap returns
-    # EALREADY without replacing it. launchd then holds a job it can never start,
-    # and every later check reports it as loaded. Unrecoverable here, so it is
-    # reported rather than worked around.
+    # Not fatal, and not silent either. bootstrap returns EALREADY without
+    # replacing a definition launchd already holds, so a surviving one means the
+    # job launchd runs is the previous version's rather than this one's, and every
+    # later check here reports it as loaded. Unrecoverable from inside this script.
+    #
+    # Deliberately not attributed to a stale jailbreak root. That explanation was
+    # wrong: launchd is pid 1 and its system-domain job table does not survive a
+    # reboot, and both ways the jailbreak root changes -- a reboot followed by
+    # re-running the bootstrap app, or `launchctl reboot userspace` -- restart
+    # launchd. A definition pointing into a root that no longer exists is therefore
+    # only reachable inside one boot, which is exactly the case where the root did
+    # not change. So this says what is known and nothing more.
     #
     # Only for status 1, which means the definition is known to have survived.
     # Status 2 means launchd stopped answering and nothing is known; the bounded
-    # calls below report that themselves, and claiming a stale definition on that
-    # evidence would be inventing one.
-    warn "a previously loaded definition of the maintenance owner could not be removed. If it points into an earlier jailbreak root, launchd keeps refusing to start it, and reinstalling the package is what replaces it."
+    # calls below report that themselves, and claiming a surviving definition on
+    # that evidence would be inventing one.
+    warn "a definition of the maintenance owner left by a previous install could not be removed, so launchd may keep running that one instead of this one. Band policy changes are unaffected. Installing the package again is what replaces it."
 fi
 
 launchctl_run "$LAUNCHCTL" bootstrap system "$LAUNCHD_PLIST"
@@ -373,10 +379,32 @@ if [ "$loaded_status" -ne 0 ]; then
     exit 0
 fi
 
+# Success says so, because every other outcome above does. Without this line a
+# clean install is reported only by the absence of warnings, and a user asked what
+# the silence meant -- a fair question the log should not have needed.
+#
+# Worded as loaded rather than running, which is what `print` actually confirmed.
+# The plist's KeepAlive PathState names the policy baseline, so launchd runs the
+# job while a band policy is saved and lets it stay down when none is.
+#
+# Suppressed when a previous definition is known to have survived: launchd answers
+# "loaded" either way, and after that warning this line would read as though the
+# loaded job were this package's. The warning is the accurate report there.
+if [ "$bootout_status" -ne 1 ]; then
+    note "the maintenance owner is loaded. It runs while a band policy is saved."
+fi
+
 # Deliberately no kickstart here.
 #
-# It was the only call that ever hit the deadline on the reporting device, and it
-# buys nothing that this script does not already have. The plist's KeepAlive
+# It was the only call that ever hit the deadline on the reporting device, and the
+# reason is specific: `kickstart` waits for the job to come up. That device's
+# `launchctl print` showed the job at `state = spawn scheduled` with
+# `minimum runtime = 1200` against a `base minimum runtime = 30`, the exponential
+# backoff launchd had built from 108 consecutive failed launches. Waiting for a
+# start inside that window means waiting out the window -- up to twenty minutes
+# with the package manager's pipe still held open.
+#
+# It also buys nothing this script does not already have. The plist's KeepAlive
 # PathState names the policy baseline, so launchd starts the job by itself the
 # moment that file exists -- including right now, because bootstrapping a job
 # whose KeepAlive condition is already satisfied starts it. The bootout above

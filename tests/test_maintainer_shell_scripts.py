@@ -884,16 +884,41 @@ class PostinstLaunchdLoadTests(ShellScriptBase):
         self.assertTrue(result.stderr.rstrip().endswith("setup finished."),
                         result.stderr)
 
-    def test_a_stale_definition_that_cannot_be_removed_is_reported(self):
-        # The reporting device's jbroot identifier changed between two installs, so
-        # a definition left by the earlier one names an executable under a
-        # bootstrap that no longer exists. bootstrap returns EALREADY, launchd
-        # keeps the unstartable job, and the log would otherwise read as success.
+    def test_a_clean_install_says_the_job_is_loaded(self):
+        # A user read a log whose only lines were the prefix note and "setup
+        # finished." and asked whether that was normal. Success was inferable only
+        # from the absence of warnings, which is not something a log should ask
+        # anyone to do.
+        #
+        # Loaded, not running: `print` confirms launchd holds the job, and the
+        # KeepAlive PathState decides whether it is up.
+        self.install_launchctl(loaded=False)
+        result = self.run_script("configure")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNoWarning(result)
+        self.assertIn("the maintenance owner is loaded", result.stderr)
+        self.assertNotIn("is running", result.stderr)
+
+    def test_a_surviving_definition_that_cannot_be_removed_is_reported(self):
+        # bootstrap returns EALREADY without replacing a definition launchd already
+        # holds, so a survivor means launchd keeps running the previous version's
+        # job while every later check here reports it as loaded. The log would
+        # otherwise read as success.
+        #
+        # Deliberately not attributed to an earlier jailbreak root. launchd is pid 1
+        # and its system-domain job table does not survive a reboot, and both ways
+        # the root changes restart launchd, so a definition pointing into a root
+        # that no longer exists is only reachable inside a single boot -- which is
+        # the case where the root did not change.
         self.install_launchctl(loaded=True, bootout_works=False)
         result = self.run_script("configure")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("could not be removed", result.stderr)
-        self.assertIn("earlier jailbreak root", result.stderr)
+        self.assertIn("Installing the package again", result.stderr)
+        self.assertNotIn("jailbreak root", result.stderr)
+        # launchd answers "loaded" whichever definition it holds, so the success
+        # line would read as though the loaded job were this package's.
+        self.assertNotIn("the maintenance owner is loaded", result.stderr)
 
     def test_an_unanswered_bootout_is_not_reported_as_a_stale_definition(self):
         # The other half of the three-outcome rule, and the direction that would
