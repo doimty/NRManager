@@ -365,16 +365,16 @@ class UninstallGuardTests(unittest.TestCase):
 
     def test_package_verifier_requires_and_inspects_prerm(self):
         self.assertEqual(verify_release_package.REQUIRED_MAINTAINER_FILES, {"postinst", "prerm"})
-        self.assertEqual(
+        self.assertIn(
+            "networkmanager-removal-guard",
             verify_release_package.UNLINKED_ROOTHIDE_TOOLS,
-            ("networkmanager-install-guard", "networkmanager-removal-guard"),
         )
         self.assertIn(
             "usr/libexec/networkmanager-removal-guard",
             verify_release_package.REQUIRED_PAYLOAD_FILES,
         )
         verifier = (ROOT / "scripts/verify_release_package.py").read_text()
-        self.assertIn("binary.name not in UNLINKED_ROOTHIDE_TOOLS", verifier)
+        self.assertIn("binary.name in UNLINKED_ROOTHIDE_TOOLS", verifier)
         self.assertIn("must be a shell script, not a Mach-O binary", verifier)
 
 

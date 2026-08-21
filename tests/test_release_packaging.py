@@ -337,9 +337,33 @@ Load command 1
             "usr/libexec/networkmanager-install-guard",
             verify_release_package.BINARY_PAYLOAD_FILES,
         )
+        # The daemon joins the guards: none of the three may link libroothide,
+        # because none of them runs with a bootstrap or a .jbroot beside it. The
+        # separate, narrower CHAINED_FIXUPS_ALLOWED_TOOLS keeps the daemon's
+        # fixup-format check alive -- conflating the two lists would have dropped
+        # it at the moment the daemon stopped linking the library.
         self.assertEqual(
             verify_release_package.UNLINKED_ROOTHIDE_TOOLS,
+            ("networkmanager-install-guard", "networkmanager-removal-guard",
+             "networkmanager-maintenance"),
+        )
+        self.assertEqual(
+            verify_release_package.CHAINED_FIXUPS_ALLOWED_TOOLS,
             ("networkmanager-install-guard", "networkmanager-removal-guard"),
+        )
+        # Absence of the library is asserted for those binaries, not merely
+        # tolerated, and the daemon's whole dependency set is pinned so any
+        # unreviewed addition fails too.
+        verifier = (REPO / "scripts/verify_release_package.py").read_text()
+        self.assertIn(
+            "links the roothide runtime, which cannot be loaded from its install location",
+            verifier)
+        self.assertIn(
+            "ROOTHIDE_RELEASE_DEPENDENCIES[MAINTENANCE_HELPER_NAME]", verifier)
+        self.assertNotIn(
+            verify_release_package.ROOTHIDE_DYLIB,
+            verify_release_package.ROOTHIDE_RELEASE_DEPENDENCIES[
+                "networkmanager-maintenance"],
         )
 
 

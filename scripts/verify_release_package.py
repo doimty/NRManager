@@ -48,6 +48,10 @@ EXPECTED_MIN_OS = {
 }
 REQUIRED_DEPENDENCIES = {"mobilesubstrate", "com.opa334.ccsupport"}
 ROOTHIDE_DYLIB = "@loader_path/.jbroot/usr/lib/libroothide.dylib"
+# Named here rather than derived from MAINTENANCE_HELPER_RELATIVE below, because
+# the dependency and load-command tables are keyed by Mach-O basename and are
+# declared before the payload paths.
+MAINTENANCE_HELPER_NAME = "networkmanager-maintenance"
 # Device-working dependency/load-command shape from Xcode 15.4 baseline
 # 2947f98 / run 30166854314, later reconfirmed by the accepted Cell Monitor build.
 ROOTHIDE_BASELINE_LOAD_COMMANDS = {
@@ -98,6 +102,21 @@ ROOTHIDE_RELEASE_DEPENDENCIES = {
 ROOTHIDE_RELEASE_DEPENDENCIES["NetworkManagerPrefs"].add(
     "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics"
 )
+# The maintenance daemon's dependency set is pinned positively, and libroothide
+# is absent from it on purpose. That absence is the fix this release exists for:
+# the library's install name is @loader_path/.jbroot/usr/lib/libroothide.dylib,
+# launchd applies no bootstrap injection and there is no .jbroot beside an
+# installed helper, so dyld had nothing to load and the job died on every one of
+# its 108 launches with OS_REASON_DYLD. Pinning the whole set rather than only
+# banning the one library means a future edit that reintroduces it, or that adds
+# any other dependency the daemon has not been reviewed for, fails here.
+ROOTHIDE_RELEASE_DEPENDENCIES[MAINTENANCE_HELPER_NAME] = {
+    "/usr/lib/libobjc.A.dylib",
+    "/System/Library/Frameworks/Foundation.framework/Foundation",
+    "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation",
+    "/System/Library/Frameworks/CoreTelephony.framework/CoreTelephony",
+    "/usr/lib/libSystem.B.dylib",
+}
 
 # The policy guards moved out of DEBIAN/ and into the payload. They are no
 # longer maintainer scripts: on roothide a compiled maintainer script has no
@@ -106,7 +125,7 @@ ROOTHIDE_RELEASE_DEPENDENCIES["NetworkManagerPrefs"].add(
 # delegate the policy verdict to these.
 INSTALL_GUARD_RELATIVE = "usr/libexec/networkmanager-install-guard"
 REMOVAL_GUARD_RELATIVE = "usr/libexec/networkmanager-removal-guard"
-MAINTENANCE_HELPER_RELATIVE = "usr/libexec/networkmanager-maintenance"
+MAINTENANCE_HELPER_RELATIVE = "usr/libexec/" + MAINTENANCE_HELPER_NAME
 REQUIRED_PAYLOAD_FILES = {
     "Library/ControlCenter/Bundles/NetworkManager.bundle/Info.plist",
     "Library/ControlCenter/Bundles/NetworkManager.bundle/NetworkManager",
@@ -132,10 +151,31 @@ BINARY_PAYLOAD_FILES = (
     MAINTENANCE_HELPER_RELATIVE,
 )
 REQUIRED_MAINTAINER_FILES = {"postinst", "prerm"}
-# Tools that deliberately do not link libroothide. roothideinit.dylib derives the
-# jbroot from its own load path and asserts on @loader_path/.jbroot, which does
-# not exist beside an installed helper, so linking it would abort at load time.
+# Binaries that must not link libroothide, each for its own reason.
+#
+# The guards: roothideinit.dylib derives the jbroot from its own load path and
+# asserts on @loader_path/.jbroot, which does not exist beside an installed
+# helper, so linking it would abort at load time.
+#
+# The daemon: same missing .jbroot, and launchd additionally applies no bootstrap
+# injection, so nothing else has the library loaded either. This is the crash
+# this release fixes. All three recover the install prefix from their own
+# executable path instead.
+#
+# Absence is asserted, not merely tolerated -- see verify_macho.
 UNLINKED_ROOTHIDE_TOOLS = (
+    "networkmanager-install-guard",
+    "networkmanager-removal-guard",
+    MAINTENANCE_HELPER_NAME,
+)
+# A separate and deliberately narrower exemption: which roothide binaries may
+# carry LC_DYLD_CHAINED_FIXUPS. Not the same question as libroothide, and
+# conflating the two would have silently dropped the daemon's fixup-format check
+# at the moment it stopped linking the library. The daemon keeps
+# LC_DYLD_INFO_ONLY, which is the device-verified shape for this project and a
+# consequence of the -undefined dynamic_lookup its roothide link uses; chained
+# fixups cannot express that, so the format is real evidence about how it linked.
+CHAINED_FIXUPS_ALLOWED_TOOLS = (
     "networkmanager-install-guard",
     "networkmanager-removal-guard",
 )
@@ -564,7 +604,7 @@ def verify_macho_binary(
         if not has_info_only and not has_chained_fixups:
             failures.append("%s lacks both supported dyld fixup formats" % binary)
         if (lane == "roothide" and has_chained_fixups and
-                binary.name not in UNLINKED_ROOTHIDE_TOOLS):
+                binary.name not in CHAINED_FIXUPS_ALLOWED_TOOLS):
             failures.append("%s contains forbidden LC_DYLD_CHAINED_FIXUPS" % binary)
         if lane == "roothide" and binary.name in ROOTHIDE_BASELINE_DEPENDENCIES and set(load_commands) != ROOTHIDE_RELEASE_LOAD_COMMANDS:
             failures.append(
@@ -579,7 +619,16 @@ def verify_macho_binary(
     if dependency_code != 0:
         failures.append("otool -L failed for %s" % binary)
     elif lane == "roothide":
-        if binary.name not in UNLINKED_ROOTHIDE_TOOLS and ROOTHIDE_DYLIB not in dependencies:
+        if binary.name in UNLINKED_ROOTHIDE_TOOLS:
+            # Asserted, not exempted. These binaries run without a bootstrap or
+            # a .jbroot beside them, so the library is not merely unnecessary
+            # here -- its presence is the crash.
+            if ROOTHIDE_DYLIB in dependencies:
+                failures.append(
+                    "%s links the roothide runtime, which cannot be loaded from its install location"
+                    % binary
+                )
+        elif ROOTHIDE_DYLIB not in dependencies:
             failures.append("%s lacks the pinned roothide runtime dependency" % binary)
         forbidden_private = [
             item
