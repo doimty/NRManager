@@ -429,6 +429,32 @@ BOOL CCNMValidateBaselineRecord(NSDictionary *baseline, NSString **failure) {
     return valid;
 }
 
+// A restore replays exactly one array: CCNMBuildRestorePayload keeps the live
+// values for every RAT except NR, where it writes the saved array. So the saved
+// NR bands are the values that have to be declared by the modem about to receive
+// them. This is the capability requirement the device allowlist used to imply,
+// expressed against live evidence instead of a model name.
+static BOOL CCNMBaselineNRBandsFitCurrentCapability(NSArray *savedNR,
+                                                    NSArray *currentSupportedNR,
+                                                    NSString *unsupportedFailure,
+                                                    NSString **failure) {
+    if (![savedNR isKindOfClass:NSArray.class] || ![currentSupportedNR isKindOfClass:NSArray.class]) {
+        if (failure) {
+            *failure = @"The retained baseline NR capability evidence is unavailable on this system.";
+        }
+        return NO;
+    }
+    for (NSNumber *band in savedNR) {
+        if (![currentSupportedNR containsObject:band]) {
+            if (failure) {
+                *failure = unsupportedFailure;
+            }
+            return NO;
+        }
+    }
+    return YES;
+}
+
 BOOL CCNMValidateBaselineCompatibility(NSDictionary *baseline,
                                         NSDictionary *currentSupportedBands,
                                         NSDictionary *identity,
@@ -436,44 +462,50 @@ BOOL CCNMValidateBaselineCompatibility(NSDictionary *baseline,
     BOOL hasCapabilitySnapshot = baseline[@"deviceModel"] != nil ||
         baseline[@"systemVersion"] != nil || baseline[@"systemBuild"] != nil ||
         baseline[@"supportedBands"] != nil || baseline[@"modifiedBandKeys"] != nil;
+    // Keyed subscripting a non-dictionary raises, and this bundle loads into
+    // SpringBoard. CCNMValidateBaselineRecord runs first in the current callers,
+    // but this function is exported and must not depend on that.
+    NSDictionary *savedActive = [baseline[@"activeBands"] isKindOfClass:NSDictionary.class]
+        ? baseline[@"activeBands"] : nil;
+    NSDictionary *currentSupported = [currentSupportedBands isKindOfClass:NSDictionary.class]
+        ? currentSupportedBands : nil;
+    // Checked for every baseline, whatever evidence it carries, because it is the
+    // only value the restore actually writes.
+    if (!CCNMBaselineNRBandsFitCurrentCapability(savedActive[CCNMNRKey],
+            currentSupported[CCNMNRKey],
+            @"The retained baseline NR band is unsupported by the current system.", failure)) {
+        return NO;
+    }
     if (!hasCapabilitySnapshot) {
+        // Written before capability evidence existed. Refusing it is not an
+        // option: a baseline is the only way back from an enable, so refusing one
+        // for lacking a field that did not exist when it was written would strand
+        // the device it was written to protect. The NR check above is the
+        // evidence such a baseline can still offer.
         return YES;
     }
-    BOOL sameIdentity = [baseline[@"deviceModel"] isEqual:identity[@"deviceModel"]] &&
-        [baseline[@"systemVersion"] isEqual:identity[@"systemVersion"]] &&
-        [baseline[@"systemBuild"] isEqual:identity[@"systemBuild"]];
-    NSDictionary *savedSupported = baseline[@"supportedBands"];
-    BOOL sameCapabilityShape = [savedSupported isKindOfClass:NSDictionary.class] &&
-        [currentSupportedBands isKindOfClass:NSDictionary.class] &&
+    // Same hardware. System version and build stay recorded evidence rather than
+    // a gate: an iOS update does not invalidate a rollback whose bands the modem
+    // still declares, and refusing on build alone would strand every device that
+    // updates while the policy is enabled.
+    BOOL sameDevice = [baseline[@"deviceModel"] isEqual:identity[@"deviceModel"]];
+    NSDictionary *savedSupported = [baseline[@"supportedBands"] isKindOfClass:NSDictionary.class]
+        ? baseline[@"supportedBands"] : nil;
+    BOOL sameCapabilityShape = savedSupported && currentSupported &&
         [[NSSet setWithArray:savedSupported.allKeys] isEqualToSet:
-            [NSSet setWithArray:currentSupportedBands.allKeys]];
+            [NSSet setWithArray:currentSupported.allKeys]];
     NSArray *ownedKeys = baseline[@"modifiedBandKeys"];
     BOOL ownedFieldsValid = [ownedKeys isKindOfClass:NSArray.class] &&
         ownedKeys.count == 1 && [ownedKeys.firstObject isEqual:CCNMNRKey];
-    if (!sameIdentity || !sameCapabilityShape || !ownedFieldsValid) {
+    if (!sameDevice || !sameCapabilityShape || !ownedFieldsValid) {
         if (failure) {
-            *failure = @"The retained baseline belongs to a different device, system capability shape, or owned-band set.";
+            *failure = @"The retained baseline belongs to a different device, capability shape, or owned-band set.";
         }
         return NO;
     }
-    for (NSString *key in ownedKeys) {
-        if (![savedSupported[key] isKindOfClass:NSArray.class] ||
-            ![currentSupportedBands[key] isKindOfClass:NSArray.class]) {
-            if (failure) {
-                *failure = @"The retained baseline capability for an owned RAT is unavailable on this system.";
-            }
-            return NO;
-        }
-        for (NSNumber *band in savedSupported[key]) {
-            if (![currentSupportedBands[key] containsObject:band]) {
-                if (failure) {
-                    *failure = @"The retained baseline contains an owned band unsupported by the current system.";
-                }
-                return NO;
-            }
-        }
-    }
-    return YES;
+    return CCNMBaselineNRBandsFitCurrentCapability(savedSupported[CCNMNRKey],
+        currentSupported[CCNMNRKey],
+        @"The retained baseline contains an owned band unsupported by the current system.", failure);
 }
 
 static BOOL CCNMValidateN78OnlyPayloadLocal(NSDictionary *original,

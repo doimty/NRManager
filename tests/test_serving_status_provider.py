@@ -20,11 +20,10 @@ MAKEFILE = ROOT / "networkmanagerprefs/Makefile"
 def code_only(text):
     """The source with comments removed, so prose cannot satisfy or break a check.
 
-    Assertions about what the code does must read the code. A comment explaining
-    why the write path keeps its device allowlist should not make an assertion
-    about the read path fail, and equally a commented-out gate must never be able
-    to satisfy one. String literals are preserved because several checks are about
-    message text.
+    Assertions about what the code does must read the code. Comments about the
+    safety rationale must not satisfy or break a behavioral assertion, and a
+    commented-out gate must never be able to satisfy one. String literals are
+    preserved because several checks are about message text.
     """
     out = []
     index = 0
@@ -121,15 +120,13 @@ int main(void) {
         self.assertIn("retainedSamplerContext", source)
         self.assertNotIn("dlclose", source)
 
-    def test_reading_is_not_gated_on_a_device_allowlist(self):
-        """The read path runs on any model; only the write path is pinned.
+    def test_reading_and_writing_use_runtime_checks_not_a_device_allowlist(self):
+        """Neither path relies on the old model/version allowlist.
 
-        A RAT-selection write is a modem configuration change whose restore has
-        been verified on exactly one device, which is why that path keeps its
-        allowlist. Reading the serving cell and the band capability changes
-        nothing, so there is no restore to have verified and refusing an unknown
-        model buys no safety. What makes the read safe on an unverified device is
-        the ABI validation and the bounded waits, which apply regardless of model.
+        Reading changes nothing. The write path is bounded by ABI validation,
+        fresh BandInfo shape/capability checks, durable baseline evidence, and
+        read-back validation. Those checks are more relevant than the model on
+        which the first end-to-end write happened to be observed.
         """
         source = code_only(SOURCE.read_text())
         sampler = code_only(SAMPLER.read_text())
@@ -137,16 +134,18 @@ int main(void) {
             self.assertNotIn(gate, source)
             self.assertNotIn(gate, sampler)
         self.assertNotIn("majorVersion == 15", source)
-        # The write path must still be pinned. If this ever fails, an allowlist
-        # was removed from the wrong side.
         policy = code_only(POLICY.read_text())
-        self.assertIn('[model isEqualToString:@"iPhone14,3"]', policy)
-        self.assertIn('[build isEqualToString:@"19B81"]', policy)
         for gate in (
             "CCNMValidateSelfSourcedWriteTarget",
             "CCNMValidateHistoricalReplayTarget",
+            "CCNMValidateTargetIdentity",
+            "CCNMBuildN78Payload",
+            "CCNMValidateN78OnlyPayload",
+            "CCNMValidateRestorePayload",
         ):
             self.assertIn(gate, policy)
+        self.assertNotIn("iPhone14,3", policy)
+        self.assertNotIn("19B81", policy)
         # What remains in the read path is the ABI and shape validation that does
         # the actual protecting.
         for guard in (

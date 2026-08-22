@@ -150,3 +150,68 @@ Target: iPhone14,3 / iOS 15.1.1 (19B81), slot 1, one present and good SIM
 - Local Theos compile caught and fixed Objective-C-only issues missed by host tests: missing `@` dictionary keys, a stale unimplemented method declaration, nested nullability in the reader header, reader static helper forward declarations, unused orphan-only reader helpers, record-local serving keys, and missing shared support constant linkage.
 - Extracted shared policy/serving/error constants into `networkmanagerprefs/CCNMN78PolicySupport.m`, linked by the Control Center bundle, PreferenceBundle, read-only daemon, and both maintainer-script tools. The complete aggregate `make` now compiles, links, merges, and signs all targets for arm64/arm64e. Local arm64e ABI warnings remain compile-only evidence and block delivery.
 - Current host evidence: 118/118 tests pass with 3 Foundation-dependent tests skipped, Python compilation and `git diff --check` pass. No writer symbols are present in the daemon, provider, record, or reader source paths.
+
+## 2026-08-22 write path: replace the device allowlist with runtime capability evidence
+
+The n78 write path required `iPhone14,3` / iOS 15.1.1 (`19B81`) at six call sites through
+one `CCNMValidateTarget`. That single gate answered for two unrelated data flows, which
+made "can this run on other phones" unanswerable without reading all six sites.
+
+Split first (`d1ea1bb`), then loosened:
+
+- `CCNMValidateSelfSourcedWriteTarget` — `performEnable`, `performRestoreOperation:`.
+  These write only values the device produced: enable resends live BandInfo with the NR
+  array narrowed, restore resends a baseline the device wrote about itself.
+- `CCNMValidateHistoricalReplayTarget` — the three known-orphan paths. These carry a
+  reviewed historical BandInfo table.
+
+Both now reduce to `CCNMValidateTargetIdentity`: model, version and build must be
+readable, because `CCNMBuildBaselineRecord` refuses a baseline with empty identity and an
+enable that cannot record a baseline must not reach the setter. Neither compares against a
+model name.
+
+What replaced the allowlist, per path:
+
+- Enable: `CCNMBuildN78Payload` requires 78 in both fresh `activeBands[NR]` and
+  `supportedBands[NR]`, refuses when active is already exactly `[78]`, and
+  `CCNMValidateN78OnlyPayload` requires every non-NR RAT array to be byte-identical.
+- Known-orphan replay: `CCNMKnownOrphanBandInfoMatches` demands an exact dictionary match
+  of the reviewed active and supported tables plus the reviewed subscription UUID and clean
+  durable state. n78 being common is not sufficient and never was the gate.
+- Restore: `CCNMValidateBaselineCompatibility` keeps `deviceModel`, drops the
+  `systemVersion`/`systemBuild` equality, and adds `CCNMBaselineNRBandsFitCurrentCapability`
+  on the saved NR array.
+
+Two corrections found while implementing:
+
+1. Requiring the OS build to match would have stranded any device that updates iOS while
+   the policy is enabled — the baseline is the only way back, so an update would have
+   turned a reversible change into a permanent one. Build is now recorded evidence, not a
+   gate.
+2. A first attempt rejected baselines lacking the capability snapshot (added in `156ec8a`;
+   `47e1e72` baselines have only `activeBands`). Same stranding bug from the other side.
+   Those baselines now restore when their saved NR bands pass the capability check, which
+   is the evidence they can still offer.
+
+The check is scoped to NR because `CCNMBuildRestorePayload` replays exactly one array: live
+values for every RAT except NR, saved values for NR. The other arrays were just read from
+this modem, so they cannot be unsupported.
+
+`CCNMValidateBaselineCompatibility` exists in both the controller and the reader (the
+daemon links the reader). Both were changed identically; a test diffs the two bodies by
+asserting the same content in each. Keyed subscripts are nil-guarded because the reader
+copy is exported and the bundle loads into SpringBoard.
+
+`tests/test_write_path_target_gates.py` (12 tests) pins which caller uses which gate, that
+enable and restore share one gate, that no `iPhone14,3`/`19B81` literal remains in the
+controller, that the OS-build equality stays absent, that the NR capability check runs for
+every baseline before the evidence branch, and that pre-snapshot baselines stay restorable.
+
+Verification: 297 host tests pass (3 skipped), livecc 12 pass, `verify_release_source`
+passed with no forbidden strings, `clang -fsyntax-only -fobjc-arc -target arm64-apple-ios14.0`
+clean for the controller, reader and serving provider. Device verification of a write on a
+non-reference handset remains outstanding.
+
+Unchanged and still true: setting NR to `[78]` is an allowed-band preference, not a serving
+guarantee; the reference device still falls back to LTE B3. The setter keeps its 20 s
+watchdog, and a timeout still defers restore past a reboot.

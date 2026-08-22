@@ -950,6 +950,32 @@ static BOOL CCNMValidateBaselineRecord(NSDictionary *baseline, NSString **failur
     return valid;
 }
 
+// A restore replays exactly one array: CCNMBuildRestorePayload keeps the live
+// values for every RAT except NR, where it writes the saved array. So the saved
+// NR bands are the values that have to be declared by the modem about to receive
+// them. This is the capability requirement the device allowlist used to imply,
+// expressed against live evidence instead of a model name.
+static BOOL CCNMBaselineNRBandsFitCurrentCapability(NSArray *savedNR,
+                                                    NSArray *currentSupportedNR,
+                                                    NSString *unsupportedFailure,
+                                                    NSString **failure) {
+    if (![savedNR isKindOfClass:NSArray.class] || ![currentSupportedNR isKindOfClass:NSArray.class]) {
+        if (failure) {
+            *failure = @"The retained baseline NR capability evidence is unavailable on this system.";
+        }
+        return NO;
+    }
+    for (NSNumber *band in savedNR) {
+        if (![currentSupportedNR containsObject:band]) {
+            if (failure) {
+                *failure = unsupportedFailure;
+            }
+            return NO;
+        }
+    }
+    return YES;
+}
+
 static BOOL CCNMValidateBaselineCompatibility(NSDictionary *baseline,
                                                NSDictionary *currentSupportedBands,
                                                NSDictionary *identity,
@@ -957,45 +983,50 @@ static BOOL CCNMValidateBaselineCompatibility(NSDictionary *baseline,
     BOOL hasCapabilitySnapshot = baseline[@"deviceModel"] != nil ||
         baseline[@"systemVersion"] != nil || baseline[@"systemBuild"] != nil ||
         baseline[@"supportedBands"] != nil || baseline[@"modifiedBandKeys"] != nil;
+    // Keyed subscripting a non-dictionary raises, and this bundle loads into
+    // SpringBoard. CCNMValidateBaselineRecord runs first in the current callers,
+    // but this check must not depend on that ordering.
+    NSDictionary *savedActive = [baseline[@"activeBands"] isKindOfClass:NSDictionary.class]
+        ? baseline[@"activeBands"] : nil;
+    NSDictionary *currentSupported = [currentSupportedBands isKindOfClass:NSDictionary.class]
+        ? currentSupportedBands : nil;
+    // Checked for every baseline, whatever evidence it carries, because it is the
+    // only value the restore actually writes.
+    if (!CCNMBaselineNRBandsFitCurrentCapability(savedActive[CCNMNRKey],
+            currentSupported[CCNMNRKey],
+            @"The retained baseline NR band is unsupported by the current system.", failure)) {
+        return NO;
+    }
     if (!hasCapabilitySnapshot) {
-        // Legacy baselines are accepted only through the current target gate.
+        // Written before capability evidence existed. Refusing it is not an
+        // option: a baseline is the only way back from an enable, so refusing one
+        // for lacking a field that did not exist when it was written would strand
+        // the device it was written to protect. The NR check above is the
+        // evidence such a baseline can still offer.
         return YES;
     }
-    BOOL sameIdentity = [baseline[@"deviceModel"] isEqual:identity[@"deviceModel"]] &&
-        [baseline[@"systemVersion"] isEqual:identity[@"systemVersion"]] &&
-        [baseline[@"systemBuild"] isEqual:identity[@"systemBuild"]];
-    NSDictionary *savedSupported = baseline[@"supportedBands"];
-    BOOL sameCapabilityShape = [savedSupported isKindOfClass:NSDictionary.class] &&
-        [currentSupportedBands isKindOfClass:NSDictionary.class] &&
+    // Same hardware. System version and build stay recorded evidence rather than
+    // a gate: an iOS update does not invalidate a rollback whose bands the modem
+    // still declares, and refusing on build alone would strand every device that
+    // updates while the policy is enabled.
+    BOOL sameDevice = [baseline[@"deviceModel"] isEqual:identity[@"deviceModel"]];
+    NSDictionary *savedSupported = [baseline[@"supportedBands"] isKindOfClass:NSDictionary.class]
+        ? baseline[@"supportedBands"] : nil;
+    BOOL sameCapabilityShape = savedSupported && currentSupported &&
         [[NSSet setWithArray:savedSupported.allKeys] isEqualToSet:
-            [NSSet setWithArray:currentSupportedBands.allKeys]];
+            [NSSet setWithArray:currentSupported.allKeys]];
     NSArray *ownedKeys = baseline[@"modifiedBandKeys"];
     BOOL ownedFieldsValid = [ownedKeys isKindOfClass:NSArray.class] &&
         ownedKeys.count == 1 && [ownedKeys.firstObject isEqual:CCNMNRKey];
-    if (!sameIdentity || !sameCapabilityShape || !ownedFieldsValid) {
+    if (!sameDevice || !sameCapabilityShape || !ownedFieldsValid) {
         if (failure) {
-            *failure = @"The retained baseline belongs to a different device, system capability shape, or owned-band set.";
+            *failure = @"The retained baseline belongs to a different device, capability shape, or owned-band set.";
         }
         return NO;
     }
-    for (NSString *key in ownedKeys) {
-        if (![savedSupported[key] isKindOfClass:NSArray.class] ||
-            ![currentSupportedBands[key] isKindOfClass:NSArray.class]) {
-            if (failure) {
-                *failure = @"The retained baseline capability for an owned RAT is unavailable on this system.";
-            }
-            return NO;
-        }
-        for (NSNumber *band in savedSupported[key]) {
-            if (![currentSupportedBands[key] containsObject:band]) {
-                if (failure) {
-                    *failure = @"The retained baseline contains an owned band unsupported by the current system.";
-                }
-                return NO;
-            }
-        }
-    }
-    return YES;
+    return CCNMBaselineNRBandsFitCurrentCapability(savedSupported[CCNMNRKey],
+        currentSupported[CCNMNRKey],
+        @"The retained baseline contains an owned band unsupported by the current system.", failure);
 }
 
 static NSDictionary *CCNMBuildIntentRecord(NSString *operation,
@@ -1411,59 +1442,9 @@ static NSString *CCNMSystemVersionString(void) {
         (long)version.majorVersion, (long)version.minorVersion, (long)version.patchVersion];
 }
 
-// The one handset on which a RAT-selection write and its restore were actually
-// observed end to end.
-static BOOL CCNMIsReferenceVerifiedTarget(void) {
-    NSString *model = CCNMSysctlString("hw.machine");
-    NSString *build = CCNMSysctlString("kern.osversion");
-    NSOperatingSystemVersion version = [[NSProcessInfo processInfo] operatingSystemVersion];
-    return [model isEqualToString:@"iPhone14,3"] && [build isEqualToString:@"19B81"] &&
-        version.majorVersion == 15 && version.minorVersion == 1 && version.patchVersion == 1;
-}
-
-// Gate for the known-orphan replay paths.
-//
-// Those paths do not write anything they read from this device. They write
-// CCNMKnownOrphanHistoricalOriginalBands(), a band table captured from the
-// reference handset, against CCNMKnownOrphanSubscriptionUUID, a placeholder
-// UUID. On any other device that table is a foreign radio capability set, and
-// installing it would not restore that device, it would overwrite that device's
-// capability with another phone's. This gate is therefore not a confidence
-// threshold that better runtime evidence could replace. It is the provenance of
-// the data being written, so it stays pinned to the device the data came from
-// regardless of what the rest of the write path is allowed to do.
-static BOOL CCNMValidateHistoricalReplayTarget(NSMutableDictionary *details, NSString **failure) {
-    CCNMRecordDeviceIdentity(details, CCNMSysctlString("hw.machine"),
-        CCNMSysctlString("kern.osversion"), CCNMSystemVersionString());
-    if (!CCNMIsReferenceVerifiedTarget()) {
-        if (failure) {
-            *failure = @"Known-orphan replay writes a band table captured from iPhone14,3 running "
-                        @"iOS 15.1.1 build 19B81 and is refused on any other device.";
-        }
-        return NO;
-    }
-    return YES;
-}
-
-// Gate for the self-sourced write paths: enable, restore, and recover.
-//
-// These write only values this device produced. Enable reads live BandInfo and
-// resends it with the NR array narrowed; restore and recover resend a baseline
-// this device wrote about itself, which CCNMValidateBaselineCompatibility
-// separately requires to match the current hw.machine, system version, build,
-// and supported-band shape before it is used. So there is no foreign data here,
-// and the model check is a confidence threshold rather than a correctness one.
-//
-// Enable and restore must keep sharing one answer. Pinning restore while
-// allowing enable would let a device create a baseline it is then refused
-// permission to put back, which is the exact outcome the pin exists to prevent.
-//
-// The identity read is a hard requirement independent of the model check,
-// because CCNMBuildBaselineRecord refuses a baseline without a non-empty model,
-// version, and build. An enable that cannot record a baseline must never reach
-// the setter, so the identity is read into locals and judged here rather than
-// being read back out of the reporting dictionary.
-static BOOL CCNMValidateSelfSourcedWriteTarget(NSMutableDictionary *details, NSString **failure) {
+// Reads and records identity without using a model or OS allowlist as a
+// capability verdict. The durable baseline still requires all three values.
+static BOOL CCNMValidateTargetIdentity(NSMutableDictionary *details, NSString **failure) {
     NSString *model = CCNMSysctlString("hw.machine");
     NSString *build = CCNMSysctlString("kern.osversion");
     NSString *version = CCNMSystemVersionString();
@@ -1474,13 +1455,35 @@ static BOOL CCNMValidateSelfSourcedWriteTarget(NSMutableDictionary *details, NSS
         }
         return NO;
     }
-    if (!CCNMIsReferenceVerifiedTarget()) {
-        if (failure) {
-            *failure = @"The formal policy is restricted to iPhone14,3 running iOS 15.1.1 build 19B81.";
-        }
-        return NO;
-    }
     return YES;
+}
+
+// Gate for the known-orphan replay paths.
+//
+// These paths contain a reviewed historical BandInfo table, but they do not
+// trust the table merely because the current phone has n78. The caller must
+// subsequently prove that the current activeBands and supportedBands are an
+// exact dictionary match, that the subscription UUID is the reviewed target,
+// and that policy evidence is otherwise clean. This identity check only makes
+// sure the resulting evidence is attributable to a real device; the exact
+// capability comparison is the safety gate.
+static BOOL CCNMValidateHistoricalReplayTarget(NSMutableDictionary *details, NSString **failure) {
+    return CCNMValidateTargetIdentity(details, failure);
+}
+
+// Gate for the self-sourced write paths: enable, restore, and recover.
+//
+// Enable reads live BandInfo and resends it with only the NR array narrowed;
+// restore and recover resend a baseline this device wrote about itself. The
+// capability checks are therefore runtime checks: ABI validation, an
+// unambiguous subscription, complete fresh BandInfo, n78 in both fresh active
+// and supported NR arrays, and durable baseline/read-back validation. No model
+// or OS allowlist is needed here.
+//
+// Enable and restore share this gate. The device that may create a baseline
+// must also be allowed to put that baseline back.
+static BOOL CCNMValidateSelfSourcedWriteTarget(NSMutableDictionary *details, NSString **failure) {
+    return CCNMValidateTargetIdentity(details, failure);
 }
 
 static const char *CCNMSkipTypeQualifiers(const char *type) {

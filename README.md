@@ -14,7 +14,7 @@ Version 1.5.0 replaces legacy RAT cycling with a reversible n78 preference:
 
 This is not a hard n78 lock. Carrier policy, coverage, idle state, thermal state, and modem selection can still move service to LTE.
 
-The first acceptance target is intentionally restricted to `iPhone14,3` running iOS 15.1.1 (`19B81`) with one present and good SIM in slot 1. Other devices and builds fail closed.
+The first end-to-end acceptance was performed on `iPhone14,3` running iOS 15.1.1 (`19B81`), but that identity is recorded evidence rather than a compatibility allowlist. Enable runs on any device/build that passes the runtime contract: the private CoreTelephony ABI is valid, slot 1 has the single present/good SIM, complete fresh `activeBands` and `supportedBands` are readable, and both NR sets contain n78. Only the NR array changes; LTE and every other RAT remain unchanged. Restore is bound to the same hardware model and to NR bands the current modem still declares, but an iOS version/build update alone does not strand it.
 
 ## Release status
 

@@ -81,7 +81,7 @@
 
 "POLICY_ERROR_TITLE" = "无法更改 n78 偏好";
 "POLICY_ERROR_BUSY" = "另一个策略操作或驻网状态刷新仍在进行。";
-"POLICY_ERROR_UNSUPPORTED_TARGET" = "此版本仅适用于已验收的 iPhone14,3 与 iOS 15.1.1（19B81）。";
+"POLICY_ERROR_UNSUPPORTED_TARGET" = "此操作需要可读取的设备身份和匹配的运行时频段能力证据。";
 "POLICY_ERROR_SUBSCRIPTION" = "当前数据线路的 SIM 布局或订阅身份不满足安全操作条件。";
 "POLICY_ERROR_N78_UNAVAILABLE" = "当前启用与支持的 NR 频段列表未同时包含 n78。";
 "POLICY_ERROR_REBOOT_REQUIRED" = "基带设置结果不确定。再次更改前必须重启设备。";

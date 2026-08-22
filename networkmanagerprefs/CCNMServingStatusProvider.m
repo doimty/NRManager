@@ -226,16 +226,10 @@ static BOOL CCNMServingValidateBandInfoABI(id client, NSString **failure) {
 }
 
 // Reports what device this is running on, for the record. This is deliberately
-// not a gate.
-//
-// The write path stays locked to the accepted iPhone14,3 / iOS 15.1.1 (19B81)
-// target, because a RAT-selection write is a modem configuration change whose
-// restore has only ever been verified on that one device. The read path is a
-// different kind of operation: it asks CoreTelephony for the serving cell and
-// the band capability and changes nothing, so there is nothing to restore and
-// no reason to refuse an unknown model. Every private call it makes is ABI
-// checked and bounded before use, which is what makes running on an unverified
-// device safe here rather than the model allowlist.
+// not a gate. The write path performs its own runtime ABI, capability, durable
+// evidence, and read-back checks; this read path only reports serving-cell and
+// capability data and changes nothing. Every private call it makes is ABI
+// checked and bounded before use.
 static NSDictionary<NSString *, id> *CCNMServingDeviceIdentity(void) {
     NSString *model = CCNMServingSysctlString("hw.machine");
     NSString *build = CCNMServingSysctlString("kern.osversion");
@@ -906,8 +900,8 @@ static NSDictionary *CCNMServingSummaryFromReport(NSDictionary *report,
                 // capability changes nothing on the modem, so there is no restore
                 // to have verified and no reason to refuse an unknown model. Every
                 // private call below is ABI checked and bounded; that is what makes
-                // this safe on an unverified device. The write path in
-                // CCNMN78PolicyController keeps its allowlist.
+                // this safe on an unverified device. The write path performs its
+                // own runtime capability and durable-evidence checks.
                 client = CCNMServingCreateClient(&frameworkHandle, &failure);
                 context = client
                     ? CCNMServingTargetContext(client, &subscriptionUUID, &slotID,

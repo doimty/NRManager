@@ -2,7 +2,7 @@
 
 **Branch:** `release/1.5.0`
 **Baseline:** `2947f98ffb2665b000afab2c4db3ae843866d4da`
-**Target first acceptance device:** iPhone14,3 / iOS 15.1.1 (19B81), slot 1, one present and good SIM
+**Historical first acceptance device:** iPhone14,3 / iOS 15.1.1 (19B81), slot 1, one present and good SIM. This is evidence for the first end-to-end test, not the current compatibility allowlist.
 
 ## Release goal
 

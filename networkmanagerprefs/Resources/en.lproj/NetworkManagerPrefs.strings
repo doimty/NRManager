@@ -81,7 +81,7 @@
 
 "POLICY_ERROR_TITLE" = "Unable to Change n78 Preference";
 "POLICY_ERROR_BUSY" = "Another policy or serving-status operation is still running.";
-"POLICY_ERROR_UNSUPPORTED_TARGET" = "This release is limited to the accepted iPhone14,3 running iOS 15.1.1 (19B81).";
+"POLICY_ERROR_UNSUPPORTED_TARGET" = "This operation requires readable device identity and matching runtime capability evidence.";
 "POLICY_ERROR_SUBSCRIPTION" = "The data-line SIM layout or subscription identity is not safe for this operation.";
 "POLICY_ERROR_N78_UNAVAILABLE" = "Band n78 is not present in both the active and supported NR band lists.";
 "POLICY_ERROR_REBOOT_REQUIRED" = "The modem setter result is uncertain. Restart the device before making another change.";

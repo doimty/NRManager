@@ -103,9 +103,12 @@ def verified_restore_upgrade_eligible(state: dict) -> bool:
 
 
 def exact_orphan_eligible(snapshot: dict) -> bool:
-    if snapshot.get("model") != "iPhone14,3":
-        return False
-    if snapshot.get("version") != "15.1.1" or snapshot.get("build") != "19B81":
+    # Model/version/build are recorded provenance, not an eligibility allowlist,
+    # but the identity still has to be readable. The current complete
+    # active/supported dictionaries below are the actual capability gate for
+    # this reviewed historical replay.
+    if not all(isinstance(snapshot.get(key), str) and snapshot[key]
+               for key in ("model", "version", "build")):
         return False
     contexts = snapshot.get("contexts")
     present = [item for item in contexts or [] if item.get("present")]
@@ -230,18 +233,24 @@ class KnownOrphanEligibilityTests(unittest.TestCase):
         fixture["state"] = None
         self.assertTrue(exact_orphan_eligible(fixture))
 
-    def test_each_identity_or_durable_field_rejects(self):
-        mutations = (
+    def test_recorded_identity_is_not_an_allowlist_but_durable_state_rejects(self):
+        for field_name, replacement in (
             ("model", "iPhone14,2"),
-            ("version", "15.1"),
-            ("build", "19B74"),
+            ("version", "17.6"),
+            ("build", "21G80"),
+        ):
+            with self.subTest(field=field_name):
+                fixture = eligible_fixture()
+                fixture[field_name] = replacement
+                self.assertTrue(exact_orphan_eligible(fixture))
+
+        for field_name, replacement in (
             ("state", clean_state() | {"requestedMode": "n78Preferred"}),
             ("baseline", {}),
             ("intent", {}),
             ("inflight", {}),
             ("removal_guard", {}),
-        )
-        for field_name, replacement in mutations:
+        ):
             with self.subTest(field=field_name):
                 fixture = eligible_fixture()
                 fixture[field_name] = replacement
