@@ -40,11 +40,10 @@ class LiveCCPackagingTests(unittest.TestCase):
         root_control = (ROOT / "control").read_text()
         root_plist = plistlib.loads((ROOT / "Resources/Info.plist").read_bytes())
         workflow = (ROOT / ".github/workflows/livecc-prototype.yml").read_text()
-        # The formal bundle reuses this source with class-name aliases and the
-        # same isolated serving namespace, so the standalone implementation and
-        # formal target cannot silently drift apart.
-        self.assertIn("CCNM_SERVING_USE_LIVECC_NAMESPACE=1", root_makefile)
-        self.assertIn("livecc/Sources/CCNMLiveServingPaths.m", root_makefile)
+        # The formal package no longer builds a duplicate Control Center bundle;
+        # this standalone package is the sole owner of the LiveCC preview.
+        self.assertNotIn("BUNDLE_NAME = NetworkManager\n", root_makefile)
+        self.assertNotIn("NetworkManager_FILES", root_makefile)
         self.assertIn("Package: me.nixuge.networkmanager\n", root_control)
         self.assertEqual(root_plist["CFBundleExecutable"], "NetworkManager")
         self.assertEqual(root_plist["NSPrincipalClass"], "CCNetworkManager")

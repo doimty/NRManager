@@ -9,6 +9,7 @@ Status: release candidate source, not yet approved for distribution.
 - Added separate requested-policy, verified-applied-policy, and fresh serving-network states.
 - Added adaptive Cell Monitor sampling for truthful NR n78, other NR, LTE, other, or stale/unknown serving status.
 - Added an independently implemented, localized Simplified Chinese and English Settings interface.
+- Retired the duplicate formal Control Center button. The optional standalone LiveCC package is the only serving-band preview; the formal package now ships Settings and automatic maintenance only.
 - Kept links and credit for NoisyFlake's original project, Nixuge's continuation, and doimty's maintained source.
 
 ## Safety and recovery
@@ -39,5 +40,5 @@ This feature is an n78 preference, not a guarantee of continuous 5G or n78 servi
 
 - Independent source/spec/safety review with no unresolved P0 or P1 findings.
 - Pinned macOS 14 / Xcode 15.4 rootless and roothide cloud builds.
-- Mach-O, dependency, signature, package-control, warning, and checksum verification for both bundles, both policy guards, and the maintenance helper in each lane, plus the shell-shape gate on `DEBIAN/postinst` and `DEBIAN/prerm` and a per-lane gate on the staged launchd plist.
+- Mach-O, dependency, signature, package-control, warning, and checksum verification for the Settings bundle, both policy guards, and the maintenance helper in each lane, plus the shell-shape gate on `DEBIAN/postinst` and `DEBIAN/prerm` and a per-lane gate on the staged launchd plist.
 - Target-device enable, LTE fallback, reboot, disable, crash-recovery, timeout, uninstall, and downgrade acceptance.

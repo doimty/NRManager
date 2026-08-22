@@ -23,32 +23,18 @@ class ControlCenterServingLabelTests(unittest.TestCase):
         cls.makefile = MAKEFILE.read_text()
         cls.provider = PROVIDER.read_text()
 
-    def test_cc_bundle_reuses_the_standalone_livecc_source_and_namespace(self):
-        files_line = self.makefile
-        self.assertIn("livecc/Sources/CCNMLiveServingPaths.m", files_line)
-        self.assertIn("networkmanagerprefs/CCNMServingStatusProvider.m", files_line)
-        self.assertIn("networkmanagerprefs/CCNMServingCellSampler.m", files_line)
-        self.assertNotIn("networkmanagerprefs/CCNMN78PolicyReader.m", files_line)
-        self.assertNotIn("networkmanagerprefs/CCNMN78PolicySupport.m", files_line)
-        self.assertNotIn("networkmanagerprefs/CCNMN78PolicyController.m", files_line)
-        self.assertIn("CCNMAutomaticMaintenanceDecision.c", files_line)
-        for flag in (
-            "-DCCNMServingStatusProvider=CCNMLiveServingStatusProvider",
-            "-DCCNMCellMonitorAsyncState=CCNMLiveCellMonitorAsyncState",
-            "-DCCNM_SERVING_USE_LIVECC_NAMESPACE=1",
-            "-DNetworkManagerLiveViewController=CCNetworkManagerViewController",
-            "-DNetworkManagerLiveModule=CCNetworkManager",
-        ):
-            self.assertIn(flag, self.makefile)
-        self.assertIn('#import "livecc/Sources/NetworkManagerLiveModule.m"', self.source)
-        self.assertNotIn("drawnGlyphKey", self.source)
-        self.assertNotIn("applyGlyphText", self.source)
-        self.assertIn("-Ilivecc/include", self.makefile)
-        self.assertIn("-Inetworkmanagerprefs", self.makefile)
-        self.assertIn("NetworkManager_LIBRARIES = roothide", self.makefile)
-        self.assertIn("NetworkManager_FRAMEWORKS = CoreFoundation CoreTelephony Foundation UIKit", self.makefile)
-        self.assertNotIn("NetworkManager_FRAMEWORKS = CoreFoundation CoreTelephony Foundation QuartzCore UIKit", self.makefile)
-        self.assertIn("CCNMLiveFormalIntegralRect", self.source)
+    def test_formal_package_retires_the_duplicate_control_center_bundle(self):
+        self.assertNotIn("BUNDLE_NAME = NetworkManager", self.makefile)
+        self.assertNotIn("NetworkManager_FILES", self.makefile)
+        self.assertNotIn("NetworkManager_INSTALL_PATH", self.makefile)
+        self.assertIn("SUBPROJECTS += networkmanagerprefs", self.makefile)
+        self.assertIn("SUBPROJECTS += maintenance-daemon", self.makefile)
+        self.assertIn("SUBPROJECTS += package-actions", self.makefile)
+        postinst = (ROOT / "package-actions/postinst.sh.in").read_text()
+        self.assertIn("NetworkManager.bundle", postinst)
+        self.assertIn("retire_formal_control_center_bundle", postinst)
+        self.assertIn("rm -rf", postinst)
+        self.assertIn("obsolete", postinst.lower())
         self.assertTrue(PRIVATE_HEADER.is_file())
 
     def test_private_declarations_never_import_the_framework_as_a_module(self):

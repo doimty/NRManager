@@ -180,6 +180,15 @@ class WorkflowTests(unittest.TestCase):
 
 
 class VerificationHelperTests(unittest.TestCase):
+    def test_formal_package_retires_the_duplicate_control_center_bundle(self) -> None:
+        makefile = (REPO / "Makefile").read_text()
+        postinst = (REPO / "package-actions/postinst.sh.in").read_text()
+        self.assertNotIn("BUNDLE_NAME = NetworkManager", makefile)
+        self.assertNotIn("NetworkManager_FILES", makefile)
+        self.assertIn("NetworkManager.bundle", postinst)
+        self.assertIn("rm -rf", postinst)
+        self.assertIn("obsolete", postinst.lower())
+
     def test_build_log_gate_rejects_empty_and_fatal_lines(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -359,7 +368,7 @@ Load command 1
             verify_release_package.UNLINKED_ROOTHIDE_TOOLS,
             "the two lists answer different questions and must not be aliased",
         )
-        for bundle in ("NetworkManager", "NetworkManagerPrefs"):
+        for bundle in ("NetworkManagerPrefs",):
             self.assertNotIn(
                 bundle, verify_release_package.CHAINED_FIXUPS_ALLOWED_TOOLS)
         # Absence of the library is asserted for those binaries, not merely

@@ -183,6 +183,28 @@ else
     PREFIX_FALLBACK=''
 fi
 
+# This package no longer owns a Control Center bundle. Remove the old formal
+# NetworkManager.bundle on upgrade so installing the new package cannot leave
+# the duplicate button registered beside the standalone LiveCC package. The
+# path is deliberately lane-relative: bare paths are the redirected root on
+# roothide, while rootless uses /var/jb.
+retire_formal_control_center_bundle() {
+    if [ -n "$NEEDS_JBROOT" ] && [ -z "$JBROOT_PREFIX" ]; then
+        note "the jailbreak root could not be resolved; leaving any old Control Center bundle in place."
+        return 0
+    fi
+    obsolete_bundle="${PREFIX_PRIMARY}/Library/ControlCenter/Bundles/NetworkManager.bundle"
+    if [ ! -e "$obsolete_bundle" ]; then
+        return 0
+    fi
+    if rm -rf "$obsolete_bundle" && [ ! -e "$obsolete_bundle" ]; then
+        note "retired the old formal Control Center bundle."
+    else
+        warn "could not retire the old formal Control Center bundle at ${obsolete_bundle}."
+    fi
+}
+retire_formal_control_center_bundle
+
 describe_prefix() {
     if [ -z "$1" ]; then
         printf 'the redirected root (bare paths)'

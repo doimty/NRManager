@@ -53,7 +53,6 @@ _spec.loader.exec_module(patcher)
 FAKE_MACHO = b"\xca\xfe\xba\xbe" + b"\0" * 512
 
 BINARY_PAYLOAD = (
-    "Library/ControlCenter/Bundles/NetworkManager.bundle/NetworkManager",
     "Library/PreferenceBundles/NetworkManagerPrefs.bundle/NetworkManagerPrefs",
     verifier.INSTALL_GUARD_RELATIVE,
     verifier.REMOVAL_GUARD_RELATIVE,
@@ -61,9 +60,6 @@ BINARY_PAYLOAD = (
 )
 
 TEXT_PAYLOAD = {
-    "Library/ControlCenter/Bundles/NetworkManager.bundle/Info.plist":
-        plistlib.dumps({"CFBundleIdentifier": "me.nixuge.networkmanager",
-                        "CFBundleExecutable": "NetworkManager"}),
     "Library/PreferenceBundles/NetworkManagerPrefs.bundle/Info.plist":
         plistlib.dumps({"CFBundleIdentifier": "me.nixuge.networkmanagerprefs",
                         "CFBundleExecutable": "NetworkManagerPrefs"}),
@@ -77,10 +73,6 @@ TEXT_PAYLOAD = {
     "en.lproj/NetworkManagerPrefs.strings": b'"key" = "value";\n',
     "Library/PreferenceBundles/NetworkManagerPrefs.bundle/"
     "zh-Hans.lproj/NetworkManagerPrefs.strings": b'"key" = "value";\n',
-    "Library/ControlCenter/Bundles/NetworkManager.bundle/SettingsIcon@2x.png":
-        b"\x89PNG\r\n\x1a\n",
-    "Library/ControlCenter/Bundles/NetworkManager.bundle/SettingsIcon@3x.png":
-        b"\x89PNG\r\n\x1a\n",
 }
 
 

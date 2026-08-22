@@ -9,7 +9,8 @@ Version 1.5.0 replaces legacy RAT cycling with a reversible n78 preference:
 - When NR is used, the allowed NR list is changed to exactly n78.
 - LTE and every other non-NR band list remain unchanged.
 - LTE fallback remains available when n78 is not serving.
-- Requested policy, verified applied policy, and fresh serving RAT/Band are displayed independently.
+- Requested policy, verified applied policy, and fresh serving RAT/Band are kept as separate domains in Settings and maintenance.
+- The formal package no longer ships a duplicate Control Center button; the standalone LiveCC package is the sole optional serving-band preview.
 - A retained baseline and package removal guard prevent uninstall or downgrade from stranding the modem on the modified NR list.
 
 This is not a hard n78 lock. Carrier policy, coverage, idle state, thermal state, and modem selection can still move service to LTE.
@@ -18,7 +19,7 @@ The first end-to-end acceptance was performed on `iPhone14,3` running iOS 15.1.1
 
 ## Release status
 
-The 1.5.0 source is under validation. Rootless and roothide packages are not release-ready until pinned Xcode 15.4 cloud builds and the device acceptance checklist in [the release plan](docs/formal-release-1.5.0-plan.md) pass.
+The 1.5.0 source is under validation. Rootless and roothide packages are not release-ready until pinned Xcode 15.4 cloud builds and the device acceptance checklist in [the release plan](docs/formal-release-1.5.0-plan.md) pass. The formal package owns Settings and automatic maintenance; the optional standalone LiveCC package owns the Control Center preview.
 
 Host checks:
 

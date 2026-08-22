@@ -504,6 +504,30 @@ class RenderingTests(unittest.TestCase):
             self.assertIn(patcher.TEMPLATE_SENTINEL, str(raised.exception))
 
 
+class PostinstObsoleteBundleRootlessTests(ShellScriptBase):
+    scheme = "rootless"
+
+    def test_upgrade_removes_the_old_formal_control_center_bundle(self):
+        old_bundle = self.prefix / "Library/ControlCenter/Bundles/NetworkManager.bundle"
+        old_bundle.mkdir(parents=True)
+        (old_bundle / "NetworkManager").write_bytes(b"old formal bundle")
+        result = self.run_script("configure")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(old_bundle.exists())
+        self.assertIn("retired the old formal Control Center bundle", result.stderr)
+
+
+class PostinstObsoleteBundleRoothideTests(ShellScriptBase):
+    def test_upgrade_removes_the_old_formal_control_center_bundle(self):
+        old_bundle = self.prefix / "Library/ControlCenter/Bundles/NetworkManager.bundle"
+        old_bundle.mkdir(parents=True)
+        (old_bundle / "NetworkManager").write_bytes(b"old formal bundle")
+        result = self.run_script("configure", repoint_primary=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(old_bundle.exists())
+        self.assertIn("retired the old formal Control Center bundle", result.stderr)
+
+
 class PostinstLaunchdPlistTests(ShellScriptBase):
     def test_the_shipped_plist_is_left_exactly_as_packaged(self):
         # The whole rewrite is gone. postinst touching this file at all is the
