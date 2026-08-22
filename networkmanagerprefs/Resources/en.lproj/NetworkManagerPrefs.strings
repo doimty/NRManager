@@ -83,6 +83,7 @@
 "POLICY_ERROR_BUSY" = "Another policy or serving-status operation is still running.";
 "POLICY_ERROR_UNSUPPORTED_TARGET" = "This operation requires readable device identity and matching runtime capability evidence.";
 "POLICY_ERROR_SUBSCRIPTION" = "The data-line SIM layout or subscription identity is not safe for this operation.";
+"POLICY_ERROR_BASELINE_INCOMPATIBLE" = "The retained policy baseline is incompatible with this device or its modem capability evidence.";
 "POLICY_ERROR_N78_UNAVAILABLE" = "Band n78 is not present in both the active and supported NR band lists.";
 "POLICY_ERROR_REBOOT_REQUIRED" = "The modem setter result is uncertain. Restart the device before making another change.";
 "POLICY_ERROR_RECOVERY_REQUIRED" = "Saved policy evidence must be recovered before another change.";

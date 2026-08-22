@@ -179,8 +179,8 @@ What replaced the allowlist, per path:
   of the reviewed active and supported tables plus the reviewed subscription UUID and clean
   durable state. n78 being common is not sufficient and never was the gate.
 - Restore: `CCNMValidateBaselineCompatibility` keeps `deviceModel`, drops the
-  `systemVersion`/`systemBuild` equality, and adds `CCNMBaselineNRBandsFitCurrentCapability`
-  on the saved NR array.
+  `systemVersion`/`systemBuild` equality, and checks the saved NR capability snapshot
+  against the current supported NR evidence.
 
 Two corrections found while implementing:
 
@@ -196,6 +196,14 @@ Two corrections found while implementing:
 The check is scoped to NR because `CCNMBuildRestorePayload` replays exactly one array: live
 values for every RAT except NR, saved values for NR. The other arrays were just read from
 this modem, so they cannot be unsupported.
+
+A post-implementation device-shaped regression was then found in the compatibility check:
+`activeBands[NR]` is not guaranteed to be a subset of `supportedBands[NR]`. The reviewed
+historical fixture contains active NR bands 257-261 absent from its supported NR list, while
+its restore read-back was verified equal. The check now validates the saved capability snapshot
+(`supportedBands[NR]`) and replays the exact saved active NR list, without applying the invalid
+active-subset assumption. Compatibility failures now use `baselineIncompatible`, rather than
+reporting as the unrelated `uuidDrift` subscription error.
 
 `CCNMValidateBaselineCompatibility` exists in both the controller and the reader (the
 daemon links the reader). Both were changed identically; a test diffs the two bodies by

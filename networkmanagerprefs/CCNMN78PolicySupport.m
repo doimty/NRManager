@@ -31,6 +31,7 @@ CCNMN78PolicyErrorCode const CCNMN78PolicyErrorInvalidBandInfo = @"invalidBandIn
 CCNMN78PolicyErrorCode const CCNMN78PolicyErrorN78Unavailable = @"n78Unavailable";
 CCNMN78PolicyErrorCode const CCNMN78PolicyErrorInvalidRecords = @"invalidRecords";
 CCNMN78PolicyErrorCode const CCNMN78PolicyErrorUUIDDrift = @"uuidDrift";
+CCNMN78PolicyErrorCode const CCNMN78PolicyErrorBaselineIncompatible = @"baselineIncompatible";
 CCNMN78PolicyErrorCode const CCNMN78PolicyErrorPersistence = @"persistence";
 CCNMN78PolicyErrorCode const CCNMN78PolicyErrorSetterFailed = @"setterFailed";
 CCNMN78PolicyErrorCode const CCNMN78PolicyErrorSetterUncertain = @"setterUncertain";

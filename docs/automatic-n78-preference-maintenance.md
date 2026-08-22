@@ -26,7 +26,7 @@ This is an opt-in n78 preference maintenance mode, not a guaranteed band lock. T
 
 ## Backup contract
 
-A transaction baseline is not a portable backup. New baselines retain device model, system version/build, complete supported-band evidence, and `modifiedBandKeys`. Restore requires the same hardware model and NR bands the current modem still declares; a baseline written before that evidence existed is still restorable, but only when its saved NR bands pass the same capability check. A portable migration record may carry policy intent and profile identity, but never raw modem BandInfo.
+A transaction baseline is not a portable backup. New baselines retain device model, system version/build, complete supported-band evidence, and `modifiedBandKeys`. Restore requires the same hardware model, capability shape, and owned NR capability evidence. The saved active NR list is replayed exactly; it is not required to be a subset of the current supported NR list because the device's BandInfo contract permits that shape and the reviewed historical restore verified it. A baseline written before capability evidence existed is still restorable when its active table is valid. A portable migration record may carry policy intent and profile identity, but never raw modem BandInfo.
 
 ## Current implementation checkpoint
 

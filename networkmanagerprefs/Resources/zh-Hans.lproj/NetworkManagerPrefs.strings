@@ -83,6 +83,7 @@
 "POLICY_ERROR_BUSY" = "另一个策略操作或驻网状态刷新仍在进行。";
 "POLICY_ERROR_UNSUPPORTED_TARGET" = "此操作需要可读取的设备身份和匹配的运行时频段能力证据。";
 "POLICY_ERROR_SUBSCRIPTION" = "当前数据线路的 SIM 布局或订阅身份不满足安全操作条件。";
+"POLICY_ERROR_BASELINE_INCOMPATIBLE" = "保存的策略基线与当前设备或基带能力不兼容。";
 "POLICY_ERROR_N78_UNAVAILABLE" = "当前启用与支持的 NR 频段列表未同时包含 n78。";
 "POLICY_ERROR_REBOOT_REQUIRED" = "基带设置结果不确定。再次更改前必须重启设备。";
 "POLICY_ERROR_RECOVERY_REQUIRED" = "再次更改前，必须先处理已保存的策略恢复记录。";

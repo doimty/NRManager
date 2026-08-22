@@ -29,7 +29,7 @@ The first end-to-end acceptance target was:
 - iOS 15.1.1 (19B81)
 - exactly one present and good SIM in slot 1
 
-The model and OS identity are now recorded baseline evidence, not a compatibility allowlist. Enable and restore accept any device/build that passes the runtime contract: the private CoreTelephony ABI is valid, the slot-1 subscription is unambiguous, complete fresh active/supported BandInfo is readable, and n78 exists in both NR sets. The payload changes only NR; LTE and all other RAT arrays remain unchanged. Restore additionally requires the same hardware model and that the saved NR bands are still declared by the current modem, so an iOS update alone does not block a rollback.
+The model and OS identity are now recorded baseline evidence, not a compatibility allowlist. Enable and restore accept any device/build that passes the runtime contract: the private CoreTelephony ABI is valid, the slot-1 subscription is unambiguous, complete fresh active/supported BandInfo is readable, and n78 exists in both NR sets. The payload changes only NR; LTE and all other RAT arrays remain unchanged. Restore additionally requires the same hardware model, capability shape, and owned NR capability evidence. The saved active NR list is replayed exactly and is not required to be a subset of the current supported NR list, because the device's BandInfo contract permits that shape; an iOS update alone does not block a rollback.
 
 The dedicated known-orphan recovery remains stricter: it requires an exact match of the reviewed six-RAT active and supported dictionaries, subscription identity, and clean durable state. It is not a general fallback for arbitrary phones.
 

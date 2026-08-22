@@ -25,6 +25,7 @@ allowlist.
 
 from __future__ import annotations
 
+import json
 import re
 import unittest
 from pathlib import Path
@@ -33,6 +34,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 POLICY = REPO / "networkmanagerprefs/CCNMN78PolicyController.m"
 READER = REPO / "networkmanagerprefs/CCNMN78PolicyReader.m"
+ORPHAN_FIXTURE = REPO / "tests/fixtures/known_orphaned_n78_evidence.json"
 
 SELF_SOURCED_GATE = "CCNMValidateSelfSourcedWriteTarget"
 REPLAY_GATE = "CCNMValidateHistoricalReplayTarget"
@@ -186,30 +188,51 @@ class WritePathTargetGateTests(unittest.TestCase):
                 self.assertNotIn('baseline[@"systemBuild"] isEqual:', compatibility)
 
     def test_replayed_nr_bands_are_capability_checked(self) -> None:
-        """A restore writes exactly one array, so that array needs the proof.
+        """Only the capability evidence has to be checked against live support.
 
-        CCNMBuildRestorePayload keeps live values for every RAT except NR. The
-        saved NR bands are therefore the only values the modem has not just
-        reported, and the only ones that can be unsupported.
+        The exact historical fixture proves that active NR can contain values
+        absent from supported NR, while the same transaction's restore read-back
+        was verified equal. Treating active NR as a supported-band subset would
+        reject a baseline that the device itself previously accepted.
         """
+        evidence = json.loads(ORPHAN_FIXTURE.read_text(encoding="utf-8"))
+        active_nr = set(evidence["originalActiveBands"]["kCTRegistrationRadioAccessTechnologyNR"])
+        supported_nr = set(evidence["supportedBandsAtSelection"]["kCTRegistrationRadioAccessTechnologyNR"])
+        self.assertTrue(active_nr - supported_nr)
+        self.assertTrue(evidence["restoreReadBackEqual"])
         for name, source in self.compatibility_sources():
             with self.subTest(source=name):
                 compatibility = self.function_body(source, "CCNMValidateBaselineCompatibility")
-                self.assertIn(
+                self.assertNotIn(
                     "CCNMBaselineNRBandsFitCurrentCapability(savedActive[CCNMNRKey]",
                     compatibility,
                 )
-                # Nil-guarded before subscripting, because a keyed subscript on a
-                # non-dictionary raises inside SpringBoard.
+                self.assertIn(
+                    "CCNMBaselineNRBandsFitCurrentCapability(savedSupported[CCNMNRKey]",
+                    compatibility,
+                )
+                # Both dictionaries are guarded before keyed subscripting, because
+                # this function is also exported by the reader into SpringBoard.
                 self.assertIn(
                     'NSDictionary *savedActive = [baseline[@"activeBands"] isKindOfClass:NSDictionary.class]',
                     compatibility,
                 )
-                # Applies to every baseline, before the evidence branch.
-                self.assertLess(
-                    compatibility.index("CCNMBaselineNRBandsFitCurrentCapability"),
-                    compatibility.index("if (!hasCapabilitySnapshot)"),
+                self.assertIn(
+                    'NSDictionary *savedSupported = [baseline[@"supportedBands"] isKindOfClass:NSDictionary.class]',
+                    compatibility,
                 )
+
+    def test_capability_rejection_is_not_reported_as_subscription_drift(self) -> None:
+        support = (REPO / "networkmanagerprefs/CCNMN78PolicySupport.h").read_text(encoding="utf-8")
+        implementation = (REPO / "networkmanagerprefs/CCNMN78PolicySupport.m").read_text(encoding="utf-8")
+        controller = self.source
+        ui = (REPO / "networkmanagerprefs/CCNMRootListController.m").read_text(encoding="utf-8")
+        for text in (support, implementation, controller, ui):
+            self.assertIn("CCNMN78PolicyErrorBaselineIncompatible", text)
+        restore_start = controller.index("- (NSDictionary *)performRestoreOperation:")
+        compatibility_start = controller.index("CCNMValidateBaselineCompatibility", restore_start)
+        compatibility_branch = controller[compatibility_start : controller.index("NSDictionary *payload", compatibility_start)]
+        self.assertIn("CCNMN78PolicyErrorBaselineIncompatible", compatibility_branch)
 
     def test_baselines_without_capability_evidence_stay_restorable(self) -> None:
         """Older baselines predate the capability snapshot and must stay usable.

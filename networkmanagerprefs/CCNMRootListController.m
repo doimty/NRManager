@@ -430,6 +430,7 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
     if ([errorCode isEqual:CCNMN78PolicyErrorUnsupportedTarget]) return @"POLICY_ERROR_UNSUPPORTED_TARGET";
     if ([errorCode isEqual:CCNMN78PolicyErrorUnsafeSubscription] ||
         [errorCode isEqual:CCNMN78PolicyErrorUUIDDrift]) return @"POLICY_ERROR_SUBSCRIPTION";
+    if ([errorCode isEqual:CCNMN78PolicyErrorBaselineIncompatible]) return @"POLICY_ERROR_BASELINE_INCOMPATIBLE";
     if ([errorCode isEqual:CCNMN78PolicyErrorN78Unavailable]) return @"POLICY_ERROR_N78_UNAVAILABLE";
     if ([errorCode isEqual:CCNMN78PolicyErrorSetterUncertain]) return @"POLICY_ERROR_REBOOT_REQUIRED";
     if ([errorCode isEqual:CCNMN78PolicyErrorRecoveryRequired] ||

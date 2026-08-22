@@ -990,29 +990,34 @@ static BOOL CCNMValidateBaselineCompatibility(NSDictionary *baseline,
         ? baseline[@"activeBands"] : nil;
     NSDictionary *currentSupported = [currentSupportedBands isKindOfClass:NSDictionary.class]
         ? currentSupportedBands : nil;
-    // Checked for every baseline, whatever evidence it carries, because it is the
-    // only value the restore actually writes.
-    if (!CCNMBaselineNRBandsFitCurrentCapability(savedActive[CCNMNRKey],
-            currentSupported[CCNMNRKey],
-            @"The retained baseline NR band is unsupported by the current system.", failure)) {
+    if (!savedActive || !currentSupported ||
+        !CCNMValidateBandDictionary(savedActive, failure) ||
+        !CCNMValidateBandDictionary(currentSupported, failure)) {
+        if (failure && !*failure) {
+            *failure = @"The retained baseline or current capability evidence is unavailable.";
+        }
         return NO;
     }
+    // Do not require saved active NR to be a subset of supported NR. The modem's
+    // BandInfo contract permits an active list to contain values absent from its
+    // supported list, and the reviewed historical baseline includes exactly that
+    // shape with a verified restore read-back. The saved capability snapshot is
+    // the evidence that can be compared across the restore boundary.
     if (!hasCapabilitySnapshot) {
         // Written before capability evidence existed. Refusing it is not an
         // option: a baseline is the only way back from an enable, so refusing one
         // for lacking a field that did not exist when it was written would strand
-        // the device it was written to protect. The NR check above is the
-        // evidence such a baseline can still offer.
+        // the device it was written to protect.
         return YES;
     }
     // Same hardware. System version and build stay recorded evidence rather than
-    // a gate: an iOS update does not invalidate a rollback whose bands the modem
-    // still declares, and refusing on build alone would strand every device that
-    // updates while the policy is enabled.
+    // a gate: an iOS update does not invalidate a rollback whose capability shape
+    // and owned-band evidence still fit, and refusing on build alone would strand
+    // every device that updates while the policy is enabled.
     BOOL sameDevice = [baseline[@"deviceModel"] isEqual:identity[@"deviceModel"]];
     NSDictionary *savedSupported = [baseline[@"supportedBands"] isKindOfClass:NSDictionary.class]
         ? baseline[@"supportedBands"] : nil;
-    BOOL sameCapabilityShape = savedSupported && currentSupported &&
+    BOOL sameCapabilityShape = savedSupported &&
         [[NSSet setWithArray:savedSupported.allKeys] isEqualToSet:
             [NSSet setWithArray:currentSupported.allKeys]];
     NSArray *ownedKeys = baseline[@"modifiedBandKeys"];
@@ -2759,9 +2764,9 @@ static BOOL CCNMIsVerifiedRestoreCleanupCheckpoint(NSDictionary *state) {
         if (!CCNMValidateBaselineCompatibility(baseline, fresh[@"supportedBands"], details, &failure)) {
             CCNMMarkRecovery(state[@"requestedMode"] ?: CCNMRequestedModeN78Preferred,
                 CCNMAppliedPolicyRecoveryRequired, CCNMRecoveryStateRebootRequired,
-                generation, subscriptionUUID, CCNMN78PolicyErrorUUIDDrift,
+                generation, subscriptionUUID, CCNMN78PolicyErrorBaselineIncompatible,
                 failure, baseline, YES);
-            return CCNMErrorSummary(operation, CCNMN78PolicyErrorUUIDDrift, failure, details);
+            return CCNMErrorSummary(operation, CCNMN78PolicyErrorBaselineIncompatible, failure, details);
         }
         if (enforceKnownOrphanGuard &&
             !CCNMKnownOrphanBandInfoMatches(fresh, CCNMKnownOrphanHistoricalActiveBands()) &&
