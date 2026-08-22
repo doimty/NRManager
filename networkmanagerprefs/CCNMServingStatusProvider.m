@@ -18,6 +18,7 @@
 
 NSString *const CCNMServingSummaryStateKey = @"servingState";
 NSString *const CCNMServingSummaryDataLineKey = @"dataLine";
+NSString *const CCNMServingSummarySlotIDKey = @"slotID";
 NSString *const CCNMServingSummaryDeviceModelKey = @"deviceModel";
 NSString *const CCNMServingSummarySystemBuildKey = @"systemBuild";
 NSString *const CCNMServingSummarySystemVersionKey = @"systemVersion";
@@ -318,9 +319,9 @@ static NSString *CCNMServingPreferredDataLineUUID(id<CCNMServingCoreTelephonyCli
 // Picks the subscription whose serving cell is worth showing, and reports which
 // one that was.
 //
-// The write path requires exactly one present SIM in slot 1, because it has to
-// bind a modem write to an unambiguous subscription. Reading has no such
-// constraint, and refusing to read on a dual-SIM phone was never a safety
+// The write path requires exactly one present SIM in a positive slot, because
+// it has to bind a modem write to an unambiguous subscription. Reading has no
+// such constraint, and refusing to read on a dual-SIM phone was never a safety
 // property, only a leftover from sharing the write path's shape.
 //
 // Order of preference: the data line CoreTelephony itself reports, then the
@@ -625,6 +626,7 @@ NSDictionary<NSString *, id> *CCNMServingStatusEmptySummary(void) {
         // Unknown until a subscription has actually been chosen. The read path
         // supports any slot, so this must not be pre-filled with slot 1.
         CCNMServingSummaryDataLineKey: @"",
+        CCNMServingSummarySlotIDKey: @0,
         CCNMServingSummaryDeviceModelKey: @"",
         CCNMServingSummarySystemBuildKey: @"",
         CCNMServingSummarySystemVersionKey: @"",
@@ -694,6 +696,7 @@ static NSDictionary *CCNMServingSummaryFromReport(NSDictionary *report,
     summary[CCNMServingSummaryStateKey] = success ? state : CCNMServingStateUnknown;
     summary[CCNMServingSummaryDataLineKey] = slotID
         ? [NSString stringWithFormat:@"slot%lld", slotID.longLongValue] : @"";
+    summary[CCNMServingSummarySlotIDKey] = slotID ?: @0;
     [summary addEntriesFromDictionary:CCNMServingDeviceIdentity()];
     summary[CCNMServingSummarySampledAtMillisecondsKey] = @(sampledAtMilliseconds);
     summary[CCNMServingSummaryStaleKey] = @(!success);

@@ -7,6 +7,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 FOUNDATION_EXPORT NSString *const CCNMServingSummaryStateKey;
 FOUNDATION_EXPORT NSString *const CCNMServingSummaryDataLineKey;
+FOUNDATION_EXPORT NSString *const CCNMServingSummarySlotIDKey;
 // What device the sample was taken on. Reported, never used as a gate: the read
 // path runs on any model, and this is what lets the UI say which device it is
 // looking at instead of only which device the write path accepts.

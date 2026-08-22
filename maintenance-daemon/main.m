@@ -25,12 +25,14 @@ static NSDictionary *CCNMMaintenanceIdentityFromServingSummary(NSDictionary *sum
     NSString *systemVersion = CCNMSysctlString("kern.osproductversion") ?: @"";
     NSString *subscriptionUUID = [summary[CCNMServingSummarySubscriptionUUIDKey] isKindOfClass:NSString.class]
         ? summary[CCNMServingSummarySubscriptionUUIDKey] : @"";
+    NSNumber *slotID = [summary[CCNMServingSummarySlotIDKey] isKindOfClass:NSNumber.class]
+        ? summary[CCNMServingSummarySlotIDKey] : @0;
     return @{
         @"deviceModel": deviceModel,
         @"systemVersion": systemVersion,
         @"systemBuild": systemBuild,
         @"subscriptionUUID": subscriptionUUID,
-        @"slotID": @1,
+        @"slotID": slotID,
         CCNMARecordCapabilityReadSuccessKey:
             summary[CCNMServingSummaryCapabilityReadSuccessKey] ?: @NO,
         CCNMARecordCapabilityN78SupportedKey:
@@ -82,7 +84,9 @@ static BOOL CCNMMaintenanceCapabilityCompatible(NSDictionary *policy,
     }
     NSString *baselineUUID = CCNMCanonicalUUIDString(baseline[@"subscriptionUUID"]);
     NSString *currentUUID = CCNMCanonicalUUIDString(identity[@"subscriptionUUID"]);
-    if (!baselineUUID || !currentUUID || ![baselineUUID isEqualToString:currentUUID]) {
+    if (!baselineUUID || !currentUUID || ![baselineUUID isEqualToString:currentUUID] ||
+        ![baseline[@"slotID"] isEqual:identity[@"slotID"]] ||
+        [identity[@"slotID"] longLongValue] <= 0) {
         return NO;
     }
     NSArray *savedKeys = [[baseline[@"supportedBands"] allKeys]

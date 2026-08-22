@@ -480,6 +480,10 @@ static BOOL CCNMNSNumberIsInteger(id value) {
     return type && type[0] && type[1] == '\0' && strchr("cCsSiIlLqQ", type[0]) != NULL;
 }
 
+static BOOL CCNMValidSlotID(id value) {
+    return CCNMNSNumberIsInteger(value) && [value longLongValue] > 0;
+}
+
 static NSSet<NSString *> *CCNMRequiredRATKeys(void) {
     static NSSet<NSString *> *keys;
     static dispatch_once_t onceToken;
@@ -612,6 +616,7 @@ static BOOL CCNMKnownOrphanBaselineMatchesEvidence(NSDictionary *baseline) {
     return [baseline isKindOfClass:NSDictionary.class] &&
         [baseline[@"recoverySource"] isEqual:CCNMKnownOrphanRecoverySource] &&
         [baseline[@"evidenceSHA256"] isEqual:CCNMKnownOrphanEvidenceSHA256] &&
+        [baseline[@"slotID"] isEqual:@1] &&
         [CCNMCanonicalUUIDString(baseline[@"subscriptionUUID"])
             isEqualToString:CCNMKnownOrphanSubscriptionUUID] &&
         CCNMDictionariesEqual(baseline[@"activeBands"],
@@ -623,6 +628,7 @@ static BOOL CCNMStateHasVerifiedKnownOrphanRestore(NSDictionary *state) {
         ![state[@"requestedMode"] isEqual:CCNMRequestedModeSystemDefault] ||
         ![state[@"appliedPolicy"] isEqual:CCNMAppliedPolicyVerifiedSystemDefault] ||
         ![state[@"recoveryState"] isEqual:CCNMRecoveryStateClean] ||
+        ![state[@"slotID"] isEqual:@1] ||
         ![CCNMCanonicalUUIDString(state[@"subscriptionUUID"])
             isEqualToString:CCNMKnownOrphanSubscriptionUUID] ||
         [state[@"uncertain"] boolValue] ||
@@ -825,8 +831,10 @@ static BOOL CCNMValidateStateRecord(NSDictionary *state, NSString **failure) {
         [state[@"errorCode"] isKindOfClass:[NSString class]] &&
         [state[@"error"] isKindOfClass:[NSString class]];
     NSString *uuid = state[@"subscriptionUUID"];
+    id slotID = state[@"slotID"];
     valid = valid && [uuid isKindOfClass:[NSString class]] &&
-        ([(NSString *)uuid length] == 0 || CCNMCanonicalUUIDString(uuid) != nil);
+        ([(NSString *)uuid length] == 0 || CCNMCanonicalUUIDString(uuid) != nil) &&
+        (!slotID || CCNMValidSlotID(slotID));
     if (!valid && failure) {
         *failure = @"The durable n78 policy state record is malformed or foreign.";
     }
@@ -879,6 +887,7 @@ static NSDictionary *CCNMBuildBaselineRecord(NSDictionary *active,
                                               NSArray<NSString *> *modifiedBandKeys,
                                               NSDictionary *identity,
                                               NSString *subscriptionUUID,
+                                              NSNumber *slotID,
                                               NSUInteger generation,
                                               NSString **failure) {
     NSString *bootSession = CCNMBootSessionIdentity();
@@ -891,7 +900,8 @@ static NSDictionary *CCNMBuildBaselineRecord(NSDictionary *active,
         ? identity[@"systemBuild"] : nil;
     BOOL ownedFieldsValid = [modifiedBandKeys isKindOfClass:NSArray.class] &&
         modifiedBandKeys.count == 1 && [modifiedBandKeys.firstObject isEqual:CCNMNRKey];
-    if (!bootSession || !uuid || !deviceModel.length || !systemVersion.length || !systemBuild.length ||
+    if (!bootSession || !uuid || !CCNMValidSlotID(slotID) ||
+        !deviceModel.length || !systemVersion.length || !systemBuild.length ||
         !CCNMValidateBandDictionary(active, failure) || !CCNMValidateBandDictionary(supported, failure) ||
         !ownedFieldsValid) {
         if (failure && !*failure) {
@@ -906,7 +916,7 @@ static NSDictionary *CCNMBuildBaselineRecord(NSDictionary *active,
         @"createdAt": @(CCNMUnixMilliseconds()),
         @"bootSessionUUID": bootSession,
         @"operationGeneration": @(generation),
-        @"slotID": @1,
+        @"slotID": slotID,
         @"subscriptionUUID": uuid,
         @"deviceModel": deviceModel,
         @"systemVersion": systemVersion,
@@ -941,7 +951,7 @@ static BOOL CCNMValidateBaselineRecord(NSDictionary *baseline, NSString **failur
         [baseline[@"createdAt"] isKindOfClass:[NSNumber class]] && [baseline[@"createdAt"] longLongValue] > 0 &&
         CCNMCanonicalUUIDString(baseline[@"bootSessionUUID"]) != nil &&
         CCNMNSNumberIsInteger(baseline[@"operationGeneration"]) && [baseline[@"operationGeneration"] unsignedIntegerValue] > 0 &&
-        [baseline[@"slotID"] isEqual:@1] &&
+        CCNMValidSlotID(baseline[@"slotID"]) &&
         CCNMCanonicalUUIDString(baseline[@"subscriptionUUID"]) != nil && provenanceValid &&
         capabilitySnapshotValid && CCNMValidateBandDictionary(bands, failure);
     if (!valid && failure && !*failure) {
@@ -1046,11 +1056,13 @@ static NSDictionary *CCNMBuildIntentRecord(NSString *operation,
     NSDictionary *active = preWrite[@"activeBands"];
     NSDictionary *supported = preWrite[@"supportedBands"];
     NSString *uuid = CCNMCanonicalUUIDString(baseline[@"subscriptionUUID"]);
+    NSNumber *slotID = [baseline[@"slotID"] isKindOfClass:NSNumber.class]
+        ? baseline[@"slotID"] : nil;
     BOOL enable = [operation isEqual:@"enable"];
     BOOL payloadValid = enable
         ? (CCNMBuildN78Payload(active, supported, failure) != nil && CCNMValidateN78OnlyPayload(active, requested, failure))
         : CCNMValidateRestorePayload(active, baseline[@"activeBands"], requested, failure);
-    if (!uuid || !payloadValid) {
+    if (!uuid || !CCNMValidSlotID(slotID) || !payloadValid) {
         return nil;
     }
     NSString *bootSession = CCNMBootSessionIdentity();
@@ -1068,7 +1080,7 @@ static NSDictionary *CCNMBuildIntentRecord(NSString *operation,
         @"createdAt": @(CCNMUnixMilliseconds()),
         @"bootSessionUUID": bootSession,
         @"operationGeneration": @(generation),
-        @"slotID": @1,
+        @"slotID": slotID,
         @"subscriptionUUID": uuid,
         @"baselineCreatedAt": baseline[@"createdAt"],
         @"baselineGeneration": baseline[@"operationGeneration"],
@@ -1102,7 +1114,7 @@ static BOOL CCNMValidateIntentRecord(NSDictionary *intent,
         [intent[@"createdAt"] isKindOfClass:[NSNumber class]] && [intent[@"createdAt"] longLongValue] > 0 &&
         CCNMCanonicalUUIDString(intent[@"bootSessionUUID"]) != nil &&
         CCNMNSNumberIsInteger(intent[@"operationGeneration"]) && [intent[@"operationGeneration"] unsignedIntegerValue] > 0 &&
-        [intent[@"slotID"] isEqual:@1] &&
+        [intent[@"slotID"] isEqual:baseline[@"slotID"]] &&
         [CCNMCanonicalUUIDString(intent[@"subscriptionUUID"]) isEqualToString:CCNMCanonicalUUIDString(baseline[@"subscriptionUUID"])] &&
         [intent[@"baselineCreatedAt"] isEqual:baseline[@"createdAt"]] &&
         [intent[@"baselineGeneration"] isEqual:baseline[@"operationGeneration"]] &&
@@ -1128,7 +1140,9 @@ static NSDictionary *CCNMBuildInFlightRecord(NSString *operation,
                                               NSString **failure) {
     NSString *bootSession = CCNMBootSessionIdentity();
     NSString *uuid = CCNMCanonicalUUIDString(baseline[@"subscriptionUUID"]);
-    if (!bootSession || !uuid) {
+    NSNumber *slotID = [baseline[@"slotID"] isKindOfClass:NSNumber.class]
+        ? baseline[@"slotID"] : nil;
+    if (!bootSession || !uuid || !CCNMValidSlotID(slotID)) {
         if (failure) {
             *failure = @"Current boot and subscription identities are required before the setter call.";
         }
@@ -1144,7 +1158,7 @@ static NSDictionary *CCNMBuildInFlightRecord(NSString *operation,
         @"processID": @(getpid()),
         @"bootSessionUUID": bootSession,
         @"operationGeneration": @(generation),
-        @"slotID": @1,
+        @"slotID": slotID,
         @"subscriptionUUID": uuid,
         @"baselineCreatedAt": baseline[@"createdAt"],
         @"intentCreatedAt": intent[@"createdAt"]
@@ -1166,7 +1180,7 @@ static BOOL CCNMValidateInFlightRecord(NSDictionary *record,
         [record[@"processID"] isKindOfClass:[NSNumber class]] && [record[@"processID"] intValue] > 0 &&
         CCNMCanonicalUUIDString(record[@"bootSessionUUID"]) != nil &&
         CCNMNSNumberIsInteger(record[@"operationGeneration"]) && [record[@"operationGeneration"] unsignedIntegerValue] > 0 &&
-        [record[@"slotID"] isEqual:@1] &&
+        [record[@"slotID"] isEqual:baseline[@"slotID"]] &&
         [CCNMCanonicalUUIDString(record[@"subscriptionUUID"]) isEqualToString:CCNMCanonicalUUIDString(baseline[@"subscriptionUUID"])] &&
         [record[@"baselineCreatedAt"] isEqual:baseline[@"createdAt"]];
     if (valid && requireIntentLink) {
@@ -1380,6 +1394,9 @@ static NSDictionary *CCNMMarkRecovery(CCNMRequestedMode requested,
     NSMutableDictionary *extra = [NSMutableDictionary dictionary];
     if (baseline) {
         extra[@"baselineCreatedAt"] = baseline[@"createdAt"];
+        if (CCNMValidSlotID(baseline[@"slotID"])) {
+            extra[@"slotID"] = baseline[@"slotID"];
+        }
     }
     NSString *buildFailure = nil;
     NSDictionary *state = CCNMBuildStateRecord(requested, applied, recovery, generation,
@@ -1590,6 +1607,7 @@ static id<CCNMCoreTelephonyClient> CCNMCreateClient(NSString **failure) {
 
 static id<CCNMSubscriptionContext> CCNMSafeTargetContext(id<CCNMCoreTelephonyClient> client,
                                                           NSString *requiredUUID,
+                                                          NSNumber *requiredSlotID,
                                                           NSMutableDictionary *details,
                                                           NSString **failure) {
     NSError *queryError = nil;
@@ -1639,7 +1657,7 @@ static id<CCNMSubscriptionContext> CCNMSafeTargetContext(id<CCNMCoreTelephonyCli
         if (present) {
             presentCount++;
         }
-        if (slot == 1 && present && good && uuid.length > 0) {
+        if (slot > 0 && present && good && uuid.length > 0) {
             target = context;
             targetCount++;
         }
@@ -1649,20 +1667,25 @@ static id<CCNMSubscriptionContext> CCNMSafeTargetContext(id<CCNMCoreTelephonyCli
     }
     if (presentCount != 1 || targetCount != 1 || !target) {
         if (failure) {
-            *failure = @"Exactly one present/good SIM with a stable UUID in slot 1 is required.";
+            *failure = @"Exactly one present/good SIM with a stable UUID in a positive slot is required.";
         }
         return nil;
     }
     NSString *uuid = [[target uuid] UUIDString];
+    NSNumber *slotID = @([target slotID]);
     NSString *required = requiredUUID.length ? CCNMCanonicalUUIDString(requiredUUID) : nil;
-    if (!uuid || (requiredUUID.length && (!required || ![uuid isEqualToString:required]))) {
+    BOOL requiredSlotValid = !requiredSlotID || CCNMValidSlotID(requiredSlotID);
+    if (!uuid || !requiredSlotValid ||
+        (requiredUUID.length && (!required || ![uuid isEqualToString:required])) ||
+        (requiredSlotID && ![slotID isEqual:requiredSlotID])) {
         if (failure) {
-            *failure = @"The slot-1 subscription UUID changed.";
+            *failure = @"The target subscription UUID or slot changed.";
         }
         return nil;
     }
     if (details) {
         details[@"targetSubscriptionUUID"] = uuid;
+        details[@"targetSlotID"] = slotID;
     }
     return target;
 }
@@ -1724,7 +1747,7 @@ static BOOL CCNMValidateKnownOrphanedN78HistoricalPredicate(
         return NO;
     }
     id<CCNMSubscriptionContext> context = CCNMSafeTargetContext(
-        client, CCNMKnownOrphanSubscriptionUUID, details, failure);
+        client, CCNMKnownOrphanSubscriptionUUID, @1, details, failure);
     if (!context) {
         return NO;
     }
@@ -2033,6 +2056,7 @@ static CCNMSetterOutcome CCNMCallSetter(id<CCNMCoreTelephonyClient> client,
 
 static NSDictionary *CCNMWaitForReadBack(id<CCNMCoreTelephonyClient> client,
                                           NSString *subscriptionUUID,
+                                          NSNumber *slotID,
                                           NSDictionary *expected) {
     NSMutableDictionary *result = [@{
         @"matched": @NO,
@@ -2054,7 +2078,8 @@ static NSDictionary *CCNMWaitForReadBack(id<CCNMCoreTelephonyClient> client,
         }
         result[@"attempts"] = @(attempt);
         NSString *identityFailure = nil;
-        id<CCNMSubscriptionContext> context = CCNMSafeTargetContext(client, subscriptionUUID, nil, &identityFailure);
+        id<CCNMSubscriptionContext> context = CCNMSafeTargetContext(
+            client, subscriptionUUID, slotID, nil, &identityFailure);
         if (!context) {
             result[@"identityUncertain"] = @YES;
             result[@"error"] = identityFailure ?: @"The target subscription could not be revalidated.";
@@ -2113,6 +2138,7 @@ static BOOL CCNMFinishEnabledState(NSUInteger generation,
     NSNumber *verifiedAt = @(CCNMUnixMilliseconds());
     NSDictionary *proof = @{
         @"baselineCreatedAt": baseline[@"createdAt"],
+        @"slotID": baseline[@"slotID"],
         @"readBackVerified": @YES,
         @"verifiedAt": verifiedAt,
         @"verifiedActiveBands": verifiedBands,
@@ -2156,6 +2182,7 @@ static BOOL CCNMFinishSystemDefaultState(NSUInteger generation,
     NSNumber *verifiedAt = @(CCNMUnixMilliseconds());
     NSMutableDictionary *proof = [@{
         @"baselineCreatedAt": baseline[@"createdAt"],
+        @"slotID": baseline[@"slotID"],
         @"readBackVerified": @YES,
         @"verifiedAt": verifiedAt,
         @"verifiedActiveBands": verifiedBands
@@ -2183,7 +2210,8 @@ static BOOL CCNMFinishSystemDefaultState(NSUInteger generation,
     NSMutableDictionary *finalProof = [@{
         @"verifiedAt": verifiedAt,
         @"verifiedActiveBands": verifiedBands,
-        @"restoredBaselineCreatedAt": baseline[@"createdAt"]
+        @"restoredBaselineCreatedAt": baseline[@"createdAt"],
+        @"slotID": baseline[@"slotID"]
     } mutableCopy];
     [finalProof addEntriesFromDictionary:CCNMProvenanceForBaseline(baseline)];
     NSDictionary *state = CCNMBuildStateRecord(CCNMRequestedModeSystemDefault,
@@ -2365,7 +2393,8 @@ static BOOL CCNMIsVerifiedRestoreCleanupCheckpoint(NSDictionary *state) {
             return CCNMErrorSummary(@"enable", CCNMN78PolicyErrorUnsupportedTarget, failure, details);
         }
         id<CCNMCoreTelephonyClient> client = CCNMCreateClient(&failure);
-        id<CCNMSubscriptionContext> context = client ? CCNMSafeTargetContext(client, nil, details, &failure) : nil;
+        id<CCNMSubscriptionContext> context = client
+            ? CCNMSafeTargetContext(client, nil, nil, details, &failure) : nil;
         if (!context) {
             return CCNMErrorSummary(@"enable", CCNMN78PolicyErrorUnsafeSubscription, failure, details);
         }
@@ -2385,7 +2414,7 @@ static BOOL CCNMIsVerifiedRestoreCleanupCheckpoint(NSDictionary *state) {
 
         baseline = CCNMBuildBaselineRecord(
             initial[@"activeBands"], initial[@"supportedBands"], @[ CCNMNRKey ], details,
-            subscriptionUUID, generation, &failure);
+            subscriptionUUID, details[@"targetSlotID"], generation, &failure);
         if (!baseline || !CCNMCreateDurableRecord(baseline, CCNMN78PolicyBaselinePath(), &failure)) {
             // Only create a recovery state when durable baseline evidence actually
             // remains. A serialization/write failure that left no file made no
@@ -2399,7 +2428,7 @@ static BOOL CCNMIsVerifiedRestoreCleanupCheckpoint(NSDictionary *state) {
         }
         details[@"baselineCreated"] = @YES;
 
-        context = CCNMSafeTargetContext(client, subscriptionUUID, details, &failure);
+        context = CCNMSafeTargetContext(client, subscriptionUUID, baseline[@"slotID"], details, &failure);
         NSDictionary *fresh = context ? CCNMReadFreshBandInfo(client, context, &failure) : nil;
         if (!fresh || !CCNMDictionariesEqual(initial[@"activeBands"], fresh[@"activeBands"]) ||
             !CCNMDictionariesEqual(initial[@"supportedBands"], fresh[@"supportedBands"])) {
@@ -2431,7 +2460,7 @@ static BOOL CCNMIsVerifiedRestoreCleanupCheckpoint(NSDictionary *state) {
         NSDictionary *applying = CCNMBuildStateRecord(CCNMRequestedModeSystemDefault,
             CCNMAppliedPolicyApplying, CCNMRecoveryStateEnablePending, generation,
             subscriptionUUID, NO, CCNMN78PolicyErrorNone, @"",
-            @{ @"baselineCreatedAt": baseline[@"createdAt"] }, &failure);
+            @{ @"baselineCreatedAt": baseline[@"createdAt"], @"slotID": baseline[@"slotID"] }, &failure);
         if (!applying || !CCNMPersistState(applying, &failure)) {
             CCNMMarkRecovery(CCNMRequestedModeSystemDefault, CCNMAppliedPolicyRecoveryRequired,
                 CCNMRecoveryStateRecoveryFailed, generation, subscriptionUUID,
@@ -2446,7 +2475,7 @@ static BOOL CCNMIsVerifiedRestoreCleanupCheckpoint(NSDictionary *state) {
             return CCNMErrorSummary(@"enable", CCNMN78PolicyErrorPersistence, failure, details);
         }
 
-        context = CCNMSafeTargetContext(client, subscriptionUUID, details, &failure);
+        context = CCNMSafeTargetContext(client, subscriptionUUID, baseline[@"slotID"], details, &failure);
         NSDictionary *lastGuard = context ? CCNMReadFreshBandInfo(client, context, &failure) : nil;
         BOOL recordsExact = CCNMRecordsRemainExact(applying, baseline, intent, inFlight, &failure);
         BOOL bandsExact = lastGuard && CCNMDictionariesEqual(fresh[@"activeBands"], lastGuard[@"activeBands"]) &&
@@ -2478,7 +2507,7 @@ static BOOL CCNMIsVerifiedRestoreCleanupCheckpoint(NSDictionary *state) {
             return CCNMErrorSummary(@"enable", CCNMN78PolicyErrorSetterFailed, failure, details);
         }
 
-        NSDictionary *readBack = CCNMWaitForReadBack(client, subscriptionUUID, payload);
+        NSDictionary *readBack = CCNMWaitForReadBack(client, subscriptionUUID, baseline[@"slotID"], payload);
         details[@"readBack"] = readBack;
         if (![readBack[@"matched"] boolValue]) {
             BOOL uncertain = ![readBack[@"sawValid"] boolValue] ||
@@ -2553,7 +2582,7 @@ static BOOL CCNMIsVerifiedRestoreCleanupCheckpoint(NSDictionary *state) {
         }
         NSDictionary *builtBaseline = CCNMBuildBaselineRecord(
             CCNMKnownOrphanHistoricalOriginalBands(), CCNMKnownOrphanHistoricalSupportedBands(),
-            @[ CCNMNRKey ], details, CCNMKnownOrphanSubscriptionUUID, generation, &failure);
+            @[ CCNMNRKey ], details, CCNMKnownOrphanSubscriptionUUID, @1, generation, &failure);
         NSMutableDictionary *baselineDraft = [builtBaseline mutableCopy];
         baselineDraft[@"recoverySource"] = CCNMKnownOrphanRecoverySource;
         baselineDraft[@"evidenceSHA256"] = CCNMKnownOrphanEvidenceSHA256;
@@ -2570,6 +2599,7 @@ static BOOL CCNMIsVerifiedRestoreCleanupCheckpoint(NSDictionary *state) {
             @"baselineCreatedAt": baseline[@"createdAt"],
             @"readBackVerified": @YES,
             @"verifiedAt": verifiedAt,
+            @"slotID": @1,
             @"verifiedActiveBands": CCNMKnownOrphanHistoricalActiveBands(),
             @"targetNRBands": @[ @78 ],
             @"nonNRUnchanged": @YES,
@@ -2671,7 +2701,7 @@ static BOOL CCNMIsVerifiedRestoreCleanupCheckpoint(NSDictionary *state) {
                 }
                 id<CCNMCoreTelephonyClient> client = CCNMCreateClient(&failure);
                 id context = client
-                    ? CCNMSafeTargetContext(client, state[@"subscriptionUUID"], details, &failure) : nil;
+                    ? CCNMSafeTargetContext(client, state[@"subscriptionUUID"], state[@"slotID"], details, &failure) : nil;
                 NSDictionary *fresh = context ? CCNMReadFreshBandInfo(client, context, &failure) : nil;
                 if (!fresh || !CCNMDictionariesEqual(fresh[@"activeBands"], state[@"verifiedActiveBands"])) {
                     failure = failure ?: @"Live BandInfo no longer matches the verified restore cleanup checkpoint.";
@@ -2680,7 +2710,8 @@ static BOOL CCNMIsVerifiedRestoreCleanupCheckpoint(NSDictionary *state) {
                 NSMutableDictionary *cleanupProof = [@{
                     @"verifiedAt": state[@"verifiedAt"],
                     @"verifiedActiveBands": state[@"verifiedActiveBands"],
-                    @"restoredBaselineCreatedAt": state[@"baselineCreatedAt"]
+                    @"restoredBaselineCreatedAt": state[@"baselineCreatedAt"],
+                    @"slotID": state[@"slotID"] ?: @1
                 } mutableCopy];
                 if ([state[@"recoverySource"] isEqual:CCNMKnownOrphanRecoverySource] &&
                     [state[@"evidenceSHA256"] isEqual:CCNMKnownOrphanEvidenceSHA256]) {
@@ -2745,7 +2776,7 @@ static BOOL CCNMIsVerifiedRestoreCleanupCheckpoint(NSDictionary *state) {
         }
         id<CCNMCoreTelephonyClient> client = CCNMCreateClient(&failure);
         id<CCNMSubscriptionContext> context = client
-            ? CCNMSafeTargetContext(client, subscriptionUUID, details, &failure) : nil;
+            ? CCNMSafeTargetContext(client, subscriptionUUID, baseline[@"slotID"], details, &failure) : nil;
         if (!context) {
             CCNMMarkRecovery(state[@"requestedMode"] ?: CCNMRequestedModeN78Preferred,
                 CCNMAppliedPolicyRecoveryRequired, CCNMRecoveryStateRebootRequired,
@@ -2795,7 +2826,7 @@ static BOOL CCNMIsVerifiedRestoreCleanupCheckpoint(NSDictionary *state) {
                     failure ?: @"Durable policy evidence changed during no-write recovery and was preserved.", details);
             }
             if (enforceKnownOrphanGuard) {
-                context = CCNMSafeTargetContext(client, subscriptionUUID, details, &failure);
+                context = CCNMSafeTargetContext(client, subscriptionUUID, baseline[@"slotID"], details, &failure);
                 NSDictionary *lastNoWriteGuard = context
                     ? CCNMReadFreshBandInfo(client, context, &failure) : nil;
                 if (!CCNMKnownOrphanBandInfoMatches(
@@ -2829,7 +2860,7 @@ static BOOL CCNMIsVerifiedRestoreCleanupCheckpoint(NSDictionary *state) {
         NSDictionary *pending = CCNMBuildStateRecord(state[@"requestedMode"] ?: CCNMRequestedModeN78Preferred,
             CCNMAppliedPolicyApplying, CCNMRecoveryStateRestorePending,
             generation, subscriptionUUID, NO, CCNMN78PolicyErrorNone, @"",
-            @{ @"baselineCreatedAt": baseline[@"createdAt"] }, &failure);
+            @{ @"baselineCreatedAt": baseline[@"createdAt"], @"slotID": baseline[@"slotID"] }, &failure);
         if (!pending || !CCNMPersistState(pending, &failure)) {
             CCNMMarkRecovery(state[@"requestedMode"] ?: CCNMRequestedModeN78Preferred,
                 CCNMAppliedPolicyRecoveryRequired, CCNMRecoveryStateRecoveryFailed,
@@ -2860,7 +2891,7 @@ static BOOL CCNMIsVerifiedRestoreCleanupCheckpoint(NSDictionary *state) {
             bandsExact = CCNMValidateKnownOrphanedN78HistoricalPredicate(
                 client, details, &context, &lastGuard, NULL, &failure);
         } else {
-            context = CCNMSafeTargetContext(client, subscriptionUUID, details, &failure);
+            context = CCNMSafeTargetContext(client, subscriptionUUID, baseline[@"slotID"], details, &failure);
             lastGuard = context ? CCNMReadFreshBandInfo(client, context, &failure) : nil;
             bandsExact = lastGuard &&
                 CCNMDictionariesEqual(fresh[@"activeBands"], lastGuard[@"activeBands"]) &&
@@ -2892,7 +2923,7 @@ static BOOL CCNMIsVerifiedRestoreCleanupCheckpoint(NSDictionary *state) {
             return CCNMErrorSummary(operation, CCNMN78PolicyErrorSetterFailed, failure, details);
         }
 
-        NSDictionary *readBack = CCNMWaitForReadBack(client, subscriptionUUID, payload);
+        NSDictionary *readBack = CCNMWaitForReadBack(client, subscriptionUUID, baseline[@"slotID"], payload);
         details[@"readBack"] = readBack;
         if (![readBack[@"matched"] boolValue]) {
             BOOL uncertain = ![readBack[@"sawValid"] boolValue] ||

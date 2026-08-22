@@ -1,6 +1,9 @@
 #import "CCNMAutomaticMaintenanceRecord.h"
 #import "CCNMN78PolicyReader.h"
 
+#import <CoreFoundation/CoreFoundation.h>
+#import <string.h>
+
 #if defined(CCNM_MAINTENANCE_DAEMON)
 #import "../maintenance-daemon/CCNMDaemonRoot.h"
 // Same reason as CCNMN78PolicyReader.m: no jbroot() in a launchd daemon, because
@@ -57,6 +60,17 @@ NSString *const CCNMARecordSystemVersionKey = @"systemVersion";
 NSString *const CCNMARecordSystemBuildKey = @"systemBuild";
 NSString *const CCNMARecordSubscriptionUUIDKey = @"subscriptionUUID";
 NSString *const CCNMARecordSlotIDKey = @"slotID";
+
+static BOOL CCNMValidAutomaticSlotID(id value) {
+    if (![value isKindOfClass:NSNumber.class] ||
+        CFGetTypeID((__bridge CFTypeRef)value) == CFBooleanGetTypeID()) {
+        return NO;
+    }
+    const char *type = [(NSNumber *)value objCType];
+    return type && type[0] && type[1] == '\0' && strchr("cCsSiIlLqQ", type[0]) != NULL &&
+        [value longLongValue] > 0;
+}
+
 NSString *const CCNMARecordCapabilityReadSuccessKey = @"capabilityReadSuccess";
 NSString *const CCNMARecordCapabilityN78SupportedKey = @"capabilityN78Supported";
 NSString *const CCNMARecordCapabilityN78ActiveKey = @"capabilityN78Active";
@@ -221,6 +235,13 @@ static BOOL CCNMAIdentitySnapshotMatchesRecord(NSDictionary *record,
             return NO;
         }
     }
+    if (record[CCNMARecordSlotIDKey] || identity[CCNMARecordSlotIDKey]) {
+        if (!CCNMValidAutomaticSlotID(record[CCNMARecordSlotIDKey]) ||
+            !CCNMValidAutomaticSlotID(identity[CCNMARecordSlotIDKey]) ||
+            ![record[CCNMARecordSlotIDKey] isEqual:identity[CCNMARecordSlotIDKey]]) {
+            return NO;
+        }
+    }
     for (NSString *key in @[
         CCNMARecordCapabilityReadSuccessKey,
         CCNMARecordCapabilityN78SupportedKey,
@@ -267,7 +288,10 @@ NSDictionary *CCNMABuildRecord(NSDictionary *policySummary,
     NSString *subscriptionUUID = [identity[@"subscriptionUUID"] isKindOfClass:NSString.class]
         ? identity[@"subscriptionUUID"] : nil;
     NSNumber *slotID = [identity[@"slotID"] isKindOfClass:NSNumber.class]
-        ? identity[@"slotID"] : @1;
+        ? identity[@"slotID"] : nil;
+    if (!CCNMValidAutomaticSlotID(slotID)) {
+        return nil;
+    }
     if (!deviceModel.length || !systemVersion.length || !systemBuild.length) {
         return nil;
     }
@@ -524,6 +548,9 @@ BOOL CCNMAValidateRecord(NSDictionary *record) {
     }
     if (![record[CCNMARecordSystemBuildKey] isKindOfClass:NSString.class] ||
         [record[CCNMARecordSystemBuildKey] length] == 0) {
+        return NO;
+    }
+    if (record[CCNMARecordSlotIDKey] && !CCNMValidAutomaticSlotID(record[CCNMARecordSlotIDKey])) {
         return NO;
     }
     if (record[CCNMARecordCapabilityReadSuccessKey] != nil &&

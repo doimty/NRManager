@@ -266,3 +266,10 @@ watchdog, and a timeout still defers restore past a reboot.
 - 复用同一份 LiveCC 控制器源码，但新增 `shouldBeginTransitionToExpandedContentModule` 返回 `NO`，长按不会再展开一个与紧凑磁贴相同的频段预览。没有 runtime 手势 hook，也不影响普通点击刷新。
 - 正式 bundle 只读读取自身 path shim 指向的 policy state plist，用 `requestedMode == n78Preferred` 同步 `selected`；不链接完整 policy reader/support，不调用任何 setter。启用态 selected glyph 使用原来的橙色 `#FF9500`，普通 glyph 白色；同时显式设置 `selectedGlyphImage`，避免白色 selected 背景上继续显示白字。
 - 当前验证：全套主机 290 passed、3 skipped；定向 77 passed；standalone LiveCC 12 passed；`verify_release_source`、py_compile、diff check 通过；serial roothide/rootless local aggregate builds 和 standalone LiveCC build 完成。commit `ca62113`，固定云端 run `32577478710` 全部成功；roothide/rootless 包内 verification-report 均 `passed`，正式 bundle 为 arm64+arm64e、roothide `LC_DYLD_INFO_ONLY`、依赖基线不变，`incompatible arm64e` 为 0。roothide SHA256 `ec971267aa07af989f02450242fe1a3dba2bccb29943b47f798ed627402081ab`，314356 bytes；rootless SHA256 `7e547f6f05086157f111afca882f76d8b95edd6fc5ffaf2713a319700ce3bc44`，297320 bytes。
+
+## 2026-08-22 修复 SIM 2 写入门禁误拒绝
+
+- 真机截图确认：设备报告的是 `SIM 2`，但写入失败文本仍是旧的 `slot 1` 硬编码；失败发生在 modem setter 之前，错误码是 `unsafeSubscription`，所以没有发生任何 modem 写入。
+- 普通写入路径现在选择“恰好一个 present/good 且有稳定 UUID 的正整数 slot”，不再要求 slot 1。首次 enable 将实际 `slotID` 与 UUID 写入 baseline、intent、in-flight 和 state proof；后续 fresh guard、setter 前 revalidation、read-back 和 restore 全部同时绑定这两个身份字段。slot/UUID 任一变化仍 fail-closed，双卡、缺 UUID、非正 slot 仍拒绝。
+- reader 和 maintenance daemon 同步验证实际 slot。serving summary 输出真实 slot，maintenance record 的 identity/drop state 也绑定真实 slot，避免 SIM 1/SIM 2 切换后错误继承自动维护状态。已知历史孤儿恢复继续固定 reviewed UUID + slot 1，不被普通路径泛化。
+- 回归覆盖 slot 1/slot 2 单卡成功模型、双卡/缺 UUID/非法 slot 拒绝、UUID+slot 原子 revalidation、四类 durable record 链接、reader/daemon 镜像和历史孤儿 slot 1 pin。当前 host 全套 301 passed、3 skipped；新增定向 11/11；云端编译和真机重新验证仍待完成。

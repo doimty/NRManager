@@ -179,6 +179,10 @@ BOOL CCNMNSNumberIsInteger(id value) {
     return type && type[0] && type[1] == '\0' && strchr("cCsSiIlLqQ", type[0]) != NULL;
 }
 
+static BOOL CCNMValidSlotID(id value) {
+    return CCNMNSNumberIsInteger(value) && [value longLongValue] > 0;
+}
+
 NSSet<NSString *> *CCNMRequiredRATKeys(void) {
     static NSSet<NSString *> *keys;
     static dispatch_once_t onceToken;
@@ -234,6 +238,7 @@ static BOOL CCNMKnownOrphanBaselineMatchesEvidence(NSDictionary *baseline) {
     return [baseline isKindOfClass:NSDictionary.class] &&
         [baseline[@"recoverySource"] isEqual:CCNMKnownOrphanRecoverySource] &&
         [baseline[@"evidenceSHA256"] isEqual:CCNMKnownOrphanEvidenceSHA256] &&
+        [baseline[@"slotID"] isEqual:@1] &&
         [CCNMCanonicalUUIDString(baseline[@"subscriptionUUID"])
             isEqualToString:CCNMKnownOrphanSubscriptionUUID] &&
         CCNMDictionariesEqual(baseline[@"activeBands"],
@@ -245,6 +250,7 @@ static BOOL CCNMStateHasVerifiedKnownOrphanRestore(NSDictionary *state) {
         ![state[@"requestedMode"] isEqual:CCNMRequestedModeSystemDefault] ||
         ![state[@"appliedPolicy"] isEqual:CCNMAppliedPolicyVerifiedSystemDefault] ||
         ![state[@"recoveryState"] isEqual:CCNMRecoveryStateClean] ||
+        ![state[@"slotID"] isEqual:@1] ||
         ![CCNMCanonicalUUIDString(state[@"subscriptionUUID"])
             isEqualToString:CCNMKnownOrphanSubscriptionUUID] ||
         [state[@"uncertain"] boolValue] ||
@@ -360,8 +366,10 @@ BOOL CCNMValidateStateRecord(NSDictionary *state, NSString **failure) {
         [state[@"errorCode"] isKindOfClass:[NSString class]] &&
         [state[@"error"] isKindOfClass:[NSString class]];
     NSString *uuid = state[@"subscriptionUUID"];
+    id slotID = state[@"slotID"];
     valid = valid && [uuid isKindOfClass:[NSString class]] &&
-        ([(NSString *)uuid length] == 0 || CCNMCanonicalUUIDString(uuid) != nil);
+        ([(NSString *)uuid length] == 0 || CCNMCanonicalUUIDString(uuid) != nil) &&
+        (!slotID || CCNMValidSlotID(slotID));
     if (!valid && failure) {
         *failure = @"The durable n78 policy state record is malformed or foreign.";
     }
@@ -418,7 +426,7 @@ BOOL CCNMValidateBaselineRecord(NSDictionary *baseline, NSString **failure) {
         CCNMCanonicalUUIDString(baseline[@"bootSessionUUID"]) != nil &&
         CCNMNSNumberIsInteger(baseline[@"operationGeneration"]) &&
         [baseline[@"operationGeneration"] unsignedIntegerValue] > 0 &&
-        [baseline[@"slotID"] isEqual:@1] &&
+        CCNMValidSlotID(baseline[@"slotID"]) &&
         CCNMCanonicalUUIDString(baseline[@"subscriptionUUID"]) != nil &&
         provenanceValid &&
         capabilitySnapshotValid &&
@@ -543,7 +551,7 @@ BOOL CCNMValidateIntentRecord(NSDictionary *intent,
         CCNMCanonicalUUIDString(intent[@"bootSessionUUID"]) != nil &&
         CCNMNSNumberIsInteger(intent[@"operationGeneration"]) &&
         [intent[@"operationGeneration"] unsignedIntegerValue] > 0 &&
-        [intent[@"slotID"] isEqual:@1] &&
+        [intent[@"slotID"] isEqual:baseline[@"slotID"]] &&
         [CCNMCanonicalUUIDString(intent[@"subscriptionUUID"])
             isEqualToString:CCNMCanonicalUUIDString(baseline[@"subscriptionUUID"])] &&
         [intent[@"baselineCreatedAt"] isEqual:baseline[@"createdAt"]] &&
@@ -586,7 +594,7 @@ BOOL CCNMValidateInFlightRecord(NSDictionary *record,
         CCNMCanonicalUUIDString(record[@"bootSessionUUID"]) != nil &&
         CCNMNSNumberIsInteger(record[@"operationGeneration"]) &&
         [record[@"operationGeneration"] unsignedIntegerValue] > 0 &&
-        [record[@"slotID"] isEqual:@1] &&
+        [record[@"slotID"] isEqual:baseline[@"slotID"]] &&
         [CCNMCanonicalUUIDString(record[@"subscriptionUUID"])
             isEqualToString:CCNMCanonicalUUIDString(baseline[@"subscriptionUUID"])] &&
         [record[@"baselineCreatedAt"] isEqual:baseline[@"createdAt"]];
