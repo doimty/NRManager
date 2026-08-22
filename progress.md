@@ -232,14 +232,22 @@ watchdog, and a timeout still defers restore past a reboot.
   read-only `selected = NO`, current LTE/NR text, searching glyph while a sample is
   pending, RAT debounce, pending/superseded refresh generations, and completion
   summaries supplied directly by the provider.
-- The main bundle still compiles the shared automatic-maintenance decision module by
-  repository contract, but replaces `CCNMN78PolicyController.m` with the read-only
-  `CCNMN78PolicyReader.m` for policy path/lock symbols. Settings continues to compile
-  the full writer controller. The serving provider now imports the reader header.
-- The standalone timer behavior was adapted to common run-loop modes, and glyph images
-  retain the existing cache and no-CoreGraphics-exported-helper constraint. No modem
-  setter or policy operation is reachable from the Control Center source.
-- Verification after the replacement: 291 host tests passed (3 skipped), including 26
-  Control Center contracts; `verify_release_source`, Python compilation, and diff checks
-  passed. The change is currently uncommitted and needs a pinned cloud build before
-  device delivery.
+- Follow-up diagnosis found that the previous formal bundle was still not equivalent
+  to standalone LiveCC: it retained the normal policy cache/lock namespace and a second
+  hand-copied controller with glyph caching. The formal target now compiles the
+  standalone `livecc/Sources/NetworkManagerLiveModule.m` directly with class-name
+  aliases, the standalone `CCNMLiveServingPaths.m`, the
+  `CCNMLiveServingStatusProvider`/`CCNMLiveCellMonitorAsyncState` namespace flags, and
+  the same private-framework linkage split. The path shim selects `NetworkManager.bundle`
+  for the formal target, so its isolated cache/lock resolve relative to the actual
+  loaded bundle.
+- This removes the formal bundle's `CCNMN78PolicyReader.m`/policy-support linkage,
+  `drawnGlyphKey` image cache, extra `viewDidAppear` refresh, and common-mode timer
+  differences. Settings continues to compile the full writer controller separately.
+- Verification after the exact-source replacement: 291 host tests passed (3 skipped),
+  38 focused LiveCC/serving/policy tests passed, `verify_release_source`, Python
+  compilation, and diff checks passed. Local roothide cross-build completed; the latest
+  debug package's NetworkManager bundle contains the isolated livecc cache and
+  `CCNMLiveServingStatusProvider`/`CCNMLiveCellMonitorAsyncState` classes with no policy
+  writer symbols. Local arm64e ABI warnings remain expected compile-only evidence. The
+  change is currently uncommitted and needs a pinned cloud build before device delivery.

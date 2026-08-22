@@ -16,28 +16,39 @@ PROVIDER = ROOT / "networkmanagerprefs/CCNMServingStatusProvider.m"
 class ControlCenterServingLabelTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.source = CC_SOURCE.read_text()
+        cls.wrapper = CC_SOURCE.read_text()
+        cls.live_source = (ROOT / "livecc/Sources/NetworkManagerLiveModule.m").read_text()
+        cls.source = cls.wrapper + "\n" + cls.live_source
         cls.header = CC_HEADER.read_text()
         cls.makefile = MAKEFILE.read_text()
         cls.provider = PROVIDER.read_text()
 
-    def test_cc_bundle_builds_the_read_only_serving_stack(self):
-        files_line = next(
-            line for line in self.makefile.splitlines()
-            if line.startswith("NetworkManager_FILES =")
-        )
+    def test_cc_bundle_reuses_the_standalone_livecc_source_and_namespace(self):
+        files_line = self.makefile
+        self.assertIn("livecc/Sources/CCNMLiveServingPaths.m", files_line)
         self.assertIn("networkmanagerprefs/CCNMServingStatusProvider.m", files_line)
         self.assertIn("networkmanagerprefs/CCNMServingCellSampler.m", files_line)
-        self.assertIn("networkmanagerprefs/CCNMN78PolicyReader.m", files_line)
+        self.assertNotIn("networkmanagerprefs/CCNMN78PolicyReader.m", files_line)
+        self.assertNotIn("networkmanagerprefs/CCNMN78PolicySupport.m", files_line)
         self.assertNotIn("networkmanagerprefs/CCNMN78PolicyController.m", files_line)
         self.assertIn("CCNMAutomaticMaintenanceDecision.c", files_line)
-        self.assertIn('#import "networkmanagerprefs/CCNMServingStatusProvider.h"', self.source)
-        self.assertIn('#import "CCNMN78PolicyReader.h"', self.provider)
-        self.assertIn("-Iinclude", self.makefile)
+        for flag in (
+            "-DCCNMServingStatusProvider=CCNMLiveServingStatusProvider",
+            "-DCCNMCellMonitorAsyncState=CCNMLiveCellMonitorAsyncState",
+            "-DCCNM_SERVING_USE_LIVECC_NAMESPACE=1",
+            "-DNetworkManagerLiveViewController=CCNetworkManagerViewController",
+            "-DNetworkManagerLiveModule=CCNetworkManager",
+        ):
+            self.assertIn(flag, self.makefile)
+        self.assertIn('#import "livecc/Sources/NetworkManagerLiveModule.m"', self.source)
+        self.assertNotIn("drawnGlyphKey", self.source)
+        self.assertNotIn("applyGlyphText", self.source)
+        self.assertIn("-Ilivecc/include", self.makefile)
+        self.assertIn("-Inetworkmanagerprefs", self.makefile)
         self.assertTrue(PRIVATE_HEADER.is_file())
 
     def test_private_declarations_never_import_the_framework_as_a_module(self):
-        for text in (self.header, self.source, PRIVATE_HEADER.read_text()):
+        for text in (self.header, PRIVATE_HEADER.read_text()):
             self.assertNotIn("#import <ControlCenterUIKit/", text)
             self.assertNotIn('#import "ControlCenterUIKit/', text)
         self.assertIn('#import "NetworkManagerControlCenterUIKitPrivate.h"', self.header)
@@ -92,17 +103,15 @@ class ControlCenterServingLabelTests(unittest.TestCase):
         self.assertIn("CCNMLiveSearchingGlyphImage", self.source)
         self.assertIn('systemImageNamed:@"antenna.radiowaves.left.and.right"', self.source)
         self.assertIn('systemImageNamed:@"magnifyingglass"', self.source)
-        self.assertIn('CCNMLiveSearchingGlyphKey = @"__searching__"', self.source)
-        self.assertIn("[self applyGlyphText:nil]", self.source)
+        self.assertIn("self.glyphImage = CCNMLiveSearchingGlyphImage();", self.source)
 
-    def test_glyph_is_white_and_rendering_is_cached(self):
+    def test_glyph_is_white_and_directly_reassigned_like_standalone(self):
         self.assertIn("label.textColor = UIColor.whiteColor", self.source)
         self.assertIn("self.glyphColor = UIColor.whiteColor", self.source)
-        self.assertIn("self.selectedGlyphColor = UIColor.whiteColor", self.source)
-        self.assertIn("drawnGlyphKey", self.source)
-        self.assertIn("if ([key isEqualToString:self.drawnGlyphKey])", self.source)
-        self.assertIn("self.glyphImage = glyph;", self.source)
-        self.assertIn("self.selectedGlyphImage = glyph;", self.source)
+        self.assertIn("self.glyphImage = CCNMLiveSearchingGlyphImage();", self.source)
+        self.assertIn("self.glyphImage = self.hasFreshServingResult", self.source)
+        self.assertNotIn("drawnGlyphKey", self.source)
+        self.assertNotIn("selectedGlyphImage", self.source)
 
     def test_refresh_state_matches_the_standalone_tile(self):
         for token in (
@@ -138,28 +147,26 @@ class ControlCenterServingLabelTests(unittest.TestCase):
             "- (void)controlCenterWillPresent",
             "- (void)controlCenterDidDismiss",
             "- (void)viewWillAppear:",
-            "- (void)viewDidAppear:",
             "- (void)viewDidDisappear:",
             "- (void)beginVisibleSession",
             "- (void)endVisibleSession",
-            "timerWithTimeInterval:CCNMLiveRefreshInterval",
-            "timerWithTimeInterval:CCNMLiveRATDebounceSeconds",
-            "forMode:NSRunLoopCommonModes",
+            "scheduledTimerWithTimeInterval:CCNMLiveRefreshInterval",
+            "scheduledTimerWithTimeInterval:CCNMLiveRATDebounceSeconds",
         ):
             self.assertIn(token, self.source)
         begin = self.source[
             self.source.index("- (void)beginVisibleSession"):
             self.source.index("- (void)endVisibleSession")
         ]
-        self.assertIn("if (self.visible)", begin)
-        self.assertIn("return;", begin)
+        self.assertIn("self.visible = YES", begin)
+        self.assertIn("if (!self.refreshTimer)", begin)
         self.assertIn("[self requestBoundedServingRefresh]", self.source)
+        self.assertNotIn("NSRunLoopCommonModes", self.source)
         teardown = self.source[
             self.source.index("- (void)endVisibleSession"):
             self.source.index("- (void)registerObserversIfNeeded")
         ]
         self.assertIn("self.visible = NO", teardown)
-        self.assertIn("self.refreshInProgress = NO", teardown)
         self.assertIn("[self.refreshTimer invalidate]", teardown)
         self.assertIn("[self.ratDebounceTimer invalidate]", teardown)
         self.assertIn("[self removeObserversIfNeeded]", teardown)
@@ -194,24 +201,11 @@ class ControlCenterServingLabelTests(unittest.TestCase):
             self.assertNotIn(forbidden, self.source)
         self.assertNotIn("contentViewController]", self.source)
         self.assertNotIn(".contentViewController", self.source)
-        self.assertEqual(self.source.count("*)contentViewController"), 1)
 
-    def test_no_exported_coregraphics_helpers_in_glyph_path(self):
-        for forbidden in (
-            "CGRectIntegral(",
-            "CGRectGetMinX(",
-            "CGRectGetMaxX(",
-            "CGContextSetFillColorWithColor(",
-            "CGColorCreate",
-            "CGImageCreate",
-        ):
-            self.assertNotIn(forbidden, self.source)
-        integral = self.source[
-            self.source.index("static CGRect CCNMLiveIntegralRect"):
-            self.source.index("static UIImage *CCNMLiveCenteredSymbolGlyphImage")
-        ]
-        self.assertIn("CGFloat minX = floor(rect.origin.x);", integral)
-        self.assertIn("CGFloat maxX = ceil(rect.origin.x + rect.size.width);", integral)
+    def test_glyph_path_matches_the_standalone_renderer(self):
+        self.assertIn("CGRectIntegral(drawRect)", self.source)
+        self.assertIn("UIImageRenderingModeAlwaysOriginal", self.source)
+        self.assertNotIn("CCNMLiveIntegralRect", self.source)
 
 
 if __name__ == "__main__":

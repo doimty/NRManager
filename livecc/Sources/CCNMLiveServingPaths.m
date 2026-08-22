@@ -1,12 +1,19 @@
 #import <Foundation/Foundation.h>
 
-#import "CCNMN78PolicyController.h"
+#import "CCNMN78PolicyReader.h"
 
+#if CCNM_LIVE_MAIN_BUNDLE
+static NSString *const CCNMLiveModuleClassName = @"CCNetworkManager";
+static NSString *const CCNMLiveBundleMarker =
+    @"/Library/ControlCenter/Bundles/NetworkManager.bundle";
+#else
+static NSString *const CCNMLiveModuleClassName = @"NetworkManagerLiveModule";
 static NSString *const CCNMLiveBundleMarker =
     @"/Library/ControlCenter/Bundles/NetworkManagerLive.bundle";
+#endif
 
 static NSString *CCNMLiveResolvedPath(NSString *suffix) {
-    Class moduleClass = NSClassFromString(@"NetworkManagerLiveModule");
+    Class moduleClass = NSClassFromString(CCNMLiveModuleClassName);
     NSString *bundlePath = moduleClass
         ? [NSBundle bundleForClass:moduleClass].bundlePath : nil;
     NSRange markerRange = [bundlePath rangeOfString:CCNMLiveBundleMarker

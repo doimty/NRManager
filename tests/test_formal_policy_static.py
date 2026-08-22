@@ -20,7 +20,7 @@ class FormalPolicyStaticTests(unittest.TestCase):
         self.header = HEADER.read_text()
         self.source = SOURCE.read_text()
         self.support = SUPPORT.read_text()
-        self.cc_source = CC_SOURCE.read_text()
+        self.cc_source = CC_SOURCE.read_text() + "\n" + (ROOT / "livecc/Sources/NetworkManagerLiveModule.m").read_text()
 
     def test_requested_applied_serving_and_recovery_domains_are_distinct(self):
         for token in (
@@ -119,12 +119,9 @@ class FormalPolicyStaticTests(unittest.TestCase):
     def test_control_center_uses_only_public_state_refresh_api(self):
         # The tile publishes its own glyph now instead of asking the framework to
         # re-read a read-only property, but it still may not touch private ivars.
-        self.assertIn("applyGlyphText:", self.cc_source)
-        # The tile assigns the glyph itself, from its own read-only renderer.
-        # The same cached image is used for both normal and selected framework
-        # states; the tile itself never carries policy state.
-        self.assertIn("self.glyphImage = glyph;", self.cc_source)
-        self.assertIn("CCNMLiveGlyphImage(text)", self.cc_source)
+        self.assertIn("self.glyphImage = self.hasFreshServingResult", self.cc_source)
+        self.assertIn("self.glyphImage = CCNMLiveSearchingGlyphImage();", self.cc_source)
+        self.assertNotIn("drawnGlyphKey", self.cc_source)
         for forbidden in (
             "class_getInstanceVariable",
             "object_getIvar",

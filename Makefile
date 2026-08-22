@@ -5,25 +5,30 @@ export ARCHS = arm64 arm64e
 
 BUNDLE_NAME = NetworkManager
 NetworkManager_BUNDLE_EXTENSION = bundle
-NetworkManager_FILES = CCNetworkManager.x networkmanagerprefs/CCNMN78PolicySupport.m networkmanagerprefs/CCNMN78PolicyReader.m networkmanagerprefs/CCNMServingStatusProvider.m networkmanagerprefs/CCNMServingCellSampler.m networkmanagerprefs/CCNMAutomaticMaintenanceDecision.c
-NetworkManager_FRAMEWORKS = CoreTelephony Foundation UIKit
+NetworkManager_FILES = CCNetworkManager.x \
+	livecc/Sources/CCNMLiveBandText.c \
+	livecc/Sources/CCNMLiveServingPaths.m \
+	networkmanagerprefs/CCNMServingStatusProvider.m \
+	networkmanagerprefs/CCNMServingCellSampler.m \
+	networkmanagerprefs/CCNMAutomaticMaintenanceDecision.c
+NetworkManager_FRAMEWORKS = CoreFoundation CoreTelephony Foundation QuartzCore UIKit
 NetworkManager_INSTALL_PATH = /Library/ControlCenter/Bundles
 
 NetworkManager_CFLAGS += -fobjc-arc
 NetworkManager_CFLAGS += "-Wno-error=objc-method-access"
-# The bundle declares the private ControlCenterUIKit members it uses in
-# include/NetworkManagerControlCenterUIKitPrivate.h. See that header for why the
-# framework must not be imported as a Clang module here.
-NetworkManager_CFLAGS += -Iinclude
+NetworkManager_CFLAGS += -Ilivecc/include -Inetworkmanagerprefs
+NetworkManager_CFLAGS += -DCCNMServingStatusProvider=CCNMLiveServingStatusProvider
+NetworkManager_CFLAGS += -DCCNMCellMonitorAsyncState=CCNMLiveCellMonitorAsyncState
+NetworkManager_CFLAGS += -DCCNM_SERVING_USE_LIVECC_NAMESPACE=1
+NetworkManager_CFLAGS += -DCCNM_LIVE_MAIN_BUNDLE=1
+NetworkManager_CFLAGS += -DNetworkManagerLiveViewController=CCNetworkManagerViewController
+NetworkManager_CFLAGS += -DNetworkManagerLiveModule=CCNetworkManager
 
-# For non-roothide: link to ControlCenterUIKit
+# Match the standalone LiveCC bundle: resolve ControlCenterUIKit at runtime on
+# roothide and use the private framework only on the rootless lane.
 ifneq ($(THEOS_PACKAGE_SCHEME),roothide)
-NetworkManager_LDFLAGS += -framework ControlCenterUIKit
-endif
-
-# For roothide: link roothide library, use -undefined dynamic_lookup instead of private frameworks
-ifeq ($(THEOS_PACKAGE_SCHEME),roothide)
-NetworkManager_LIBRARIES = roothide
+NetworkManager_PRIVATE_FRAMEWORKS = ControlCenterUIKit
+else
 NetworkManager_LDFLAGS += -undefined dynamic_lookup
 endif
 
