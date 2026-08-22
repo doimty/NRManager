@@ -182,6 +182,41 @@ class ControlCenterServingLabelTests(unittest.TestCase):
         end = self.source[self.source.index("- (void)endVisibleSession {"):]
         self.assertIn("self.visible = NO;", end)
 
+    def test_refresh_completion_uses_provider_summary_without_a_second_cache_read(self):
+        start = self.source.index("- (void)requestServingRefreshIfNeeded {")
+        end = self.source.index("// Adopts whatever the shared provider last published.", start)
+        request = self.source[start:end]
+        callback = request[request.index("[provider refreshWithCompletion:"):]
+        self.assertIn(
+            "[strongSelf applyPublishedSummary:summary requireNewerTimestamp:NO];",
+            callback,
+        )
+        self.assertNotIn("provider.currentSummary", callback)
+
+    def test_refresh_wait_state_matches_the_standalone_tile(self):
+        self.assertIn("awaitingCurrentRefresh", self.source)
+        self.assertIn(
+            "CCNMServingGlyphText(self.servingSummary, self.awaitingCurrentRefresh)",
+            self.source,
+        )
+        start = self.source.index("- (void)radioAccessTechnologyDidChange:")
+        end = self.source.index("- (void)ratDebounceTimerFired", start)
+        self.assertIn("strongSelf.awaitingCurrentRefresh = YES;", self.source[start:end])
+        start = self.source.index("- (void)buttonTapped:")
+        end = self.source.index("#pragma mark - Refresh", start)
+        self.assertIn("self.awaitingCurrentRefresh = YES;", self.source[start:end])
+        teardown = self.source[
+            self.source.index("- (void)endVisibleSession {"):
+            self.source.index("- (void)registerObserversIfNeeded {")
+        ]
+        self.assertIn("self.awaitingCurrentRefresh = NO;", teardown)
+        request_start = self.source.index("- (void)requestServingRefreshIfNeeded {")
+        request_end = self.source.index("// Adopts whatever the shared provider last published.", request_start)
+        request = self.source[request_start:request_end]
+        self.assertIn("BOOL refreshAgain = strongSelf.refreshPending && strongSelf.visible;", request)
+        self.assertIn("strongSelf.awaitingCurrentRefresh = refreshAgain;", request)
+        self.assertIn("[strongSelf applyPublishedSummary:summary requireNewerTimestamp:NO];", request)
+
     def test_refresh_is_async_bounded_and_never_writes_modem(self):
         for token in (
             "servingRefreshInProgress",

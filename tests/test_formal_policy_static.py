@@ -140,7 +140,7 @@ class FormalPolicyStaticTests(unittest.TestCase):
         self.assertIn('requested ? @"n78\\n..." : @"Auto\\n..."', self.cc_source)
         self.assertIn('requested ? @"n78\\n!" : @"Auto\\n!"', self.cc_source)
         self.assertIn(
-            "CCNMServingGlyphText(self.servingSummary)",
+            "CCNMServingGlyphText(self.servingSummary, self.awaitingCurrentRefresh)",
             self.cc_source,
         )
 

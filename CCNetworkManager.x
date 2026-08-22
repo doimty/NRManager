@@ -57,8 +57,10 @@ static UIColor *CCNMServingGlyphColor(void) {
 
 // Returns nil when there is no serving band worth showing. The caller draws the
 // searching antenna in that case instead of a bare question mark.
-static NSString *CCNMServingGlyphText(NSDictionary *summary) {
-    if (![summary[CCNMServingSummarySuccessKey] boolValue] ||
+static NSString *CCNMServingGlyphText(NSDictionary *summary,
+                                         BOOL awaitingCurrentRefresh) {
+    if (awaitingCurrentRefresh ||
+        ![summary[CCNMServingSummarySuccessKey] boolValue] ||
         [summary[CCNMServingSummaryStaleKey] boolValue]) {
         return nil;
     }
@@ -155,6 +157,7 @@ static UIImage *CCNMServingSearchingGlyphImage(UIColor *tintColor) {
 
 @interface CCNetworkManagerViewController ()
 @property (nonatomic, assign) BOOL servingRefreshInProgress;
+@property (nonatomic, assign) BOOL awaitingCurrentRefresh;
 @property (nonatomic, assign) NSTimeInterval servingRefreshLastAttempt;
 @property (nonatomic, assign) NSTimeInterval servingRefreshStartedAt;
 @property (nonatomic, copy) NSDictionary<NSString *, id> *servingSummary;
@@ -337,6 +340,7 @@ static void CCNMServingStatusDidChangeCallback(CFNotificationCenterRef center,
         self.servingRefreshInProgress = NO;
         self.refreshGeneration++;
     }
+    self.awaitingCurrentRefresh = NO;
     [self.visibleRefreshTimer invalidate];
     self.visibleRefreshTimer = nil;
     [self.ratDebounceTimer invalidate];
@@ -417,6 +421,11 @@ static void CCNMServingStatusDidChangeCallback(CFNotificationCenterRef center,
         if (!strongSelf || !strongSelf.visible) {
             return;
         }
+        // A RAT notification invalidates the displayed band immediately. Keep
+        // the old summary for diagnostics/cache adoption, but do not present it
+        // as the current serving result while the debounced sample is pending.
+        strongSelf.awaitingCurrentRefresh = YES;
+        [strongSelf refreshModulePresentation];
         [strongSelf.ratDebounceTimer invalidate];
         strongSelf.ratDebounceTimer =
             [NSTimer timerWithTimeInterval:CCNMServingRATDebounceSeconds
@@ -449,6 +458,8 @@ static void CCNMServingStatusDidChangeCallback(CFNotificationCenterRef center,
     (void)event;
     [self.ratDebounceTimer invalidate];
     self.ratDebounceTimer = nil;
+    self.awaitingCurrentRefresh = YES;
+    [self refreshModulePresentation];
     if (self.servingRefreshInProgress) {
         self.refreshPending = YES;
         return;
@@ -516,7 +527,6 @@ static void CCNMServingStatusDidChangeCallback(CFNotificationCenterRef center,
     CCNMServingStatusProvider *provider = CCNMServingStatusProvider.sharedProvider;
     __weak typeof(self) weakSelf = self;
     [provider refreshWithCompletion:^(NSDictionary<NSString *, id> *summary) {
-        (void)summary;
         dispatch_async(dispatch_get_main_queue(), ^{
             __strong typeof(weakSelf) strongSelf = weakSelf;
             if (!strongSelf) {
@@ -527,10 +537,17 @@ static void CCNMServingStatusDidChangeCallback(CFNotificationCenterRef center,
             if (generation != strongSelf.refreshGeneration) {
                 return;
             }
+            BOOL refreshAgain = strongSelf.refreshPending && strongSelf.visible;
             strongSelf.servingRefreshInProgress = NO;
-            [strongSelf applyPublishedSummary:provider.currentSummary
-                requireNewerTimestamp:NO];
-            if (strongSelf.refreshPending && strongSelf.visible) {
+            // Keep the searching state through a queued second round. The first
+            // result may have started before the RAT transition that queued the
+            // next round, so it is not yet authoritative for the current radio.
+            strongSelf.awaitingCurrentRefresh = refreshAgain;
+            // The provider already read and normalized the current published
+            // summary before invoking this completion. Reusing it avoids a
+            // second main-thread plist read on every refresh completion.
+            [strongSelf applyPublishedSummary:summary requireNewerTimestamp:NO];
+            if (refreshAgain) {
                 strongSelf.refreshPending = NO;
                 [strongSelf requestServingRefreshIfNeeded];
             }
@@ -592,7 +609,7 @@ static void CCNMServingStatusDidChangeCallback(CFNotificationCenterRef center,
     } else if (CCNMPolicyNeedsRecovery(state)) {
         text = requested ? @"n78\n!" : @"Auto\n!";
     } else {
-        text = CCNMServingGlyphText(self.servingSummary);
+        text = CCNMServingGlyphText(self.servingSummary, self.awaitingCurrentRefresh);
     }
     // No serving band to show, either because a sample is still in flight or
     // because the last one came back empty. Draw the searching antenna instead
