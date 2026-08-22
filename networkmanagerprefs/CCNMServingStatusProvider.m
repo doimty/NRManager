@@ -1,5 +1,5 @@
 #import "CCNMServingStatusProvider.h"
-#import "CCNMN78PolicyController.h"
+#import "CCNMN78PolicyReader.h"
 #import "CCNMServingCellSampler.h"
 
 #import <dispatch/dispatch.h>

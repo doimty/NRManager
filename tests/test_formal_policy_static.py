@@ -119,15 +119,12 @@ class FormalPolicyStaticTests(unittest.TestCase):
     def test_control_center_uses_only_public_state_refresh_api(self):
         # The tile publishes its own glyph now instead of asking the framework to
         # re-read a read-only property, but it still may not touch private ivars.
-        self.assertIn("refreshModulePresentation", self.cc_source)
-        # The tile assigns the glyph itself, from its own renderers. The
-        # assignment is deliberately not pinned to a single expression: the glyph
-        # is rendered once and reused for both the plain and the selected image,
-        # so the renderer call and the assignment are separate statements.
-        self.assertIn("self.glyphImage = ", self.cc_source)
-        self.assertIn(
-            "CCNMServingGlyphImage(text, CCNMServingGlyphColor())", self.cc_source
-        )
+        self.assertIn("applyGlyphText:", self.cc_source)
+        # The tile assigns the glyph itself, from its own read-only renderer.
+        # The same cached image is used for both normal and selected framework
+        # states; the tile itself never carries policy state.
+        self.assertIn("self.glyphImage = glyph;", self.cc_source)
+        self.assertIn("CCNMLiveGlyphImage(text)", self.cc_source)
         for forbidden in (
             "class_getInstanceVariable",
             "object_getIvar",
@@ -135,22 +132,20 @@ class FormalPolicyStaticTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, self.cc_source)
 
-    def test_control_center_glyph_reflects_requested_policy(self):
-        self.assertIn("CCNMPolicyIsRequested(state)", self.cc_source)
-        self.assertIn('requested ? @"n78\\n..." : @"Auto\\n..."', self.cc_source)
-        self.assertIn('requested ? @"n78\\n!" : @"Auto\\n!"', self.cc_source)
-        self.assertIn(
-            "CCNMServingGlyphText(self.servingSummary, self.awaitingCurrentRefresh)",
-            self.cc_source,
-        )
+    def test_control_center_glyph_reflects_fresh_serving_summary(self):
+        self.assertIn('self.title = @"Live Band";', self.cc_source)
+        self.assertIn("CCNMLiveTextForSummary", self.cc_source)
+        self.assertIn('stringWithFormat:@"B%lld"', self.cc_source)
+        self.assertIn('stringWithFormat:@"n%lld"', self.cc_source)
+        self.assertNotIn("CCNMPolicyIsRequested", self.cc_source)
 
     def test_control_center_is_read_only_and_does_not_persist_local_truth(self):
         self.assertNotIn("selectedNetwork", self.cc_source)
-        self.assertIn("CCNMN78Policy", self.cc_source)
-        self.assertNotIn("policyOperationPending", self.cc_source)
+        self.assertNotIn("CCNMN78Policy", self.cc_source)
         self.assertNotIn("CCNMEnableN78Preference", self.cc_source)
         self.assertNotIn("CCNMDisableN78Preference", self.cc_source)
-        self.assertIn("CCNMN78PolicyDidChangeDarwinNotification", self.cc_source)
+        self.assertNotIn("CCNMPostPolicyDidChange", self.cc_source)
+        self.assertIn("CCNMServingStatusDidChangeDarwinNotification", self.cc_source)
         self.assertIn("CFNotificationCenterAddObserver", self.cc_source)
         self.assertIn("CFNotificationCenterRemoveObserver", self.cc_source)
         self.assertIn("CCNMPostPolicyDidChange", self.source)

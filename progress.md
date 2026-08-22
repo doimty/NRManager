@@ -223,3 +223,23 @@ non-reference handset remains outstanding.
 Unchanged and still true: setting NR to `[78]` is an allowed-band preference, not a serving
 guarantee; the reference device still falls back to LTE B3. The setter keeps its 20 s
 watchdog, and a timeout still defers restore past a reboot.
+
+## 2026-08-22 Control Center: replace policy switch with read-only Live Band tile
+
+- The formal Control Center module no longer reads n78 policy state, mirrors policy
+  `selected`, observes policy-change notifications, or carries the policy writer
+  controller. It now uses the standalone LiveCC state machine: `Live Band` title,
+  read-only `selected = NO`, current LTE/NR text, searching glyph while a sample is
+  pending, RAT debounce, pending/superseded refresh generations, and completion
+  summaries supplied directly by the provider.
+- The main bundle still compiles the shared automatic-maintenance decision module by
+  repository contract, but replaces `CCNMN78PolicyController.m` with the read-only
+  `CCNMN78PolicyReader.m` for policy path/lock symbols. Settings continues to compile
+  the full writer controller. The serving provider now imports the reader header.
+- The standalone timer behavior was adapted to common run-loop modes, and glyph images
+  retain the existing cache and no-CoreGraphics-exported-helper constraint. No modem
+  setter or policy operation is reachable from the Control Center source.
+- Verification after the replacement: 291 host tests passed (3 skipped), including 26
+  Control Center contracts; `verify_release_source`, Python compilation, and diff checks
+  passed. The change is currently uncommitted and needs a pinned cloud build before
+  device delivery.
