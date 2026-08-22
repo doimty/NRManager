@@ -246,8 +246,14 @@ watchdog, and a timeout still defers restore past a reboot.
   differences. Settings continues to compile the full writer controller separately.
 - Verification after the exact-source replacement: 291 host tests passed (3 skipped),
   38 focused LiveCC/serving/policy tests passed, `verify_release_source`, Python
-  compilation, and diff checks passed. Local roothide cross-build completed; the latest
-  debug package's NetworkManager bundle contains the isolated livecc cache and
-  `CCNMLiveServingStatusProvider`/`CCNMLiveCellMonitorAsyncState` classes with no policy
-  writer symbols. Local arm64e ABI warnings remain expected compile-only evidence. The
-  change is currently uncommitted and needs a pinned cloud build before device delivery.
+  compilation, and diff checks passed. The first pinned cloud run `32561009570`
+  compiled both lanes and passed host gates/rootless, but roothide package verification
+  correctly rejected the temporary Makefile delta: the bundle was missing the pinned
+  `@loader_path/.jbroot/usr/lib/libroothide.dylib` dependency and added CoreGraphics /
+  QuartzCore. The formal wrapper now macro-substitutes the standalone `CGRectIntegral`
+  call with an equivalent local helper, removes QuartzCore from the formal framework
+  list, and restores the roothide library link. Local roothide package
+  `1.5.0-2+debug` now has the isolated livecc symbols/cache and exactly the expected
+  roothide runtime dependency, with no policy writer symbols. Local arm64e ABI warnings
+  remain expected compile-only evidence. A follow-up pinned cloud build is required
+  before device delivery.

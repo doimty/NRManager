@@ -11,7 +11,7 @@ NetworkManager_FILES = CCNetworkManager.x \
 	networkmanagerprefs/CCNMServingStatusProvider.m \
 	networkmanagerprefs/CCNMServingCellSampler.m \
 	networkmanagerprefs/CCNMAutomaticMaintenanceDecision.c
-NetworkManager_FRAMEWORKS = CoreFoundation CoreTelephony Foundation QuartzCore UIKit
+NetworkManager_FRAMEWORKS = CoreFoundation CoreTelephony Foundation UIKit
 NetworkManager_INSTALL_PATH = /Library/ControlCenter/Bundles
 
 NetworkManager_CFLAGS += -fobjc-arc
@@ -29,6 +29,7 @@ NetworkManager_CFLAGS += -DNetworkManagerLiveModule=CCNetworkManager
 ifneq ($(THEOS_PACKAGE_SCHEME),roothide)
 NetworkManager_PRIVATE_FRAMEWORKS = ControlCenterUIKit
 else
+NetworkManager_LIBRARIES = roothide
 NetworkManager_LDFLAGS += -undefined dynamic_lookup
 endif
 

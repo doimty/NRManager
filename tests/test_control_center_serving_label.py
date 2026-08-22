@@ -45,6 +45,10 @@ class ControlCenterServingLabelTests(unittest.TestCase):
         self.assertNotIn("applyGlyphText", self.source)
         self.assertIn("-Ilivecc/include", self.makefile)
         self.assertIn("-Inetworkmanagerprefs", self.makefile)
+        self.assertIn("NetworkManager_LIBRARIES = roothide", self.makefile)
+        self.assertIn("NetworkManager_FRAMEWORKS = CoreFoundation CoreTelephony Foundation UIKit", self.makefile)
+        self.assertNotIn("NetworkManager_FRAMEWORKS = CoreFoundation CoreTelephony Foundation QuartzCore UIKit", self.makefile)
+        self.assertIn("CCNMLiveFormalIntegralRect", self.source)
         self.assertTrue(PRIVATE_HEADER.is_file())
 
     def test_private_declarations_never_import_the_framework_as_a_module(self):
