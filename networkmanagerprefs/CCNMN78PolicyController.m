@@ -1392,22 +1392,95 @@ static void CCNMReleasePolicyLock(int descriptor) {
     close(descriptor);
 }
 
-static BOOL CCNMValidateTarget(NSMutableDictionary *details, NSString **failure) {
+// Collects what device this is, for the record. No verdict.
+static void CCNMRecordDeviceIdentity(NSMutableDictionary *details,
+                                     NSString *model,
+                                     NSString *build,
+                                     NSString *version) {
+    if (!details) {
+        return;
+    }
+    details[@"deviceModel"] = model ?: @"";
+    details[@"systemBuild"] = build ?: @"";
+    details[@"systemVersion"] = version ?: @"";
+}
+
+static NSString *CCNMSystemVersionString(void) {
+    NSOperatingSystemVersion version = [[NSProcessInfo processInfo] operatingSystemVersion];
+    return [NSString stringWithFormat:@"%ld.%ld.%ld",
+        (long)version.majorVersion, (long)version.minorVersion, (long)version.patchVersion];
+}
+
+// The one handset on which a RAT-selection write and its restore were actually
+// observed end to end.
+static BOOL CCNMIsReferenceVerifiedTarget(void) {
     NSString *model = CCNMSysctlString("hw.machine");
     NSString *build = CCNMSysctlString("kern.osversion");
     NSOperatingSystemVersion version = [[NSProcessInfo processInfo] operatingSystemVersion];
-    if (details) {
-        details[@"deviceModel"] = model ?: @"";
-        details[@"systemBuild"] = build ?: @"";
-        details[@"systemVersion"] = [NSString stringWithFormat:@"%ld.%ld.%ld",
-            (long)version.majorVersion, (long)version.minorVersion, (long)version.patchVersion];
-    }
-    BOOL valid = [model isEqualToString:@"iPhone14,3"] && [build isEqualToString:@"19B81"] &&
+    return [model isEqualToString:@"iPhone14,3"] && [build isEqualToString:@"19B81"] &&
         version.majorVersion == 15 && version.minorVersion == 1 && version.patchVersion == 1;
-    if (!valid && failure) {
-        *failure = @"The formal policy is restricted to iPhone14,3 running iOS 15.1.1 build 19B81.";
+}
+
+// Gate for the known-orphan replay paths.
+//
+// Those paths do not write anything they read from this device. They write
+// CCNMKnownOrphanHistoricalOriginalBands(), a band table captured from the
+// reference handset, against CCNMKnownOrphanSubscriptionUUID, a placeholder
+// UUID. On any other device that table is a foreign radio capability set, and
+// installing it would not restore that device, it would overwrite that device's
+// capability with another phone's. This gate is therefore not a confidence
+// threshold that better runtime evidence could replace. It is the provenance of
+// the data being written, so it stays pinned to the device the data came from
+// regardless of what the rest of the write path is allowed to do.
+static BOOL CCNMValidateHistoricalReplayTarget(NSMutableDictionary *details, NSString **failure) {
+    CCNMRecordDeviceIdentity(details, CCNMSysctlString("hw.machine"),
+        CCNMSysctlString("kern.osversion"), CCNMSystemVersionString());
+    if (!CCNMIsReferenceVerifiedTarget()) {
+        if (failure) {
+            *failure = @"Known-orphan replay writes a band table captured from iPhone14,3 running "
+                        @"iOS 15.1.1 build 19B81 and is refused on any other device.";
+        }
+        return NO;
     }
-    return valid;
+    return YES;
+}
+
+// Gate for the self-sourced write paths: enable, restore, and recover.
+//
+// These write only values this device produced. Enable reads live BandInfo and
+// resends it with the NR array narrowed; restore and recover resend a baseline
+// this device wrote about itself, which CCNMValidateBaselineCompatibility
+// separately requires to match the current hw.machine, system version, build,
+// and supported-band shape before it is used. So there is no foreign data here,
+// and the model check is a confidence threshold rather than a correctness one.
+//
+// Enable and restore must keep sharing one answer. Pinning restore while
+// allowing enable would let a device create a baseline it is then refused
+// permission to put back, which is the exact outcome the pin exists to prevent.
+//
+// The identity read is a hard requirement independent of the model check,
+// because CCNMBuildBaselineRecord refuses a baseline without a non-empty model,
+// version, and build. An enable that cannot record a baseline must never reach
+// the setter, so the identity is read into locals and judged here rather than
+// being read back out of the reporting dictionary.
+static BOOL CCNMValidateSelfSourcedWriteTarget(NSMutableDictionary *details, NSString **failure) {
+    NSString *model = CCNMSysctlString("hw.machine");
+    NSString *build = CCNMSysctlString("kern.osversion");
+    NSString *version = CCNMSystemVersionString();
+    CCNMRecordDeviceIdentity(details, model, build, version);
+    if (!model.length || !build.length || !version.length) {
+        if (failure) {
+            *failure = @"The device identity required by a durable baseline could not be read.";
+        }
+        return NO;
+    }
+    if (!CCNMIsReferenceVerifiedTarget()) {
+        if (failure) {
+            *failure = @"The formal policy is restricted to iPhone14,3 running iOS 15.1.1 build 19B81.";
+        }
+        return NO;
+    }
+    return YES;
 }
 
 static const char *CCNMSkipTypeQualifiers(const char *type) {
@@ -1639,7 +1712,7 @@ static BOOL CCNMValidateKnownOrphanedN78HistoricalPredicate(
     if (observedValidBandInfo) {
         *observedValidBandInfo = NO;
     }
-    if (!CCNMValidateTarget(details, failure)) {
+    if (!CCNMValidateHistoricalReplayTarget(details, failure)) {
         return NO;
     }
     id<CCNMSubscriptionContext> context = CCNMSafeTargetContext(
@@ -1726,7 +1799,7 @@ static NSDictionary *CCNMEvaluateKnownOrphanEligibilityWithHeldLock(BOOL allowVa
             failure ?: @"Known-orphan recovery requires an absent or exact clean state and no conflicting records.",
             details);
     }
-    if (!CCNMValidateTarget(details, &failure)) {
+    if (!CCNMValidateHistoricalReplayTarget(details, &failure)) {
         return CCNMKnownOrphanEligibilityResult(NO, YES,
             CCNMN78PolicyErrorUnsupportedTarget, failure, details);
     }
@@ -2280,7 +2353,7 @@ static BOOL CCNMIsVerifiedRestoreCleanupCheckpoint(NSDictionary *state) {
             return CCNMErrorSummary(@"enable", CCNMN78PolicyErrorRecoveryRequired,
                 @"A valid boot identity and operation generation are required.", details);
         }
-        if (!CCNMValidateTarget(details, &failure)) {
+        if (!CCNMValidateSelfSourcedWriteTarget(details, &failure)) {
             return CCNMErrorSummary(@"enable", CCNMN78PolicyErrorUnsupportedTarget, failure, details);
         }
         id<CCNMCoreTelephonyClient> client = CCNMCreateClient(&failure);
@@ -2466,7 +2539,7 @@ static BOOL CCNMIsVerifiedRestoreCleanupCheckpoint(NSDictionary *state) {
                 @"A valid boot identity and operation generation are required.", details);
         }
 
-        if (!CCNMValidateTarget(details, &failure)) {
+        if (!CCNMValidateHistoricalReplayTarget(details, &failure)) {
             return CCNMErrorSummary(@"knownOrphanRecovery", CCNMN78PolicyErrorUnsupportedTarget,
                 failure, details);
         }
@@ -2585,7 +2658,7 @@ static BOOL CCNMIsVerifiedRestoreCleanupCheckpoint(NSDictionary *state) {
                 CCNMBootRelationForRecord(state) == CCNMBootRelationEarlier &&
                 CCNMIsVerifiedRestoreCleanupCheckpoint(state)) {
                 NSUInteger generation = CCNMNextGeneration(state, nil);
-                if (!CCNMValidateTarget(details, &failure)) {
+                if (!CCNMValidateSelfSourcedWriteTarget(details, &failure)) {
                     return CCNMErrorSummary(operation, CCNMN78PolicyErrorUnsupportedTarget, failure, details);
                 }
                 id<CCNMCoreTelephonyClient> client = CCNMCreateClient(&failure);
@@ -2659,7 +2732,7 @@ static BOOL CCNMIsVerifiedRestoreCleanupCheckpoint(NSDictionary *state) {
             return CCNMErrorSummary(operation, CCNMN78PolicyErrorRecoveryRequired,
                 @"A valid boot identity and new operation generation are required.", details);
         }
-        if (!CCNMValidateTarget(details, &failure)) {
+        if (!CCNMValidateSelfSourcedWriteTarget(details, &failure)) {
             return CCNMErrorSummary(operation, CCNMN78PolicyErrorUnsupportedTarget, failure, details);
         }
         id<CCNMCoreTelephonyClient> client = CCNMCreateClient(&failure);

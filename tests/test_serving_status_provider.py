@@ -142,7 +142,11 @@ int main(void) {
         policy = code_only(POLICY.read_text())
         self.assertIn('[model isEqualToString:@"iPhone14,3"]', policy)
         self.assertIn('[build isEqualToString:@"19B81"]', policy)
-        self.assertIn("CCNMValidateTarget", policy)
+        for gate in (
+            "CCNMValidateSelfSourcedWriteTarget",
+            "CCNMValidateHistoricalReplayTarget",
+        ):
+            self.assertIn(gate, policy)
         # What remains in the read path is the ABI and shape validation that does
         # the actual protecting.
         for guard in (
