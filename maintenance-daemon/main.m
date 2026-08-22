@@ -310,6 +310,28 @@ static void CCNMPolicyChanged(CFNotificationCenterRef center,
 
 - (void)persistWithDecision:(CCNMAutomaticMaintenanceDecision)decision
              servingSummary:(NSDictionary *)servingSummary {
+    NSDictionary *policy = CCNMReadN78PolicyState();
+    CCNMAutomaticMaintenanceSample previous = self.hasPreviousSample
+        ? self.previousSample : (CCNMAutomaticMaintenanceSample){0};
+
+    // A disabled pass has no chosen subscription, so there is no slot or UUID to
+    // bind a record to, and the record builder correctly refuses to invent one.
+    // Retire the record instead of leaving the old one on disk: its drop state
+    // belongs to the enable generation that just ended, and keeping it would let
+    // a later enable in the same boot inherit an attempt it never made. Status is
+    // still published, because the observable state is "disabled", not "unknown".
+    //
+    // This is deliberately narrower than "the builder returned nil". During an
+    // enabled pass a nil record means the identity could not be read, and there
+    // the old record must survive so a consumed attempt stays consumed.
+    if (decision == CCNMAutomaticMaintenanceDisabled ||
+        !CCNMPolicySummaryIsStableEnabled(policy)) {
+        (void)CCNMADeleteRecord();
+        (void)CCNMAWriteStatus(CCNMABuildStatus(policy, servingSummary, nil, decision,
+            previous, self.currentSample, NO));
+        return;
+    }
+
     NSDictionary *identity = CCNMMaintenanceIdentityFromServingSummary(servingSummary);
 
     // Read existing record to carry forward drop state.
@@ -317,9 +339,9 @@ static void CCNMPolicyChanged(CFNotificationCenterRef center,
     NSUInteger policyGeneration = [self.cachedPolicyGeneration unsignedIntegerValue];
 
     NSDictionary *record = CCNMABuildRecord(
-        CCNMReadN78PolicyState(),
+        policy,
         identity,
-        self.hasPreviousSample ? self.previousSample : (CCNMAutomaticMaintenanceSample){0},
+        previous,
         self.currentSample,
         policyGeneration,
         self.cachedBaselineCreatedAt,
@@ -330,11 +352,11 @@ static void CCNMPolicyChanged(CFNotificationCenterRef center,
     }
 
     NSDictionary *status = CCNMABuildStatus(
-        CCNMReadN78PolicyState(),
+        policy,
         servingSummary,
         record ?: existingRecord,
         decision,
-        self.hasPreviousSample ? self.previousSample : (CCNMAutomaticMaintenanceSample){0},
+        previous,
         self.currentSample,
         NO);
     (void)CCNMAWriteStatus(status);

@@ -272,4 +272,6 @@ watchdog, and a timeout still defers restore past a reboot.
 - 真机截图确认：设备报告的是 `SIM 2`，但写入失败文本仍是旧的 `slot 1` 硬编码；失败发生在 modem setter 之前，错误码是 `unsafeSubscription`，所以没有发生任何 modem 写入。
 - 普通写入路径现在选择“恰好一个 present/good 且有稳定 UUID 的正整数 slot”，不再要求 slot 1。首次 enable 将实际 `slotID` 与 UUID 写入 baseline、intent、in-flight 和 state proof；后续 fresh guard、setter 前 revalidation、read-back 和 restore 全部同时绑定这两个身份字段。slot/UUID 任一变化仍 fail-closed，双卡、缺 UUID、非正 slot 仍拒绝。
 - reader 和 maintenance daemon 同步验证实际 slot。serving summary 输出真实 slot，maintenance record 的 identity/drop state 也绑定真实 slot，避免 SIM 1/SIM 2 切换后错误继承自动维护状态。已知历史孤儿恢复继续固定 reviewed UUID + slot 1，不被普通路径泛化。
-- 回归覆盖 slot 1/slot 2 单卡成功模型、双卡/缺 UUID/非法 slot 拒绝、UUID+slot 原子 revalidation、四类 durable record 链接、reader/daemon 镜像和历史孤儿 slot 1 pin。当前 host 全套 301 passed、3 skipped；新增定向 11/11；云端编译和真机重新验证仍待完成。
+- 回归覆盖 slot 1/slot 2 单卡成功模型、双卡/缺 UUID/非法 slot 拒绝、UUID+slot 原子 revalidation、四类 durable record 链接、reader/daemon 镜像和历史孤儿 slot 1 pin。
+- 追加修正：disabled 一轮没有选定 subscription，无 slot/UUID 可绑定，record builder 现在正确地拒绍凭空写 slot 1，但那会把上一代 record 留在盘上。daemon 在 disabled 分支显式 `CCNMADeleteRecord()` 退役记录，只保留 status，避免同一 boot 内 disable 再 enable 继承已消耗的 attempt。删除条件故意窄于“record 为 nil”：enabled 下身份读不到时必须保留旧记录，否则会把已用完的尝试洗成可用。
+- 当前验证：host 全套 302 passed、3 skipped；新增定向 12/12；`verify_release_source` passed；本地 rootless aggregate 构建完成（仅编译证据，不交付）。固定云端 run `32580565115`（commit `e19749f`）三 job 全部成功；disabled-record 修正后的云端构建和真机验证待完成。

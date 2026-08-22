@@ -141,6 +141,18 @@ class WritePathSubscriptionSlotSourceTests(unittest.TestCase):
         self.assertNotIn('? identity[@"slotID"] : @1', record_builder)
         self.assertIn("CCNMValidAutomaticSlotID", record_builder)
 
+    def test_disabled_pass_retires_the_record_instead_of_keeping_stale_drop_state(self):
+        # Refusing to invent slot 1 means a disabled pass no longer rewrites the
+        # record, so the daemon has to retire it explicitly. Without this a
+        # disable then re-enable inside one boot could inherit a consumed attempt.
+        body = self.function(self.daemon, "- (void)persistWithDecision:")
+        self.assertIn("CCNMADeleteRecord()", body)
+        self.assertIn("decision == CCNMAutomaticMaintenanceDisabled", body)
+        self.assertIn("!CCNMPolicySummaryIsStableEnabled(policy)", body)
+        # The delete must not be driven by a nil record during an enabled pass:
+        # there a missing identity has to leave a consumed attempt consumed.
+        self.assertLess(body.index("CCNMADeleteRecord()"), body.index("CCNMABuildRecord("))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
