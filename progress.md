@@ -274,4 +274,9 @@ watchdog, and a timeout still defers restore past a reboot.
 - reader 和 maintenance daemon 同步验证实际 slot。serving summary 输出真实 slot，maintenance record 的 identity/drop state 也绑定真实 slot，避免 SIM 1/SIM 2 切换后错误继承自动维护状态。已知历史孤儿恢复继续固定 reviewed UUID + slot 1，不被普通路径泛化。
 - 回归覆盖 slot 1/slot 2 单卡成功模型、双卡/缺 UUID/非法 slot 拒绝、UUID+slot 原子 revalidation、四类 durable record 链接、reader/daemon 镜像和历史孤儿 slot 1 pin。
 - 追加修正：disabled 一轮没有选定 subscription，无 slot/UUID 可绑定，record builder 现在正确地拒绍凭空写 slot 1，但那会把上一代 record 留在盘上。daemon 在 disabled 分支显式 `CCNMADeleteRecord()` 退役记录，只保留 status，避免同一 boot 内 disable 再 enable 继承已消耗的 attempt。删除条件故意窄于“record 为 nil”：enabled 下身份读不到时必须保留旧记录，否则会把已用完的尝试洗成可用。
-- 当前验证：host 全套 302 passed、3 skipped；新增定向 12/12；`verify_release_source` passed；本地 rootless aggregate 构建完成（仅编译证据，不交付）。固定云端 run `32580565115`（commit `e19749f`）三 job 全部成功；disabled-record 修正后的云端构建和真机验证待完成。
+- 当前验证：host 全套 302 passed、3 skipped；新增定向 12/12；`verify_release_source` passed；本地 rootless aggregate 构建完成（仅编译证据，不交付）。
+- 云端固定环境 run `32581725415`（commit `3ecc200`）三 job 全部 success：Host release gates、Package roothide、Package rootless。两 lane 的 verification-report 与 source-verification 均 `status: passed`，failures/forbidden 为空。
+- 工具链已固定并核对：Xcode 15.4 (`15F31d`)、Apple clang 15.0.0 (clang-1500.3.9.4)、ld 1053.12、system SDK 17.5、min iOS 14.0；两 lane 日志 `incompatible arm64e` 计数均为 0。
+- roothide 五个二进制均 arm64+arm64e；两个注入 bundle 保持 `LC_DYLD_INFO_ONLY`，三个 exec 工具（install-guard / removal-guard / maintenance）为 `LC_DYLD_CHAINED_FIXUPS`，符合已审定基线；daemon 与两个 guard 不链 libroothide；launchd plist program 为裸路径 `/usr/libexec/networkmanager-maintenance`。
+- 产物：roothide `me.nixuge.networkmanager_1.5.0_iphoneos-arm64e.deb`，SHA256 `0e0faeb0154b19b0c0b6efe3133b707dc809acaf5175eecb31d8b8a29ee02fc2`，318732 bytes；rootless `me.nixuge.networkmanager_1.5.0_iphoneos-arm64.deb`，SHA256 `b30e3af17ecaa11ecfe7629a7da6b7e5d73efc7493cfacf7e3c918444491094a`，300398 bytes。
+- 剩余缺口：SIM 2 真机端到端复测（enable / read-back / disable 后的 record 退役 / 重新 enable 不继承旧 attempt）尚未完成。
