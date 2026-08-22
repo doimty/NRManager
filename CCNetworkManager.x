@@ -101,7 +101,7 @@ static void CCNMLiveServingStatusDidChangeCallback(
     const void *object,
     CFDictionaryRef userInfo);
 
-@interface CCNetworkManagerViewController : CCUIButtonModuleViewController
+@interface CCNetworkManagerViewController ()
 
 @property (nonatomic, strong) NSTimer *refreshTimer;
 @property (nonatomic, strong) NSTimer *ratDebounceTimer;
