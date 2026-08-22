@@ -40,10 +40,11 @@ class LiveCCPackagingTests(unittest.TestCase):
         root_control = (ROOT / "control").read_text()
         root_plist = plistlib.loads((ROOT / "Resources/Info.plist").read_bytes())
         workflow = (ROOT / ".github/workflows/livecc-prototype.yml").read_text()
-        # The formal package no longer builds a duplicate Control Center bundle;
-        # this standalone package is the sole owner of the LiveCC preview.
-        self.assertNotIn("BUNDLE_NAME = NetworkManager\n", root_makefile)
-        self.assertNotIn("NetworkManager_FILES", root_makefile)
+        # The formal bundle and this standalone package share the LiveCC source,
+        # but remain separate installed bundles.
+        self.assertIn("BUNDLE_NAME = NetworkManager\n", root_makefile)
+        self.assertIn("NetworkManager_FILES", root_makefile)
+        self.assertIn("CCNM_SERVING_USE_LIVECC_NAMESPACE=1", root_makefile)
         self.assertIn("Package: me.nixuge.networkmanager\n", root_control)
         self.assertEqual(root_plist["CFBundleExecutable"], "NetworkManager")
         self.assertEqual(root_plist["NSPrincipalClass"], "CCNetworkManager")
@@ -71,6 +72,8 @@ class LiveCCPackagingTests(unittest.TestCase):
             "-DCCNMCellMonitorAsyncState=CCNMLiveCellMonitorAsyncState", self.makefile
         )
         self.assertIn("CCNM_SERVING_USE_LIVECC_NAMESPACE=1", self.makefile)
+        self.assertIn("shouldBeginTransitionToExpandedContentModule", SOURCE.read_text())
+        self.assertIn("return NO;", SOURCE.read_text())
         self.assertIn("ifneq ($(THEOS_PACKAGE_SCHEME),roothide)", self.makefile)
         self.assertIn("NetworkManagerLive_PRIVATE_FRAMEWORKS = ControlCenterUIKit", self.makefile)
         self.assertIn("NetworkManagerLive_LDFLAGS += -undefined dynamic_lookup", self.makefile)
@@ -113,10 +116,12 @@ class LiveCCStaticSafetyTests(unittest.TestCase):
             self.source,
         )
         self.assertNotIn("CCUIToggleModule", self.all_live_sources)
+        self.assertIn("shouldBeginTransitionToExpandedContentModule", self.source)
 
     def test_direct_glyph_assignment_has_no_private_refresh_path(self):
         apply_method = self.source[self.source.index("- (void)applySummary:") :]
-        self.assertIn("self.glyphImage = self.hasFreshServingResult", apply_method)
+        self.assertIn("self.glyphImage = glyph", apply_method)
+        self.assertIn("self.selectedGlyphImage = selectedGlyph", apply_method)
         for forbidden in (
             "reconfigureView",
             "refreshState",
@@ -200,7 +205,7 @@ class LiveCCStaticSafetyTests(unittest.TestCase):
             self.assertIn(token, self.source)
         self.assertNotIn('self.glyphImage = CCNMLiveGlyphImage(@"?")', self.source)
         self.assertNotIn('@"?"', self.source)
-        self.assertIn("CCNMLiveSearchingGlyphImage()", self.source)
+        self.assertIn("CCNMLiveSearchingGlyphImageWithColor", self.source)
         self.assertNotIn("glyphColor = UIColor.blackColor", self.source)
         self.assertIn("glyphColor = UIColor.whiteColor", self.source)
 

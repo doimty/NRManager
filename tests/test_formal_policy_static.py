@@ -117,11 +117,10 @@ class FormalPolicyStaticTests(unittest.TestCase):
         self.assertIn("No baseline, intent, in-flight marker, or setter call", preflight_failure)
 
     def test_control_center_uses_only_public_state_refresh_api(self):
-        # The tile publishes its own glyph now instead of asking the framework to
-        # re-read a read-only property, but it still may not touch private ivars.
-        self.assertIn("self.glyphImage = self.hasFreshServingResult", self.cc_source)
-        self.assertIn("self.glyphImage = CCNMLiveSearchingGlyphImage();", self.cc_source)
-        self.assertNotIn("drawnGlyphKey", self.cc_source)
+        self.assertIn("self.glyphImage = glyph", self.cc_source)
+        self.assertIn("self.selectedGlyphImage = selectedGlyph", self.cc_source)
+        self.assertIn("shouldBeginTransitionToExpandedContentModule", self.cc_source)
+        self.assertIn("return NO;", self.cc_source)
         for forbidden in (
             "class_getInstanceVariable",
             "object_getIvar",
@@ -134,15 +133,17 @@ class FormalPolicyStaticTests(unittest.TestCase):
         self.assertIn("CCNMLiveTextForSummary", self.cc_source)
         self.assertIn('stringWithFormat:@"B%lld"', self.cc_source)
         self.assertIn('stringWithFormat:@"n%lld"', self.cc_source)
-        self.assertNotIn("CCNMPolicyIsRequested", self.cc_source)
+        self.assertIn("CCNMLivePolicyRequested", self.cc_source)
+        self.assertIn("CCNMLivePolicyAccentColor", self.cc_source)
 
-    def test_control_center_is_read_only_and_does_not_persist_local_truth(self):
+    def test_control_center_reads_policy_display_state_without_a_writer(self):
         self.assertNotIn("selectedNetwork", self.cc_source)
-        self.assertNotIn("CCNMN78Policy", self.cc_source)
+        self.assertIn("CCNMN78PolicyStatePath", self.cc_source)
         self.assertNotIn("CCNMEnableN78Preference", self.cc_source)
         self.assertNotIn("CCNMDisableN78Preference", self.cc_source)
         self.assertNotIn("CCNMPostPolicyDidChange", self.cc_source)
         self.assertIn("CCNMServingStatusDidChangeDarwinNotification", self.cc_source)
+        self.assertIn("CCNMLivePolicyChangedNotification", self.cc_source)
         self.assertIn("CFNotificationCenterAddObserver", self.cc_source)
         self.assertIn("CFNotificationCenterRemoveObserver", self.cc_source)
         self.assertIn("CCNMPostPolicyDidChange", self.source)

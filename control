@@ -3,7 +3,7 @@ Name: NetworkManagerReborn
 Depends: mobilesubstrate, com.opa334.ccsupport
 Version: 1.5.0
 Architecture: iphoneos-arm64
-Description: Network preference and automatic maintenance for n78
+Description: Control Center network selection with an n78 preference
 Maintainer: Nixuge, 灰灰
 Author: NoisyFlake, Nixuge, 灰灰
-Section: Tweaks
+Section: Control Center (Modules)

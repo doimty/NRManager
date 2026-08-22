@@ -259,10 +259,10 @@ watchdog, and a timeout still defers restore past a reboot.
   then passed host gates and both rootless/roothide package verification. The roothide
   artifact is ready for delivery after the final hash check.
 
-## 2026-08-22 Retire the duplicate formal Control Center button
+## 2026-08-22 Control Center long-press and enabled-color correction
 
-- 老大确认正式包的长按展开内容与独立 LiveCC 预览重复，没有独有动作或信息；选择移除正式包按钮，而不是继续引入未经设备验证的 expanded ControlCenter 私有 UI。独立 `livecc` 包继续作为唯一实时预览，Settings 继续提供 n78 开关/恢复/维护。
-- 顶层 Makefile 不再构建 `NetworkManager.bundle`；保留 `CCNetworkManager.x`、正式 Resources 和 livecc 源码作为历史/独立包源码，但不进入正式 deb。`Settings + maintenance-daemon + package-actions` 仍完整构建。
-- `package-actions/postinst.sh.in` 新增按 lane 的旧 bundle 清理：rootless 用 staging prefix，roothide 用重定向根的裸路径；jbroot 无法解析时 fail-safe 留存并记录 notice。这样升级旧版后不会残留重复按钮。
-- `verify_release_package.py` 和端到端 fake package 已改为只要求 Settings bundle、maintenance plist、daemon、两个 guard；正式 Control Center bundle 的 Mach-O/依赖/Info.plist 基线退出发布包校验。自动维护 decision model 的两个消费者更新为 Settings 和 daemon。
-- 验证：相关 68 项通过；全套主机测试 294 passed、3 skipped；`verify_release_source`、py_compile、diff check 通过；serial local rootless/roothide aggregate builds 完成。当前 removal change 尚未提交/云端构建。
+- 老大澄清：正式 Control Center 按钮不能移除，只需要取消长按展开反馈。上一轮 `1fc1b6a` 的移除方案作废，正式 bundle 恢复保留；独立 LiveCC 仍是独立包，不与正式 bundle 合并安装路径。
+- 顶层 Makefile 恢复构建 `NetworkManager.bundle`，正式包继续保留 Control Center 按钮；Settings、maintenance-daemon、package-actions 也继续完整构建。
+- 复用同一份 LiveCC 控制器源码，但新增 `shouldBeginTransitionToExpandedContentModule` 返回 `NO`，长按不会再展开一个与紧凑磁贴相同的频段预览。没有 runtime 手势 hook，也不影响普通点击刷新。
+- 正式 bundle 只读读取自身 path shim 指向的 policy state plist，用 `requestedMode == n78Preferred` 同步 `selected`；不链接完整 policy reader/support，不调用任何 setter。启用态 selected glyph 使用原来的橙色 `#FF9500`，普通 glyph 白色；同时显式设置 `selectedGlyphImage`，避免白色 selected 背景上继续显示白字。
+- 当前验证：全套主机 290 passed、3 skipped；定向 77 passed；`verify_release_source`、py_compile、diff check 通过；serial roothide/rootless local aggregate builds completed。尚未提交/云端构建，待固定 Xcode 15.4 build 后再交付新包。

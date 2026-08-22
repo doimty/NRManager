@@ -94,10 +94,10 @@ int main(void) {
 class AutomaticMaintenanceDecisionTests(unittest.TestCase):
     def test_decision_module_is_compiled_into_both_consumers(self):
         source_name = "networkmanagerprefs/CCNMAutomaticMaintenanceDecision.c"
+        root_makefile = (ROOT / "Makefile").read_text()
         prefs_makefile = (ROOT / "networkmanagerprefs" / "Makefile").read_text()
-        daemon_makefile = (ROOT / "maintenance-daemon" / "Makefile").read_text()
+        self.assertIn(source_name, root_makefile)
         self.assertIn("CCNMAutomaticMaintenanceDecision.c", prefs_makefile)
-        self.assertIn("../networkmanagerprefs/CCNMAutomaticMaintenanceDecision.c", daemon_makefile)
 
     def test_pure_decision_model(self):
         self.assertTrue(SOURCE.exists(), SOURCE)

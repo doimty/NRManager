@@ -7,6 +7,7 @@
 @property (nonatomic, readonly) BOOL providesOwnPlatter;
 
 @optional
+- (BOOL)shouldBeginTransitionToExpandedContentModule;
 - (void)controlCenterWillPresent;
 - (void)controlCenterDidDismiss;
 

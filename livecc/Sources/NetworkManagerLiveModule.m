@@ -7,6 +7,14 @@
 #import "CCNMLiveBandText.h"
 #import "CCNMServingStatusProvider.h"
 
+#if CCNM_LIVE_MAIN_BUNDLE
+FOUNDATION_EXPORT NSString *CCNMN78PolicyStatePath(void);
+static NSString *const CCNMLivePolicyChangedNotification =
+    @"me.nixuge.networkmanager/n78-policy-changed";
+static NSString *const CCNMLivePolicyRequestedModeKey = @"requestedMode";
+static NSString *const CCNMLivePolicyN78Preferred = @"n78Preferred";
+#endif
+
 static const NSTimeInterval CCNMLiveRefreshInterval = 15.0;
 static const NSTimeInterval CCNMLiveRATDebounceSeconds = 0.25;
 
@@ -30,10 +38,31 @@ static NSString *CCNMLiveTextForSummary(NSDictionary<NSString *, id> *summary) {
     return nil;
 }
 
-static UIImage *CCNMLiveGlyphImage(NSString *text) {
+#if CCNM_LIVE_MAIN_BUNDLE
+static UIColor *CCNMLivePolicyAccentColor(void) {
+    return [UIColor colorWithRed:1.00 green:0.58 blue:0.00 alpha:1.0];
+}
+
+static BOOL CCNMLivePolicyRequested(void) {
+    NSDictionary *state =
+        [NSDictionary dictionaryWithContentsOfFile:CCNMN78PolicyStatePath()];
+    return [state[CCNMLivePolicyRequestedModeKey]
+        isEqual:CCNMLivePolicyN78Preferred];
+}
+#else
+static UIColor *CCNMLivePolicyAccentColor(void) {
+    return UIColor.whiteColor;
+}
+
+static BOOL CCNMLivePolicyRequested(void) {
+    return NO;
+}
+#endif
+
+static UIImage *CCNMLiveGlyphImageWithColor(NSString *text, UIColor *textColor) {
     UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 70, 70)];
     label.text = text.length > 0 ? text : @"...";
-    label.textColor = UIColor.whiteColor;
+    label.textColor = textColor;
     label.backgroundColor = UIColor.clearColor;
     label.textAlignment = NSTextAlignmentCenter;
     label.adjustsFontSizeToFitWidth = YES;
@@ -47,7 +76,7 @@ static UIImage *CCNMLiveGlyphImage(NSString *text) {
     return image;
 }
 
-static UIImage *CCNMLiveCenteredSymbolGlyphImage(UIImage *symbol) {
+static UIImage *CCNMLiveCenteredSymbolGlyphImage(UIImage *symbol, UIColor *tintColor) {
     if (!symbol) {
         return nil;
     }
@@ -61,16 +90,16 @@ static UIImage *CCNMLiveCenteredSymbolGlyphImage(UIImage *symbol) {
         (canvasSize.height - drawSize.height) / 2.0,
         drawSize.width,
         drawSize.height);
-    UIImage *whiteSymbol = [symbol imageWithTintColor:UIColor.whiteColor
+    UIImage *tintedSymbol = [symbol imageWithTintColor:tintColor
         renderingMode:UIImageRenderingModeAlwaysOriginal];
     UIGraphicsBeginImageContextWithOptions(canvasSize, NO, 0.0);
-    [whiteSymbol drawInRect:CGRectIntegral(drawRect)];
+    [tintedSymbol drawInRect:CGRectIntegral(drawRect)];
     UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
     UIGraphicsEndImageContext();
     return image;
 }
 
-static UIImage *CCNMLiveSearchingGlyphImage(void) {
+static UIImage *CCNMLiveSearchingGlyphImageWithColor(UIColor *tintColor) {
     UIImageSymbolConfiguration *configuration =
         [UIImageSymbolConfiguration configurationWithPointSize:25.0
             weight:UIImageSymbolWeightMedium];
@@ -80,7 +109,8 @@ static UIImage *CCNMLiveSearchingGlyphImage(void) {
         symbol = [UIImage systemImageNamed:@"magnifyingglass"
             withConfiguration:configuration];
     }
-    return CCNMLiveCenteredSymbolGlyphImage(symbol) ?: CCNMLiveGlyphImage(@"...");
+    return CCNMLiveCenteredSymbolGlyphImage(symbol, tintColor) ?:
+        CCNMLiveGlyphImageWithColor(@"...", tintColor);
 }
 
 @class NetworkManagerLiveViewController;
@@ -91,6 +121,15 @@ static void CCNMLiveServingStatusDidChangeCallback(
     CFStringRef name,
     const void *object,
     CFDictionaryRef userInfo);
+
+#if CCNM_LIVE_MAIN_BUNDLE
+static void CCNMLivePolicyDidChangeCallback(
+    CFNotificationCenterRef center,
+    void *observer,
+    CFStringRef name,
+    const void *object,
+    CFDictionaryRef userInfo);
+#endif
 
 @interface NetworkManagerLiveViewController : CCUIButtonModuleViewController
 
@@ -107,6 +146,8 @@ static void CCNMLiveServingStatusDidChangeCallback(
 
 - (void)applyNewerCachedSummary;
 - (void)applyCurrentSummary;
+- (void)applyGlyphText:(NSString *)text;
+- (void)applyPolicyPresentation;
 
 @end
 
@@ -123,10 +164,16 @@ static void CCNMLiveServingStatusDidChangeCallback(
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = @"Live Band";
-    self.selected = NO;
     self.glyphColor = UIColor.whiteColor;
-    self.glyphImage = CCNMLiveSearchingGlyphImage();
+    self.selectedGlyphColor = CCNMLivePolicyAccentColor();
+    [self applyGlyphText:nil];
     [self applyNewerCachedSummary];
+}
+
+// The live band is already visible in the compact tile. A long press must not
+// transition to an expanded copy of the same preview.
+- (BOOL)shouldBeginTransitionToExpandedContentModule {
+    return NO;
 }
 
 - (void)controlCenterWillPresent {
@@ -194,6 +241,15 @@ static void CCNMLiveServingStatusDidChangeCallback(
         (__bridge CFStringRef)CCNMServingStatusDidChangeDarwinNotification,
         NULL,
         CFNotificationSuspensionBehaviorDeliverImmediately);
+#if CCNM_LIVE_MAIN_BUNDLE
+    CFNotificationCenterAddObserver(
+        CFNotificationCenterGetDarwinNotifyCenter(),
+        (__bridge const void *)self,
+        CCNMLivePolicyDidChangeCallback,
+        (__bridge CFStringRef)CCNMLivePolicyChangedNotification,
+        NULL,
+        CFNotificationSuspensionBehaviorDeliverImmediately);
+#endif
 }
 
 - (void)removeObserversIfNeeded {
@@ -209,6 +265,13 @@ static void CCNMLiveServingStatusDidChangeCallback(
         (__bridge const void *)self,
         (__bridge CFStringRef)CCNMServingStatusDidChangeDarwinNotification,
         NULL);
+#if CCNM_LIVE_MAIN_BUNDLE
+    CFNotificationCenterRemoveObserver(
+        CFNotificationCenterGetDarwinNotifyCenter(),
+        (__bridge const void *)self,
+        (__bridge CFStringRef)CCNMLivePolicyChangedNotification,
+        NULL);
+#endif
 }
 
 - (void)refreshTimerFired:(NSTimer *)timer {
@@ -228,7 +291,7 @@ static void CCNMLiveServingStatusDidChangeCallback(
         self.refreshGeneration++;
         self.awaitingCurrentRefresh = YES;
         self.hasFreshServingResult = NO;
-        self.glyphImage = CCNMLiveSearchingGlyphImage();
+        [self applyGlyphText:nil];
         [self.ratDebounceTimer invalidate];
         __weak typeof(self) weakDebounceSelf = self;
         self.ratDebounceTimer = [NSTimer scheduledTimerWithTimeInterval:CCNMLiveRATDebounceSeconds
@@ -259,7 +322,7 @@ static void CCNMLiveServingStatusDidChangeCallback(
         return;
     }
     if (!self.hasFreshServingResult) {
-        self.glyphImage = CCNMLiveSearchingGlyphImage();
+        [self applyGlyphText:nil];
     }
     self.refreshPending = NO;
     self.refreshInProgress = YES;
@@ -281,7 +344,7 @@ static void CCNMLiveServingStatusDidChangeCallback(
             }
             if (shouldRefreshAgain) {
                 self.hasFreshServingResult = NO;
-                self.glyphImage = CCNMLiveSearchingGlyphImage();
+                [self applyGlyphText:nil];
                 if (self.ratDebounceTimer) {
                     self.refreshPending = YES;
                     return;
@@ -319,9 +382,31 @@ static void CCNMLiveServingStatusDidChangeCallback(
         MAX(self.appliedPublishedAtMilliseconds, publishedAt);
     NSString *text = CCNMLiveTextForSummary(summary);
     self.hasFreshServingResult = text.length > 0;
-    self.glyphImage = self.hasFreshServingResult
-        ? CCNMLiveGlyphImage(text)
-        : CCNMLiveSearchingGlyphImage();
+    [self applyGlyphText:self.hasFreshServingResult ? text : nil];
+}
+
+- (void)applyGlyphText:(NSString *)text {
+    BOOL requested = CCNMLivePolicyRequested();
+    UIColor *normalColor = UIColor.whiteColor;
+    UIColor *selectedColor = CCNMLivePolicyAccentColor();
+    UIImage *glyph = text.length > 0
+        ? CCNMLiveGlyphImageWithColor(text, normalColor)
+        : CCNMLiveSearchingGlyphImageWithColor(normalColor);
+    UIImage *selectedGlyph = text.length > 0
+        ? CCNMLiveGlyphImageWithColor(text, selectedColor)
+        : CCNMLiveSearchingGlyphImageWithColor(selectedColor);
+    self.glyphColor = normalColor;
+    self.selectedGlyphColor = selectedColor;
+    self.glyphImage = glyph;
+    self.selectedGlyphImage = selectedGlyph;
+    self.selected = requested;
+}
+
+- (void)applyPolicyPresentation {
+    NSDictionary<NSString *, id> *summary =
+        [[CCNMServingStatusProvider sharedProvider] currentSummary];
+    NSString *text = CCNMLiveTextForSummary(summary);
+    [self applyGlyphText:text.length > 0 ? text : nil];
 }
 
 - (void)buttonTapped:(id)button forEvent:(UIEvent *)event {
@@ -330,7 +415,7 @@ static void CCNMLiveServingStatusDidChangeCallback(
     self.refreshGeneration++;
     self.awaitingCurrentRefresh = YES;
     self.hasFreshServingResult = NO;
-    self.glyphImage = CCNMLiveSearchingGlyphImage();
+    [self applyGlyphText:nil];
     [self.ratDebounceTimer invalidate];
     self.ratDebounceTimer = nil;
     if (self.refreshInProgress) {
@@ -358,6 +443,25 @@ static void CCNMLiveServingStatusDidChangeCallback(
         [viewController applyNewerCachedSummary];
     });
 }
+
+#if CCNM_LIVE_MAIN_BUNDLE
+static void CCNMLivePolicyDidChangeCallback(
+    CFNotificationCenterRef center,
+    void *observer,
+    CFStringRef name,
+    const void *object,
+    CFDictionaryRef userInfo) {
+    (void)center;
+    (void)name;
+    (void)object;
+    (void)userInfo;
+    NetworkManagerLiveViewController *viewController =
+        (__bridge NetworkManagerLiveViewController *)observer;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [viewController applyPolicyPresentation];
+    });
+}
+#endif
 
 @interface NetworkManagerLiveModule : NSObject <CCUIContentModule>
 

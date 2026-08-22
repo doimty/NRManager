@@ -75,6 +75,15 @@ ROOTHIDE_BASELINE_LOAD_COMMANDS = {
 # remains pinned to the device-working baseline.
 ROOTHIDE_RELEASE_LOAD_COMMANDS = ROOTHIDE_BASELINE_LOAD_COMMANDS - {"LC_VERSION_MIN_IPHONEOS"}
 ROOTHIDE_BASELINE_DEPENDENCIES = {
+    "NetworkManager": {
+        "/usr/lib/libobjc.A.dylib",
+        "/System/Library/Frameworks/Foundation.framework/Foundation",
+        "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation",
+        "/System/Library/Frameworks/CoreTelephony.framework/CoreTelephony",
+        ROOTHIDE_DYLIB,
+        "/usr/lib/libSystem.B.dylib",
+        "/System/Library/Frameworks/UIKit.framework/UIKit",
+    },
     "NetworkManagerPrefs": {
         "/usr/lib/libobjc.A.dylib",
         "/System/Library/Frameworks/Foundation.framework/Foundation",
@@ -118,6 +127,10 @@ INSTALL_GUARD_RELATIVE = "usr/libexec/networkmanager-install-guard"
 REMOVAL_GUARD_RELATIVE = "usr/libexec/networkmanager-removal-guard"
 MAINTENANCE_HELPER_RELATIVE = "usr/libexec/" + MAINTENANCE_HELPER_NAME
 REQUIRED_PAYLOAD_FILES = {
+    "Library/ControlCenter/Bundles/NetworkManager.bundle/Info.plist",
+    "Library/ControlCenter/Bundles/NetworkManager.bundle/NetworkManager",
+    "Library/ControlCenter/Bundles/NetworkManager.bundle/SettingsIcon@2x.png",
+    "Library/ControlCenter/Bundles/NetworkManager.bundle/SettingsIcon@3x.png",
     "Library/LaunchDaemons/me.nixuge.networkmanager.maintenance.plist",
     "Library/PreferenceBundles/NetworkManagerPrefs.bundle/Info.plist",
     "Library/PreferenceBundles/NetworkManagerPrefs.bundle/NetworkManagerPrefs",
@@ -131,6 +144,7 @@ REQUIRED_PAYLOAD_FILES = {
     MAINTENANCE_HELPER_RELATIVE,
 }
 BINARY_PAYLOAD_FILES = (
+    "Library/ControlCenter/Bundles/NetworkManager.bundle/NetworkManager",
     "Library/PreferenceBundles/NetworkManagerPrefs.bundle/NetworkManagerPrefs",
     INSTALL_GUARD_RELATIVE,
     REMOVAL_GUARD_RELATIVE,
@@ -190,6 +204,10 @@ FORBIDDEN_LEGACY_PAYLOAD_BASENAMES = {
     "twitter@3x.png",
 }
 PLIST_IDENTITIES = {
+    "Library/ControlCenter/Bundles/NetworkManager.bundle/Info.plist": (
+        PACKAGE_ID,
+        "NetworkManager",
+    ),
     "Library/PreferenceBundles/NetworkManagerPrefs.bundle/Info.plist": (
         "me.nixuge.networkmanagerprefs",
         "NetworkManagerPrefs",
