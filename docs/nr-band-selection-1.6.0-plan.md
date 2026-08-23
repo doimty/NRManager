@@ -1,6 +1,6 @@
 # NR band selection (1.6.0) — implementation plan
 
-Status: **infrastructure landed, UI outstanding.** Commits `5472aaa` (payload, records, summary, daemon, decision module) and `efc0669` (removal cleanup) implement work items 1–10, 15, 16 and 17. Items 11–14, the settings pane, are the whole remaining feature: without them `CCNMWriteSelectedNRBands` has no caller in the shipped bundle, every install reads the default `@[ @78 ]`, and none of the landed work is reachable by a user. See "Implementation status".
+Status: **infrastructure landed, UI outstanding.** Commits `5472aaa` (payload, records, summary, daemon, decision module) and `efc0669` (removal cleanup) implement work items 1–11, 16 and 17. Items 12–15, the settings pane, are the whole remaining feature: without them `CCNMWriteSelectedNRBands` has no caller in the shipped bundle, every install reads the default `@[ @78 ]`, and none of the landed work is reachable by a user. See "Implementation status".
 
 Supersedes nothing in 1.5.0; 1.5.0 remains the shipping line. Its dual-SIM write path is confirmed working on the reporting device; three of the four retest steps are still unreported. See "Sequencing".
 
@@ -19,13 +19,13 @@ Landed in `5472aaa`, 353 host tests green:
 - `CCNMValidateStateRecord` requires a canonical selection for a settled enabled record only.
 - `CCNMSummaryFromState` publishes `targetNRBands` in both mirrors.
 - Daemon `CCNMActiveNRBandsMatchTarget`, baseline-supported check, and `CCNMCopyTargetNRBands`.
-- Decision module generalised to a target set (work item 16, which this plan originally missed).
+- Decision module generalised to a target set (work item 10, which this plan originally missed).
 
 Landed in `efc0669`, 355 host tests green:
 
-- `prerm` discards the stored selection on `remove` (work item 17, also missed by this plan).
+- `prerm` discards the stored selection on `remove` (work item 16, also missed by this plan).
 
-Outstanding: work items 11–14, plus the two open questions at the end of this section.
+Outstanding: work items 12–15, plus the two open questions at the end of this section.
 
 ### Facts established while implementing, which the plan had as assumptions
 
