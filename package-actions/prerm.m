@@ -1,6 +1,8 @@
 #import <Foundation/Foundation.h>
 #import <dispatch/dispatch.h>
+#import <errno.h>
 #import <stdio.h>
+#import <string.h>
 #import <unistd.h>
 
 #import "CCNMDpkgVersion.h"
@@ -84,12 +86,61 @@ static void CCNMExitWhenSetterSettled(CCNMPrermExitCode exitCode) {
     _exit(exitCode);
 }
 
+// The band selection is user preference data, not policy evidence, so it is not
+// in CCNMN78PolicyPaths() and is never retired with the durable records: it has
+// to outlive the off state, because a selection can be edited while the feature
+// is disabled. Removal is the one moment it has no owner left, and dpkg will not
+// do it -- the file lives under /var/mobile/Library/Preferences and was never
+// part of the package payload.
+//
+// Leaving it behind is worse than untidy. A stored band the current SIM no longer
+// offers makes the toggle refuse, and nothing in Settings names the stored value,
+// so the one remedy every user reaches for -- remove and reinstall -- would
+// silently inherit the same selection and fail again.
+//
+// This runs from prerm even though postrm is dpkg's hook for discarding data on
+// removal, because this package has no postrm and adding one to the removal path
+// is the larger risk: a new maintainer script there has to resolve the install
+// prefix for itself and can block a removal outright, which is the failure this
+// project has already been burned by. The price of choosing prerm is that an
+// aborted removal loses the selection, which resets the toggle to the shipped
+// default and is re-picked in Settings in one tap.
+//
+// Never a block. Failing to unlink a preference file leaves the modem exactly as
+// it was, so refusing removal over it would turn a stale plist into an
+// unremovable package.
+static void CCNMDiscardRetiredBandSelection(void) {
+    NSString *path = CCNMN78SelectedBandsPath();
+    if (unlink(path.fileSystemRepresentation) == 0 || errno == ENOENT) {
+        return;
+    }
+    fprintf(stderr,
+        "NetworkManagerReborn: warning \u2014 the stored NR band selection at %s could not be "
+        "discarded (%s), so a later reinstall will inherit it.\n",
+        path.UTF8String, strerror(errno));
+    fflush(stderr);
+}
+
+// The single point that authorizes removal. Routing every allowed verdict through
+// here is what keeps the cleanup from being skipped by a later early return added
+// above it.
+//
+// Only a real retirement discards the selection. upgrade and failed-upgrade hand
+// the same records to a successor package, and deconfigure leaves this one
+// unpacked, so none of them may throw away a preference the user still owns.
+static CCNMPrermExitCode CCNMAllowRemoval(NSString *action) {
+    if ([action isEqual:@"remove"]) {
+        CCNMDiscardRetiredBandSelection();
+    }
+    return CCNMRemovalAllowed;
+}
+
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         NSString *action = argc > 1 ? [NSString stringWithUTF8String:argv[1]] : @"";
         NSString *versionArgument = argc > 2 ? [NSString stringWithUTF8String:argv[2]] : @"";
         if (!CCNMActionRequiresRestore(action)) {
-            return CCNMRemovalAllowed;
+            return CCNMAllowRemoval(action);
         }
         if (geteuid() != 0) {
             fprintf(stderr, "NetworkManagerReborn: removal guard must run as root.\n");
@@ -115,14 +166,14 @@ int main(int argc, const char *argv[]) {
         // current policy is, the successor package reads the same records and
         // the Settings UI stays able to disable and recover.
         if (CCNMActionKeepsRestoreCapabilityInstalled(action, versionArgument)) {
-            return CCNMRemovalAllowed;
+            return CCNMAllowRemoval(action);
         }
 
         NSDictionary<NSString *, id> *current = CCNMReadN78PolicyState();
         if (CCNMSummaryIsClean(current) &&
             [current[@"verifiedKnownOrphanRestore"] boolValue] &&
             ![current[@"removalGuardPresent"] boolValue]) {
-            return CCNMRemovalAllowed;
+            return CCNMAllowRemoval(action);
         }
         NSDictionary<NSString *, id> *orphanEligibility = CCNMReadKnownOrphanedN78RemovalSafety();
         if ([orphanEligibility[@"eligible"] boolValue]) {
@@ -141,11 +192,11 @@ int main(int argc, const char *argv[]) {
             return CCNMPrermBlocked;
         }
         if (CCNMSummaryAllowsRemoval(current)) {
-            return CCNMRemovalAllowed;
+            return CCNMAllowRemoval(action);
         }
         if (CCNMSummaryIsClean(current)) {
             NSDictionary *armed = CCNMArmN78PolicyRemovalGuard();
-            return CCNMSummaryAllowsRemoval(armed) ? CCNMRemovalAllowed : CCNMPrermBlocked;
+            return CCNMSummaryAllowsRemoval(armed) ? CCNMAllowRemoval(action) : CCNMPrermBlocked;
         }
 
         fprintf(stderr,
@@ -166,7 +217,7 @@ int main(int argc, const char *argv[]) {
                     [finalSummary[CCNMN78PolicySummaryRequiresRebootKey] boolValue] ? "required" : "not-required");
                 fflush(stderr);
             }
-            CCNMExitWhenSetterSettled(allowed ? CCNMRemovalAllowed : CCNMPrermBlocked);
+            CCNMExitWhenSetterSettled(allowed ? CCNMAllowRemoval(action) : CCNMPrermBlocked);
         });
         dispatch_main();
     }

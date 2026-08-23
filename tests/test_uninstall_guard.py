@@ -95,7 +95,7 @@ class UninstallGuardTests(unittest.TestCase):
         self.assertIn("CCNMArmN78PolicyRemovalGuard()", source)
         self.assertIn('summary[@"baselinePresent"]', source)
         self.assertIn('summary[@"transitionPresent"]', source)
-        self.assertIn("CCNMExitWhenSetterSettled(allowed ? CCNMRemovalAllowed", source)
+        self.assertIn("CCNMExitWhenSetterSettled(allowed ? CCNMAllowRemoval(action)", source)
         self.assertIn("CCNMN78PolicyHasOutstandingSetter()", source)
         self.assertIn("dispatch_after", source)
         # Stopping the daemon is the shell's, after this guard returns a clean
@@ -131,6 +131,74 @@ class UninstallGuardTests(unittest.TestCase):
         self.assertNotIn("_exit(allowed ?", source)
         self.assertNotIn("unlink(CCNMN78PolicyBaselinePath", source)
         self.assertNotIn("removeItemAtPath:CCNMN78PolicyBaselinePath", source)
+
+    def test_the_band_selection_is_discarded_when_the_install_is_retired(self):
+        """A preference that outlives the package makes reinstalling a dead remedy.
+
+        The selection deliberately survives the off state, so it cannot join
+        CCNMN78PolicyPaths() and be retired with the policy records. That leaves
+        removal as the only moment it has no owner left. Skipping it is worse than
+        untidy: a stored band the current SIM no longer offers makes the toggle
+        refuse, and nothing in Settings names the stored value, so the one remedy
+        every user reaches for -- reinstall -- would silently inherit the same
+        selection and fail again.
+        """
+        prerm = PRERM_SOURCE.read_text()
+
+        # A single funnel authorizes removal, so a later early return added to this
+        # guard cannot quietly skip the cleanup.
+        self.assertTrue("static CCNMPrermExitCode CCNMAllowRemoval(" in prerm,
+                        "prerm has no single removal-authorizing funnel")
+        funnel = prerm[prerm.index("static CCNMPrermExitCode CCNMAllowRemoval("):]
+        funnel = funnel[:funnel.index("\n}")]
+        self.assertIn("CCNMDiscardRetiredBandSelection", funnel)
+        # Only a real retirement discards it. upgrade and failed-upgrade hand the
+        # same records to a successor, and deconfigure leaves the package unpacked,
+        # so none of them may throw away a preference the user still owns.
+        self.assertIn('@"remove"', funnel)
+        self.assertTrue(funnel.count("CCNMDiscardRetiredBandSelection") == 1, funnel)
+
+        self.assertTrue("static void CCNMDiscardRetiredBandSelection(" in prerm,
+                        "prerm does not define the selection cleanup")
+        discard = prerm[prerm.index("static void CCNMDiscardRetiredBandSelection("):]
+        discard = discard[:discard.index("\n}")]
+        self.assertIn("CCNMN78SelectedBandsPath()", discard)
+        # Preference data is not policy evidence. Failing to unlink it leaves the
+        # modem untouched, so it must be reported and never become a block: that
+        # would make an unremovable package out of a stale preference file.
+        self.assertTrue("CCNMPrermBlocked" not in discard, discard)
+        self.assertIn("fprintf(stderr", discard)
+        self.assertIn("ENOENT", discard)
+
+    def test_every_durable_file_is_either_policy_evidence_or_retired_on_removal(self):
+        """Locks the rule, not the one file that currently breaks it.
+
+        1.6.0 introduced the first file the policy owns but the policy records do
+        not retire. The next preference added will land in the same gap, and the
+        symptom is invisible until a user reinstalls, so the check has to be about
+        the set of durable paths rather than about n78-selection.plist.
+        """
+        policy = POLICY_SOURCE.read_text()
+        prerm = PRERM_SOURCE.read_text()
+
+        declared = re.findall(r'CCNMPolicyRoot\(@"([^"]+)"\)', policy)
+        self.assertGreater(len(declared), 1)
+        accessors = dict(re.findall(
+            r"NSString \*(CCNMN78\w+)\(void\) \{\s*"
+            r'return CCNMPolicyRoot\(@"([^"]+)"\);',
+            policy))
+        # Every durable path is reachable through exactly one named accessor, so
+        # the audit below cannot be defeated by an inline path literal.
+        self.assertEqual(sorted(accessors.values()), sorted(declared))
+
+        retired = policy[policy.index("NSArray<NSString *> *CCNMN78PolicyPaths(void)"):]
+        retired = retired[:retired.index("\n}")]
+        for accessor in accessors:
+            call = accessor + "()"
+            self.assertTrue(
+                call in retired or call in prerm,
+                f"{accessor} names a durable file that is neither retired with the "
+                f"policy records nor discarded on removal")
 
     def test_root_helper_preserves_mobile_access_to_policy_records_and_lock(self):
         source = POLICY_SOURCE.read_text()
@@ -304,7 +372,20 @@ class UninstallGuardTests(unittest.TestCase):
         self.assertLess(early, source.index("CCNMArmN78PolicyRemovalGuard()"))
         self.assertLess(early, source.index("CCNMRecoverN78Preference"))
         guard_body = source[early:source.index("CCNMReadN78PolicyState()")]
-        self.assertIn("return CCNMRemovalAllowed", guard_body)
+        self.assertIn("return CCNMAllowRemoval(action)", guard_body)
+        # The funnel every allowed verdict goes through must not read or write
+        # policy state either, or the exemption above would be undone by it.
+        funnel = source[source.index("static CCNMPrermExitCode CCNMAllowRemoval("):]
+        funnel = funnel[:funnel.index("\n}")]
+        for policy_call in (
+            "CCNMReadN78PolicyState",
+            "CCNMRecoverN78Preference",
+            "CCNMArmN78PolicyRemovalGuard",
+            "CCNMN78PolicyStatePath",
+            "CCNMN78PolicyBaselinePath",
+            "CCNMN78PolicyRemovalGuardPath",
+        ):
+            self.assertTrue(policy_call not in funnel, funnel)
         # Only upgrade paths are exempt; remove and deconfigure stay gated.
         predicate = source[source.index("static BOOL CCNMActionKeepsRestoreCapabilityInstalled"):
                            source.index("static BOOL CCNMSummaryIsClean")]
