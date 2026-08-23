@@ -127,6 +127,34 @@ class WritePathSubscriptionSlotSourceTests(unittest.TestCase):
         known_baseline = self.function(self.controller, "static BOOL CCNMKnownOrphanBaselineMatchesEvidence")
         self.assertIn('[baseline[@"slotID"] isEqual:@1]', known_baseline)
 
+    def test_no_shipped_path_defaults_a_missing_slot_to_one(self):
+        # A record written before the slot field existed has no slot at all.
+        # Defaulting that to 1 would claim a slot the device was never observed
+        # on, which is exactly the bug this change set removes. Every slot value
+        # must come from a revalidated subscription instead.
+        for name, source in (
+            ("controller", self.controller),
+            ("reader", self.reader),
+            ("daemon", self.daemon),
+            ("automatic record", self.automatic_record),
+        ):
+            with self.subTest(source=name):
+                self.assertNotIn('slotID"] ?: @1', source)
+                self.assertNotIn('slotID"] ?: @(1)', source)
+
+    def test_restore_cleanup_checkpoint_records_the_revalidated_slot(self):
+        # This branch reconciles a checkpoint from an earlier boot. It already
+        # revalidates the subscription through CCNMSafeTargetContext, so the
+        # proof it writes has to use that answer rather than the stored one, and
+        # it must fail closed instead of putting a nil into a literal.
+        marker = 'NSNumber *cleanupSlotID'
+        start = self.controller.index(marker)
+        body = self.controller[start:self.controller.index("} mutableCopy];", start)]
+        self.assertIn('details[@"targetSlotID"]', body)
+        self.assertIn("CCNMValidSlotID(cleanupSlotID)", body)
+        self.assertIn('@"slotID": cleanupSlotID', body)
+        self.assertNotIn('state[@"slotID"]', body)
+
     def test_structured_serving_summary_exports_the_actual_slot(self):
         self.assertIn("CCNMServingSummarySlotIDKey", self.provider_h)
         self.assertIn('CCNMServingSummarySlotIDKey = @"slotID"', self.provider_m)

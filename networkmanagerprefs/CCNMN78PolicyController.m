@@ -2707,11 +2707,25 @@ static BOOL CCNMIsVerifiedRestoreCleanupCheckpoint(NSDictionary *state) {
                     failure = failure ?: @"Live BandInfo no longer matches the verified restore cleanup checkpoint.";
                     return CCNMErrorSummary(operation, CCNMN78PolicyErrorInvalidBandInfo, failure, details);
                 }
+                // The slot comes from the subscription just revalidated above, not
+                // from the checkpoint: a state written before the slot field existed
+                // has no slot at all, and defaulting that to 1 would record a slot
+                // this device was never observed on. The UUID below is sourced the
+                // same way. CCNMSafeTargetContext publishes both once it returns a
+                // context, and a nil context cannot reach this point, but a nil in a
+                // dictionary literal would raise inside Preferences, so verify it
+                // and fail closed rather than depend on the invariant.
+                NSNumber *cleanupSlotID = [details[@"targetSlotID"] isKindOfClass:NSNumber.class]
+                    ? details[@"targetSlotID"] : nil;
+                if (!CCNMValidSlotID(cleanupSlotID)) {
+                    return CCNMErrorSummary(operation, CCNMN78PolicyErrorUnsafeSubscription,
+                        @"The revalidated subscription slot is unavailable.", details);
+                }
                 NSMutableDictionary *cleanupProof = [@{
                     @"verifiedAt": state[@"verifiedAt"],
                     @"verifiedActiveBands": state[@"verifiedActiveBands"],
                     @"restoredBaselineCreatedAt": state[@"baselineCreatedAt"],
-                    @"slotID": state[@"slotID"] ?: @1
+                    @"slotID": cleanupSlotID
                 } mutableCopy];
                 if ([state[@"recoverySource"] isEqual:CCNMKnownOrphanRecoverySource] &&
                     [state[@"evidenceSHA256"] isEqual:CCNMKnownOrphanEvidenceSHA256]) {
