@@ -287,3 +287,16 @@ watchdog, and a timeout still defers restore past a reboot.
 - 两 lane 包校验 `status: passed`，`failures` / `forbidden_diagnostics` 为空；`incompatible arm64e` 计数 0；Xcode 15.4 (`15F31d`)、Apple clang 15.0.0 (clang-1500.3.9.4)、ld 1053.12、system SDK 17.5、min iOS 14.0。
 - roothide 五个二进制均 arm64+arm64e；两个注入 bundle 保持 `LC_DYLD_INFO_ONLY` 并依赖 libroothide，三个 exec 工具为 `LC_DYLD_CHAINED_FIXUPS` 且不链 libroothide；launchd plist program 为裸路径 `/usr/libexec/networkmanager-maintenance`，`jbroot_present` 与 `plist_prefix_present` 均 false。rootless lane program 为 `/var/jb/usr/libexec/networkmanager-maintenance`。
 - 产物：roothide SHA256 `ed7f32c67de1737d35ecf54d84f21ec4e3b6cb6a3d7b943ba8996b9681c1436c`，317930 bytes；rootless SHA256 `901ccc0a8d8d3c68a2634ac98acd7c5f1ec7251a29abf879ebc974b6ba128285`，300086 bytes。roothide 已交付，待真机 SIM 2 复测。
+
+## 2026-08-23 写入拒绝文案改为上报实测布局
+
+- 真机回测（截图）：装上 `3bca7d2` 后仍报 `unsafeSubscription`，但弹窗已包含「本机实测：iPhone15,3 / iOS 16.5.0（20F66）」这一行。该行来自 `measuredDeviceDescription:`，引入于 `d60bd6b`，而 `d60bd6b` 是 `e19749f`（slot 修复）的祖先提交，因此它不能单独证明新包已装。**无法从这张截图判定装的是旧包还是新包**，因为两个版本的拒绝文案只差 `slot 1` / `positive slot` 一个词，而弹窗里那句英文已被截断换行，看不到尾巴。这本身就是诊断缺陷。
+- 修正：`CCNMSafeTargetContext` 的两处拒绝文案不再复述规则，而是上报实测到的东西。新增 `CCNMSubscriptionLayoutSummary()` 渲染逐 slot 的 `present/absent`、`good/notGood`、`hasUUID/noUUID`（**只报 UUID 有无，不打印值**）。
+- 同时拆分两类本来共用一句话的拒绝：`presentCount != 1` 报「需要恰好一张在位 SIM，实测 N 张」；单卡但不可写报「唯一在位 SIM 不可写」。这两种对用户意义不同，合成一句会把双卡用户引到不存在的 slot 问题上。
+- drift 文案同样拆成四种：记录的 slot 本身非法（优先判，因为它也会违反等价比较）、slot 与 UUID 同时变、卡换了槽、卡被换了。
+- 新增两条测试：`test_refusal_names_the_observed_layout_not_just_the_rule`（禁止旧句，要求引用 layout summary 与 `presentCount`，并断言 summary 不出现 `UUIDString`）与 `test_drift_refusal_distinguishes_a_moved_sim_from_a_swapped_one`（禁止旧句，要求四种文案，并断言 `!requiredSlotValid` 分支先于 drift 分支）。
+- 验证：host 全套 306 passed / 3 skipped；定向 16/16；`clang -fsyntax-only -fobjc-arc -Wall -Wformat -target arm64-apple-ios14.0` 对 controller 干净（含格式字符串检查）；`verify_release_source` passed；`py_compile`、`git diff --check` 干净；本地 rootless aggregate `build_rc=0`、`error:` 计数 0（仅编译证据）。
+- 固定云端：commit `a6acd0b`（`a6acd0b5056f1afa41e1429bc2d60efad59d9031`），run `32614300326` 三 job 全 success；两 lane provenance 均回报同一 `source_sha`。两 lane 包校验 `status: passed`，`failures` / `forbidden_diagnostics` / `legacy_assets` 均为空，`build_log.failures` 为空（即 `verify_build_log.py` 的 `incompatible arm64e` 模式零命中）。
+- 工具链：Xcode 15.4 (`15F31d`)、Apple clang 15.0.0 (clang-1500.3.9.4)、min iOS 14.0；roothide 走系统 SDK 17.5，rootless 走 Theos SDK 16.4（与上一轮一致）。roothide 两个注入 bundle 保持 `LC_DYLD_INFO_ONLY` 并依赖 libroothide，三个 exec 工具 `LC_DYLD_CHAINED_FIXUPS` 且不链 libroothide；plist program 为裸路径。
+- 产物：roothide SHA256 `a1bf442a4e889426cd8cf29f294f30dc48cfad5bbcdd348d4d2ad897f7810f41`，319706 bytes；rootless SHA256 `cf9df53e43ec57a08f4a9580bd6ad4fd308ab5a4928d8e5f396bc212d11aec8d`，302746 bytes。roothide 已交付。
+- 待定决策（需要老大拍板，未实施）：写入路径是否允许双卡在位时按数据线选定目标。读取路径（`CCNMServingTargetContext`）已有三级选择：`currentDataSubscription` → 唯一 `userDataPreferred` → 唯一可用卡，歧义时拒绝。写入路径没有这一层，仍要求整机恰好一张在位 SIM。若要放宽，必须明确：仅当 CoreTelephony 明确报出当前数据订阅时允许，且遵循 controller 自己的 client（避开跳 lock domain）。
