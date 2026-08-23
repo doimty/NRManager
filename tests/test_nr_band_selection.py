@@ -261,6 +261,23 @@ class SelectionSourceContractTests(unittest.TestCase):
         self.assertPresent("active[CCNMNRKey] = @[ @78 ];", self.controller, "controller")
         self.assertPresent("CCNMKnownOrphanHistoricalActiveBands", self.controller, "controller")
 
+    def test_the_set_of_policy_operations_is_closed(self):
+        """An in-place edit path cannot be added without touching this assertion.
+
+        Editing a selection is a toggle round-trip on purpose. A fourth write
+        operation would need its own preflight, its own branch in both mirrored
+        intent validators and its own crash-recovery semantics, and every one of
+        those is a place for the multi-band path to diverge from the paths that
+        have device evidence. The operation domain is the narrowest thing that
+        such a path could not avoid widening.
+        """
+        domain = '[@[@"enable", @"disable", @"recover", @"knownOrphanRecovery"] containsObject:'
+        # Both mirrored validators carry the domain; neither may grow a fifth entry.
+        self.assertEqual(self.controller.count(domain), 2, self.controller.count(domain))
+        for stray in ('@"reselect"', '@"edit"', '@"reapply"'):
+            self.assertAbsent(stray, self.controller, "controller")
+            self.assertAbsent(stray, self.reader, "reader")
+
 
 class MaintenanceGateTests(unittest.TestCase):
     """The daemon must gate on the recorded target, not on band 78."""
