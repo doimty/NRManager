@@ -1605,6 +1605,27 @@ static id<CCNMCoreTelephonyClient> CCNMCreateClient(NSString **failure) {
     return client;
 }
 
+// Renders what each subscription slot actually reported, so a refusal can name
+// the observed layout instead of restating the rule that was violated. The write
+// gate is the only place a user meets this, and "one SIM is required" does not
+// tell a dual-line user which of their two lines is the problem.
+static NSString *CCNMSubscriptionLayoutSummary(NSArray *reports) {
+    NSMutableArray *parts = [NSMutableArray array];
+    for (NSDictionary *report in reports) {
+        if (![report isKindOfClass:NSDictionary.class]) {
+            continue;
+        }
+        NSString *uuid = [report[@"subscriptionUUID"] isKindOfClass:NSString.class]
+            ? report[@"subscriptionUUID"] : @"";
+        [parts addObject:[NSString stringWithFormat:@"slot%@ %@ %@ %@",
+            report[@"slotID"],
+            [report[@"isSimPresent"] boolValue] ? @"present" : @"absent",
+            [report[@"isSimGood"] boolValue] ? @"good" : @"notGood",
+            uuid.length > 0 ? @"hasUUID" : @"noUUID"]];
+    }
+    return parts.count ? [parts componentsJoinedByString:@"; "] : @"no subscriptions";
+}
+
 static id<CCNMSubscriptionContext> CCNMSafeTargetContext(id<CCNMCoreTelephonyClient> client,
                                                           NSString *requiredUUID,
                                                           NSNumber *requiredSlotID,
@@ -1667,7 +1688,20 @@ static id<CCNMSubscriptionContext> CCNMSafeTargetContext(id<CCNMCoreTelephonyCli
     }
     if (presentCount != 1 || targetCount != 1 || !target) {
         if (failure) {
-            *failure = @"Exactly one present/good SIM with a stable UUID in a positive slot is required.";
+            // Two refusals share this branch and they mean different things to the
+            // user: more than one line is active, versus the single active line
+            // being unusable. Reporting them as one sentence sent a dual-line user
+            // looking for a slot problem that did not exist.
+            NSString *observed = CCNMSubscriptionLayoutSummary(reports);
+            if (presentCount != 1) {
+                *failure = [NSString stringWithFormat:
+                    @"A modem write needs exactly one present SIM, but %lu are present (%@).",
+                    (unsigned long)presentCount, observed];
+            } else {
+                *failure = [NSString stringWithFormat:
+                    @"The one present SIM is not writable; a good state, a stable UUID, "
+                     "and a positive slot are all required (%@).", observed];
+            }
         }
         return nil;
     }
@@ -1679,7 +1713,30 @@ static id<CCNMSubscriptionContext> CCNMSafeTargetContext(id<CCNMCoreTelephonyCli
         (requiredUUID.length && (!required || ![uuid isEqualToString:required])) ||
         (requiredSlotID && ![slotID isEqual:requiredSlotID])) {
         if (failure) {
-            *failure = @"The target subscription UUID or slot changed.";
+            // Name which half drifted. The two causes need different responses:
+            // a slot change means the SIM moved, a UUID change means it was
+            // swapped. The UUID itself is deliberately not printed. The invalid
+            // recorded slot is checked first because it also fails the equality
+            // test, and "your record is malformed" is the more precise answer.
+            BOOL slotDrifted = requiredSlotID && ![slotID isEqual:requiredSlotID];
+            BOOL uuidDrifted = !uuid ||
+                (requiredUUID.length && (!required || ![uuid isEqualToString:required]));
+            if (!requiredSlotValid) {
+                *failure = [NSString stringWithFormat:
+                    @"The recorded target slot %@ is not a valid slot identifier.", requiredSlotID];
+            } else if (slotDrifted && uuidDrifted) {
+                *failure = [NSString stringWithFormat:
+                    @"The target subscription changed: expected slot %@, found slot %@, "
+                     "and the subscription UUID no longer matches.", requiredSlotID, slotID];
+            } else if (slotDrifted) {
+                *failure = [NSString stringWithFormat:
+                    @"The target SIM moved: expected slot %@, found slot %@.",
+                    requiredSlotID, slotID];
+            } else {
+                *failure = [NSString stringWithFormat:
+                    @"The subscription UUID in slot %@ no longer matches the recorded target.",
+                    slotID];
+            }
         }
         return nil;
     }

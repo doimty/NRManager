@@ -155,6 +155,37 @@ class WritePathSubscriptionSlotSourceTests(unittest.TestCase):
         self.assertIn('@"slotID": cleanupSlotID', body)
         self.assertNotIn('state[@"slotID"]', body)
 
+    def test_refusal_names_the_observed_layout_not_just_the_rule(self):
+        # The device screenshot that started this work said only "exactly one
+        # present/good SIM with a stable UUID in a positive slot is required",
+        # which is the rule, not the observation. A dual-line user cannot tell
+        # from that whether their slot, their UUID, or their second line is the
+        # problem, and the same sentence appeared both before and after the slot
+        # fix so it could not distinguish a stale install from a real refusal.
+        body = self.function(self.controller, "static id<CCNMSubscriptionContext> CCNMSafeTargetContext")
+        self.assertNotIn("Exactly one present/good SIM", body)
+        self.assertIn("CCNMSubscriptionLayoutSummary(reports)", body)
+        self.assertIn("but %lu are present", body)
+        self.assertIn("presentCount != 1", body)
+        summary = self.function(self.controller, "static NSString *CCNMSubscriptionLayoutSummary")
+        for field in ('@"slotID"', '@"isSimPresent"', '@"isSimGood"', '@"subscriptionUUID"'):
+            self.assertIn(field, summary)
+        # The layout line reports only whether a UUID exists, never its value.
+        self.assertIn("hasUUID", summary)
+        self.assertNotIn("UUIDString", summary)
+
+    def test_drift_refusal_distinguishes_a_moved_sim_from_a_swapped_one(self):
+        # Slot drift and UUID drift need different user responses, and the
+        # combined message could not tell them apart.
+        body = self.function(self.controller, "static id<CCNMSubscriptionContext> CCNMSafeTargetContext")
+        self.assertNotIn("The target subscription UUID or slot changed", body)
+        self.assertIn("The target SIM moved: expected slot %@, found slot %@", body)
+        self.assertIn("no longer matches the recorded target", body)
+        self.assertIn("is not a valid slot identifier", body)
+        # An invalid recorded slot also fails the equality test, so it has to be
+        # answered before the drift cases or it gets reported as a moved SIM.
+        self.assertLess(body.index("!requiredSlotValid) {"), body.index("slotDrifted && uuidDrifted"))
+
     def test_structured_serving_summary_exports_the_actual_slot(self):
         self.assertIn("CCNMServingSummarySlotIDKey", self.provider_h)
         self.assertIn('CCNMServingSummarySlotIDKey = @"slotID"', self.provider_m)
