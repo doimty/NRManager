@@ -336,6 +336,59 @@ NSDictionary *CCNMDeepCopyDictionary(NSDictionary *dictionary, NSString **failur
     return copy;
 }
 
+static NSArray<NSNumber *> *CCNMCanonicalNRSelectionLocal(NSArray *selection,
+                                                           NSString **failure) {
+    if (![selection isKindOfClass:NSArray.class] || selection.count == 0) {
+        if (failure) {
+            *failure = @"An NR band selection must be a non-empty array.";
+        }
+        return nil;
+    }
+    NSMutableSet *seen = [NSMutableSet set];
+    for (id band in selection) {
+        if (!CCNMNSNumberIsInteger(band) || [band longLongValue] <= 0 ||
+            [band longLongValue] > CCNMMaximumBandIdentifier) {
+            if (failure) {
+                *failure = [NSString stringWithFormat:
+                    @"The NR band selection contains an invalid identifier: %@.", band];
+            }
+            return nil;
+        }
+        if ([seen containsObject:band]) {
+            if (failure) {
+                *failure = [NSString stringWithFormat:
+                    @"The NR band selection lists band %@ more than once.", band];
+            }
+            return nil;
+        }
+        [seen addObject:band];
+    }
+    return [selection sortedArrayUsingSelector:@selector(compare:)];
+}
+
+static NSArray<NSNumber *> *CCNMSelectableNRDomainLocal(NSDictionary *active,
+                                                         NSDictionary *supported,
+                                                         NSString **failure) {
+    if (!CCNMValidateBandDictionary(active, failure) ||
+        !CCNMValidateBandDictionary(supported, failure)) {
+        return nil;
+    }
+    NSMutableArray<NSNumber *> *domain = [NSMutableArray array];
+    NSSet *supportedNR = [NSSet setWithArray:supported[CCNMNRKey]];
+    for (NSNumber *band in (NSArray *)active[CCNMNRKey]) {
+        if ([supportedNR containsObject:band]) {
+            [domain addObject:band];
+        }
+    }
+    if (domain.count == 0) {
+        if (failure) {
+            *failure = @"No NR band is both enabled by the system and supported by this modem.";
+        }
+        return nil;
+    }
+    return [domain sortedArrayUsingSelector:@selector(compare:)];
+}
+
 // ---------------------------------------------------------------------------
 // Mark: record validation
 // ---------------------------------------------------------------------------
@@ -370,6 +423,15 @@ BOOL CCNMValidateStateRecord(NSDictionary *state, NSString **failure) {
     valid = valid && [uuid isKindOfClass:[NSString class]] &&
         ([(NSString *)uuid length] == 0 || CCNMCanonicalUUIDString(uuid) != nil) &&
         (!slotID || CCNMValidSlotID(slotID));
+    if (valid &&
+        [state[@"requestedMode"] isEqual:CCNMRequestedModeN78Preferred] &&
+        [state[@"appliedPolicy"] isEqual:CCNMAppliedPolicyVerifiedN78Only] &&
+        !CCNMCanonicalNRSelectionLocal(state[@"targetNRBands"], NULL)) {
+        if (failure) {
+            *failure = @"The verified enabled policy state does not record a valid NR band selection.";
+        }
+        return NO;
+    }
     if (!valid && failure) {
         *failure = @"The durable n78 policy state record is malformed or foreign.";
     }
@@ -521,9 +583,14 @@ BOOL CCNMValidateBaselineCompatibility(NSDictionary *baseline,
         @"The retained baseline contains an owned band unsupported by the current system.", failure);
 }
 
-static BOOL CCNMValidateN78OnlyPayloadLocal(NSDictionary *original,
-                                             NSDictionary *payload,
-                                             NSString **failure);
+static BOOL CCNMValidateSelectedNRPayloadLocal(NSDictionary *original,
+                                                NSDictionary *payload,
+                                                NSArray<NSNumber *> *selection,
+                                                NSString **failure);
+static BOOL CCNMValidateSelectedNRIntentPayloadLocal(NSDictionary *active,
+                                                      NSDictionary *supported,
+                                                      NSDictionary *requested,
+                                                      NSString **failure);
 static BOOL CCNMValidateRestorePayloadLocal(NSDictionary *live,
                                              NSDictionary *baseline,
                                              NSDictionary *payload,
@@ -562,9 +629,8 @@ BOOL CCNMValidateIntentRecord(NSDictionary *intent,
     BOOL enable = [operation isEqual:@"enable"];
     BOOL payload = NO;
     if (header && enable) {
-        payload = [active[CCNMNRKey] containsObject:@78] &&
-            [supported[CCNMNRKey] containsObject:@78] &&
-            CCNMValidateN78OnlyPayloadLocal(active, requested, failure);
+        payload = CCNMValidateSelectedNRIntentPayloadLocal(
+            active, supported, requested, failure);
     } else if (header) {
         payload = CCNMValidateRestorePayloadLocal(active, baseline[@"activeBands"],
             requested, failure);
@@ -614,21 +680,25 @@ BOOL CCNMValidateInFlightRecord(NSDictionary *record,
 // Mark: local payload validation (reader-only copies, no setter dependency)
 // ---------------------------------------------------------------------------
 
-static BOOL CCNMValidateN78OnlyPayloadLocal(NSDictionary *original,
-                                             NSDictionary *payload,
-                                             NSString **failure) {
-    if (!CCNMValidateBandDictionary(original, failure) ||
+static BOOL CCNMValidateSelectedNRPayloadLocal(NSDictionary *original,
+                                                NSDictionary *payload,
+                                                NSArray<NSNumber *> *selection,
+                                                NSString **failure) {
+    NSArray *canonical = CCNMCanonicalNRSelectionLocal(selection, failure);
+    if (!canonical ||
+        !CCNMValidateBandDictionary(original, failure) ||
         !CCNMValidateBandDictionary(payload, failure) ||
         ![[NSSet setWithArray:original.allKeys] isEqualToSet:
             [NSSet setWithArray:payload.allKeys]]) {
         return NO;
     }
     for (NSString *key in original) {
-        NSArray *expected = [key isEqualToString:CCNMNRKey] ? @[ @78 ] : original[key];
+        NSArray *expected = [key isEqualToString:CCNMNRKey] ? canonical : original[key];
         if (![payload[key] isEqualToArray:expected]) {
             if (failure) {
                 *failure = [key isEqualToString:CCNMNRKey]
-                    ? @"The requested NR array is not exactly [78]."
+                    ? [NSString stringWithFormat:
+                        @"The requested NR array is not exactly the ascending selection %@.", canonical]
                     : [NSString stringWithFormat:
                         @"The requested payload changed non-NR RAT %@.", key];
             }
@@ -636,6 +706,29 @@ static BOOL CCNMValidateN78OnlyPayloadLocal(NSDictionary *original,
         }
     }
     return YES;
+}
+
+static BOOL CCNMValidateSelectedNRIntentPayloadLocal(NSDictionary *active,
+                                                      NSDictionary *supported,
+                                                      NSDictionary *requested,
+                                                      NSString **failure) {
+    if (!CCNMValidateBandDictionary(requested, failure)) {
+        return NO;
+    }
+    NSArray *canonical = CCNMCanonicalNRSelectionLocal(requested[CCNMNRKey], failure);
+    NSArray *domain = CCNMSelectableNRDomainLocal(active, supported, failure);
+    if (!canonical || !domain) {
+        return NO;
+    }
+    if (![[NSSet setWithArray:canonical] isSubsetOfSet:[NSSet setWithArray:domain]]) {
+        if (failure) {
+            *failure = [NSString stringWithFormat:
+                @"The recorded NR selection %@ is not within the bands its own pre-write evidence allowed.",
+                canonical];
+        }
+        return NO;
+    }
+    return CCNMValidateSelectedNRPayloadLocal(active, requested, canonical, failure);
 }
 
 static BOOL CCNMValidateRestorePayloadLocal(NSDictionary *live,
@@ -743,6 +836,8 @@ static NSDictionary *CCNMSummaryFromState(NSDictionary *state,
         @"subscriptionUUID": base[@"subscriptionUUID"] ?: @"",
         @"uncertain": base[@"uncertain"] ?: @NO
     };
+    NSArray *appliedSelection = normalEnabled
+        ? CCNMCanonicalNRSelectionLocal(base[@"targetNRBands"], NULL) : nil;
     NSMutableDictionary *summary = [@{
         CCNMN78PolicySummarySuccessKey: @(success),
         CCNMN78PolicySummaryOperationKey: operation ?: @"read",
@@ -775,6 +870,9 @@ static NSDictionary *CCNMSummaryFromState(NSDictionary *state,
         @"removalGuardPath": CCNMN78PolicyRemovalGuardPath(),
         @"verifiedKnownOrphanRestore": @(CCNMStateHasVerifiedKnownOrphanRestore(base))
     } mutableCopy];
+    if (appliedSelection) {
+        summary[CCNMN78PolicySummaryTargetNRBandsKey] = appliedSelection;
+    }
     if (details) {
         [summary addEntriesFromDictionary:details];
     }

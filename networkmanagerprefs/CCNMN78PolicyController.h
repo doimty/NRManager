@@ -15,6 +15,24 @@ FOUNDATION_EXPORT NSString *CCNMN78PolicyLockPath(void);
 FOUNDATION_EXPORT NSString *CCNMN78PolicyRemovalGuardPath(void);
 FOUNDATION_EXPORT NSArray<NSString *> *CCNMN78PolicyPaths(void);
 
+/// Where the pending NR band selection is stored. Not part of
+/// CCNMN78PolicyPaths(): it is user preference data rather than policy evidence,
+/// it is never crash-recovered, and it deliberately outlives the off state.
+FOUNDATION_EXPORT NSString *CCNMN78SelectedBandsPath(void);
+
+/// The NR bands to pin on the next enable, ascending. Never empty: an absent or
+/// unusable stored selection yields the shipped default of band 78 alone, which
+/// keeps an upgrade from 1.5.0 identical in behaviour for a user who never opens
+/// the band pane. This is a statement of intent, not of what is applied; read
+/// CCNMN78PolicySummaryTargetNRBandsKey for that.
+FOUNDATION_EXPORT NSArray<NSNumber *> *CCNMReadSelectedNRBands(void);
+
+/// Records a pending selection. Performs no modem write and does not consult
+/// policy state, so it is safe to call while the feature is off; the selection is
+/// revalidated against live band evidence when an enable actually runs.
+FOUNDATION_EXPORT BOOL CCNMWriteSelectedNRBands(NSArray<NSNumber *> *selection,
+                                                NSString *_Nullable *_Nullable failure);
+
 FOUNDATION_EXPORT NSDictionary<NSString *, id> *CCNMReadN78PolicyState(void);
 FOUNDATION_EXPORT NSDictionary<NSString *, id> *CCNMReadKnownOrphanedN78RecoveryEligibility(void);
 FOUNDATION_EXPORT NSDictionary<NSString *, id> *CCNMReadKnownOrphanedN78RemovalSafety(void);

@@ -49,6 +49,7 @@ NSString *const CCNMN78PolicySummaryErrorKey = @"error";
 NSString *const CCNMN78PolicySummaryRequiresRebootKey = @"requiresReboot";
 NSString *const CCNMN78PolicySummaryMayWriteKey = @"mayWrite";
 NSString *const CCNMN78PolicySummaryMayUninstallKey = @"mayUninstall";
+NSString *const CCNMN78PolicySummaryTargetNRBandsKey = @"targetNRBands";
 
 NSString *const CCNMN78PolicyDidChangeDarwinNotification =
     @"me.nixuge.networkmanager/n78-policy-changed";

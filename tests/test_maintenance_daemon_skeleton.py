@@ -71,7 +71,11 @@ class MaintenanceDaemonSkeletonTests(unittest.TestCase):
         self.assertIn('CCNMSysctlString("kern.osversion")', source)
         self.assertIn("CCNMServingSummaryCapabilitySampledAtMillisecondsKey", source)
         self.assertIn("CCNMUnixMilliseconds()", source)
-        self.assertIn('isEqualToArray:@[ @78 ]', source)
+        # The gate is the recorded NR target, not band 78. Live NR must equal it and
+        # the modem must still declare support for every band in it.
+        self.assertIn("CCNMN78PolicySummaryTargetNRBandsKey", source)
+        self.assertIn("CCNMActiveNRBandsMatchTarget", source)
+        self.assertIn("CCNMMaintenanceTargetIsCurrentlySupported", source)
         self.assertIn('CCNMServingSummaryCapabilitySupportedNRBandsKey', source)
         self.assertNotIn('input.capabilityCompatible = [latestPolicy["baselineValid"] boolValue]', source)
         for forbidden in (

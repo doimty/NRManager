@@ -49,11 +49,15 @@ class FormalPolicyStaticTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, self.source)
 
-    def test_enable_payload_is_exact_nr_n78_and_non_nr_identity(self):
+    def test_enable_payload_is_the_exact_selection_and_non_nr_identity(self):
         self.assertIn('kCTRegistrationRadioAccessTechnologyNR', self.source)
-        self.assertIn("@[ @78 ]", self.source.replace("@[@78]", "@[ @78 ]"))
-        self.assertIn("CCNMValidateN78OnlyPayload", self.source)
+        self.assertIn("CCNMValidateSelectedNRPayload", self.source)
+        self.assertIn("CCNMBuildSelectedNRPayload", self.source)
+        # Order is correctness here: read-back is whole-dictionary equality.
+        self.assertIn("sortedArrayUsingSelector:@selector(compare:)", self.source)
         self.assertIn("CCNMDictionariesEqual", self.source)
+        # The default keeps a 1.5.0 user who never opens the band pane byte-identical.
+        self.assertIn("@[ @78 ]", self.source.replace("@[@78]", "@[ @78 ]"))
 
     def test_policy_controller_never_writes_rat_selection(self):
         combined = self.source + self.cc_source
@@ -111,7 +115,7 @@ class FormalPolicyStaticTests(unittest.TestCase):
 
     def test_read_only_preflight_failure_does_not_create_recovery_state(self):
         start = self.source.index("NSDictionary *initial = CCNMReadFreshBandInfo")
-        end = self.source.index("NSDictionary *payload = CCNMBuildN78Payload", start)
+        end = self.source.index("NSDictionary *payload = CCNMBuildSelectedNRPayload", start)
         preflight_failure = self.source[start:end]
         self.assertNotIn("CCNMMarkRecovery", preflight_failure)
         self.assertIn("No baseline, intent, in-flight marker, or setter call", preflight_failure)

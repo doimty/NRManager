@@ -56,5 +56,9 @@ FOUNDATION_EXPORT NSString *const CCNMN78PolicySummaryErrorKey;
 FOUNDATION_EXPORT NSString *const CCNMN78PolicySummaryRequiresRebootKey;
 FOUNDATION_EXPORT NSString *const CCNMN78PolicySummaryMayWriteKey;
 FOUNDATION_EXPORT NSString *const CCNMN78PolicySummaryMayUninstallKey;
+/// The NR band set the policy has verified as applied, ascending. Absent unless
+/// the summary describes a stable enabled state, so a reader must treat a missing
+/// value as "no selection is in effect" rather than substituting a default.
+FOUNDATION_EXPORT NSString *const CCNMN78PolicySummaryTargetNRBandsKey;
 
 NS_ASSUME_NONNULL_END

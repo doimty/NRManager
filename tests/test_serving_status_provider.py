@@ -139,8 +139,8 @@ int main(void) {
             "CCNMValidateSelfSourcedWriteTarget",
             "CCNMValidateHistoricalReplayTarget",
             "CCNMValidateTargetIdentity",
-            "CCNMBuildN78Payload",
-            "CCNMValidateN78OnlyPayload",
+            "CCNMBuildSelectedNRPayload",
+            "CCNMValidateSelectedNRPayload",
             "CCNMValidateRestorePayload",
         ):
             self.assertIn(gate, policy)

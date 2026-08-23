@@ -1,12 +1,24 @@
 #import <CoreTelephony/CTTelephonyNetworkInfo.h>
 #import <Foundation/Foundation.h>
 
+#include <limits.h>
+#include <stddef.h>
+
 #import "../networkmanagerprefs/CCNMAutomaticMaintenanceDecision.h"
 #import "../networkmanagerprefs/CCNMAutomaticMaintenanceRecord.h"
 #import "../networkmanagerprefs/CCNMN78PolicyReader.h"
 #import "../networkmanagerprefs/CCNMServingStatusProvider.h"
 
 static const NSTimeInterval CCNMMaintenancePrototypeRefreshSeconds = 30.0;
+
+/// Upper bound for a recorded NR selection. The selectable domain is bounded by
+/// what one modem advertises; the reference device reported 46 active NR bands, so
+/// this is generous. A larger array means the record is not one this daemon wrote.
+///
+/// Declared as an enumerator rather than `static const size_t` so it is an integer
+/// constant expression: in Objective-C a const variable would make the buffer a
+/// folded VLA, which -Werror rejects under -Wgnu-folding-constant.
+enum { CCNMMaintenanceMaximumTargetBands = 128 };
 
 static BOOL CCNMPolicySummaryIsStableEnabled(NSDictionary *summary) {
     return [summary[CCNMN78PolicySummarySuccessKey] boolValue] &&
@@ -48,19 +60,90 @@ static NSDictionary *CCNMMaintenanceIdentityFromServingSummary(NSDictionary *sum
     };
 }
 
+/// Whether the current active NR bands match the target the policy claims to have
+/// applied. The target is the canonical selection from the enabled state proof,
+/// or nil when the summary does not describe a stable enabled state. A nil target
+/// is treated as a mismatch: the daemon that cannot confirm the target must not
+/// act on the sample.
+static BOOL CCNMActiveNRBandsMatchTarget(NSArray *activeNR,
+                                          NSArray *targetNRBands) {
+    if (![activeNR isKindOfClass:NSArray.class] ||
+        ![targetNRBands isKindOfClass:NSArray.class] ||
+        targetNRBands.count == 0) {
+        return NO;
+    }
+    // Both arrays are ascending by construction: the policy summary publishes the
+    // canonicalised selection, and the modem echoes back the exact array that was
+    // written to it and then verified. So plain array equality is the right test,
+    // and a mismatch means the live NR bands are no longer the ones this policy
+    // put there.
+    return [activeNR isEqualToArray:targetNRBands];
+}
+
+/// Whether the modem still declares support for every band in the applied target.
+///
+/// This replaces the single "is band 78 supported" gate. The generalisation is not
+/// cosmetic: the daemon's automatic action exists to keep a chosen NR set in
+/// force, and a target containing a band the modem no longer advertises is not
+/// something it can safely maintain.
+static BOOL CCNMMaintenanceTargetIsCurrentlySupported(NSArray *supportedNR,
+                                                       NSArray *targetNRBands) {
+    if (![supportedNR isKindOfClass:NSArray.class] ||
+        ![targetNRBands isKindOfClass:NSArray.class] ||
+        targetNRBands.count == 0) {
+        return NO;
+    }
+    NSSet *supported = [NSSet setWithArray:supportedNR];
+    for (NSNumber *band in targetNRBands) {
+        if (![supported containsObject:band]) {
+            return NO;
+        }
+    }
+    return YES;
+}
+
+/// Copies the recorded NR selection into a C buffer for the pure decision module.
+///
+/// Returns the number of bands written, or 0 when the summary does not carry a
+/// usable selection. A refusal here becomes StopIncompatible downstream, which is
+/// the correct outcome: the daemon must not maintain a target it cannot read.
+static size_t CCNMCopyTargetNRBands(NSArray *targetNRBands,
+                                     int *buffer,
+                                     size_t capacity) {
+    if (![targetNRBands isKindOfClass:NSArray.class] || buffer == NULL ||
+        targetNRBands.count == 0 || targetNRBands.count > capacity) {
+        return 0;
+    }
+    size_t written = 0;
+    for (id band in targetNRBands) {
+        if (![band isKindOfClass:NSNumber.class]) {
+            return 0;
+        }
+        long long value = [band longLongValue];
+        if (value <= 0 || value > INT_MAX) {
+            return 0;
+        }
+        buffer[written++] = (int)value;
+    }
+    return written;
+}
+
 static BOOL CCNMMaintenanceCapabilityCompatible(NSDictionary *policy,
                                                   NSDictionary *servingSummary,
                                                   NSDictionary *identity) {
     long long capabilitySampledAt = [servingSummary[
         CCNMServingSummaryCapabilitySampledAtMillisecondsKey] longLongValue];
     long long capabilityAge = CCNMUnixMilliseconds() - capabilitySampledAt;
+    NSArray *targetNRBands = policy[CCNMN78PolicySummaryTargetNRBandsKey];
     if (capabilitySampledAt <= 0 || capabilityAge < 0 || capabilityAge > 30000 ||
         [servingSummary[CCNMServingSummaryStaleKey] boolValue] ||
         ![servingSummary[CCNMServingSummaryCapabilityReadSuccessKey] boolValue] ||
-        ![servingSummary[CCNMServingSummaryCapabilityN78SupportedKey] boolValue] ||
-        ![servingSummary[CCNMServingSummaryCapabilityN78ActiveKey] boolValue] ||
-        ![servingSummary[CCNMServingSummaryCapabilityActiveNRBandsKey]
-            isEqualToArray:@[ @78 ]]) {
+        !CCNMMaintenanceTargetIsCurrentlySupported(
+            servingSummary[CCNMServingSummaryCapabilitySupportedNRBandsKey],
+            targetNRBands) ||
+        !CCNMActiveNRBandsMatchTarget(
+            servingSummary[CCNMServingSummaryCapabilityActiveNRBandsKey],
+            targetNRBands)) {
         return NO;
     }
     NSString *baselinePath = [policy[CCNMN78PolicySummaryStateKey] isKindOfClass:NSDictionary.class]
@@ -99,7 +182,6 @@ static BOOL CCNMMaintenanceCapabilityCompatible(NSDictionary *policy,
     NSArray *savedNR = baseline[@"supportedBands"][@"kCTRegistrationRadioAccessTechnologyNR"];
     NSArray *currentNR = servingSummary[CCNMServingSummaryCapabilitySupportedNRBandsKey];
     if (![savedNR isKindOfClass:NSArray.class] ||
-        ![savedNR containsObject:@78] ||
         ![currentNR isKindOfClass:NSArray.class]) {
         return NO;
     }
@@ -297,7 +379,14 @@ static void CCNMPolicyChanged(CFNotificationCenterRef center,
                 latestPolicy, summary, identity);
             input.operationInProgress = [latestPolicy[@"transitionPresent"] boolValue];
             input.unsafeOutstanding = sample.unsafeOutstanding;
-            input.targetBand = 78;
+            // The maintained target is whatever selection the policy recorded, not
+            // a fixed band. An unreadable or malformed selection yields a zero
+            // count, which the decision module turns into a refusal.
+            int targetBands[CCNMMaintenanceMaximumTargetBands] = {0};
+            input.targetBandCount = CCNMCopyTargetNRBands(
+                latestPolicy[CCNMN78PolicySummaryTargetNRBandsKey],
+                targetBands, CCNMMaintenanceMaximumTargetBands);
+            input.targetBands = input.targetBandCount > 0 ? targetBands : NULL;
             input.previous = self.hasPreviousSample
                 ? self.previousSample : (CCNMAutomaticMaintenanceSample){0};
             input.current = self.currentSample;

@@ -10,6 +10,7 @@ HEADER_DIR = ROOT / "networkmanagerprefs"
 
 HARNESS = r'''
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include "CCNMAutomaticMaintenanceDecision.h"
 
@@ -19,11 +20,17 @@ static CCNMAutomaticMaintenanceSample sample(
     return value;
 }
 
+static const int single_band_78[] = { 78 };
+static const int bands_41_and_78[] = { 41, 78 };
+static const int bands_with_zero[] = { 78, 0 };
+static const int bands_with_negative[] = { -1, 78 };
+
 static CCNMAutomaticMaintenanceInput base_input(void) {
     CCNMAutomaticMaintenanceInput input = {0};
     input.policyEnabled = true;
     input.capabilityCompatible = true;
-    input.targetBand = 78;
+    input.targetBands = single_band_78;
+    input.targetBandCount = 1;
     input.nowMilliseconds = 1000;
     return input;
 }
@@ -86,6 +93,54 @@ int main(void) {
     input.previous.unsafeOutstanding = true;
     if (CCNMEvaluateAutomaticMaintenance(input) != CCNMAutomaticMaintenanceStopUnsafe) return 14;
 
+    /* A chosen subset means every band in it is a legitimate resting place. */
+    input = base_input();
+    input.targetBands = bands_41_and_78;
+    input.targetBandCount = 2;
+
+    input.previous = sample(true, false, false, CCNMAutomaticMaintenanceRATNR, 41);
+    input.current = sample(true, false, false, CCNMAutomaticMaintenanceRATNR, 41);
+    if (CCNMEvaluateAutomaticMaintenance(input) != CCNMAutomaticMaintenanceTargetStable) return 15;
+
+    input.previous = sample(true, false, false, CCNMAutomaticMaintenanceRATNR, 78);
+    input.current = sample(true, false, false, CCNMAutomaticMaintenanceRATNR, 78);
+    if (CCNMEvaluateAutomaticMaintenance(input) != CCNMAutomaticMaintenanceTargetStable) return 16;
+
+    /* A band outside the selection still deserves one correction. */
+    input.previous = sample(true, false, false, CCNMAutomaticMaintenanceRATNR, 79);
+    input.current = sample(true, false, false, CCNMAutomaticMaintenanceRATNR, 79);
+    if (CCNMEvaluateAutomaticMaintenance(input) != CCNMAutomaticMaintenanceCorrectOnce) return 17;
+
+    /* Membership is not enough: the RAT must still be NR. */
+    input.previous = sample(true, false, false, CCNMAutomaticMaintenanceRATLTE, 41);
+    input.current = sample(true, false, false, CCNMAutomaticMaintenanceRATLTE, 41);
+    if (CCNMEvaluateAutomaticMaintenance(input) != CCNMAutomaticMaintenanceCorrectOnce) return 18;
+
+    /* An absent or malformed selection is not something the daemon may maintain. */
+    input = base_input();
+    input.previous = sample(true, false, false, CCNMAutomaticMaintenanceRATNR, 78);
+    input.current = sample(true, false, false, CCNMAutomaticMaintenanceRATNR, 78);
+
+    input.targetBandCount = 0;
+    if (CCNMEvaluateAutomaticMaintenance(input) != CCNMAutomaticMaintenanceStopIncompatible) return 19;
+
+    input.targetBands = NULL;
+    input.targetBandCount = 1;
+    if (CCNMEvaluateAutomaticMaintenance(input) != CCNMAutomaticMaintenanceStopIncompatible) return 20;
+
+    input.targetBands = bands_with_zero;
+    input.targetBandCount = 2;
+    if (CCNMEvaluateAutomaticMaintenance(input) != CCNMAutomaticMaintenanceStopIncompatible) return 21;
+
+    input.targetBands = bands_with_negative;
+    input.targetBandCount = 2;
+    if (CCNMEvaluateAutomaticMaintenance(input) != CCNMAutomaticMaintenanceStopIncompatible) return 22;
+
+    /* An unusable selection outranks a pending verification: refusing to act is
+       always available, but acting on an unknown target never is. */
+    input.verificationPending = true;
+    if (CCNMEvaluateAutomaticMaintenance(input) != CCNMAutomaticMaintenanceStopIncompatible) return 23;
+
     return 0;
 }
 '''
@@ -98,6 +153,24 @@ class AutomaticMaintenanceDecisionTests(unittest.TestCase):
         prefs_makefile = (ROOT / "networkmanagerprefs" / "Makefile").read_text()
         self.assertIn(source_name, root_makefile)
         self.assertIn("CCNMAutomaticMaintenanceDecision.c", prefs_makefile)
+
+    def test_the_target_is_a_set_not_a_single_band(self):
+        """A single int cannot express a chosen subset.
+
+        Keeping membership inside the pure C module matters: this is the only part
+        of the maintenance decision that has a harness, so moving the test into
+        the Objective-C caller would move it out of coverage.
+        """
+        header = (ROOT / "networkmanagerprefs" / "CCNMAutomaticMaintenanceDecision.h").read_text()
+        self.assertIn("const int *targetBands", header)
+        self.assertIn("size_t targetBandCount", header)
+        self.assertNotIn("int targetBand;", header)
+
+    def test_the_daemon_passes_the_recorded_selection(self):
+        daemon = (ROOT / "maintenance-daemon" / "main.m").read_text()
+        self.assertNotIn("input.targetBand = 78", daemon)
+        self.assertIn("CCNMN78PolicySummaryTargetNRBandsKey", daemon)
+        self.assertIn("input.targetBandCount", daemon)
 
     def test_pure_decision_model(self):
         self.assertTrue(SOURCE.exists(), SOURCE)

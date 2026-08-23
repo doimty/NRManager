@@ -133,6 +133,17 @@ NSString *CCNMN78PolicyRemovalGuardPath(void) {
     return CCNMPolicyRoot(@"/var/mobile/Library/Preferences/me.nixuge.networkmanager.n78-policy.removal-guard.plist");
 }
 
+// The pending band selection is ordinary user preference data, not policy
+// evidence, so it lives outside CCNMN78PolicyPaths(): it is not created,
+// retired or crash-recovered with the durable records, and it deliberately
+// survives the off state so a selection can be edited while the feature is
+// disabled. It is untrusted input. Every read canonicalises it and every write
+// path revalidates it against the live domain, so a tampered file can still only
+// pick a subset of what iOS already allowed.
+NSString *CCNMN78SelectedBandsPath(void) {
+    return CCNMPolicyRoot(@"/var/mobile/Library/Preferences/me.nixuge.networkmanager.n78-selection.plist");
+}
+
 NSArray<NSString *> *CCNMN78PolicyPaths(void) {
     return @[
         CCNMN78PolicyStatePath(),
@@ -678,20 +689,96 @@ static NSDictionary *CCNMDeepCopyDictionary(NSDictionary *dictionary, NSString *
     return copy;
 }
 
-static BOOL CCNMValidateN78OnlyPayload(NSDictionary *original,
-                                       NSDictionary *payload,
-                                       NSString **failure) {
-    if (!CCNMValidateBandDictionary(original, failure) ||
+// Ascending, unique, positive band identifiers, or nil.
+//
+// The ordering is a correctness requirement rather than tidiness.
+// CCNMWaitForReadBack accepts only whole-dictionary equality, which reduces to
+// NSArray equality, so the order we write becomes part of what the modem has to
+// echo back. A single-band selection could never expose that. Ascending is the
+// only order that is safe whether the modem echoes the array as written or
+// normalises it, and every NR array in the reviewed device evidence is
+// ascending. Canonicalising here, in the only place a payload is built, is what
+// keeps a tap order from ever reaching the baseband.
+static NSArray<NSNumber *> *CCNMCanonicalNRSelection(NSArray *selection, NSString **failure) {
+    if (![selection isKindOfClass:NSArray.class] || selection.count == 0) {
+        if (failure) {
+            *failure = @"An NR band selection must be a non-empty array.";
+        }
+        return nil;
+    }
+    NSMutableSet *seen = [NSMutableSet set];
+    for (id band in selection) {
+        if (!CCNMNSNumberIsInteger(band) || [band longLongValue] <= 0 ||
+            [band longLongValue] > CCNMMaximumBandIdentifier) {
+            if (failure) {
+                *failure = [NSString stringWithFormat:
+                    @"The NR band selection contains an invalid identifier: %@.", band];
+            }
+            return nil;
+        }
+        if ([seen containsObject:band]) {
+            if (failure) {
+                *failure = [NSString stringWithFormat:
+                    @"The NR band selection lists band %@ more than once.", band];
+            }
+            return nil;
+        }
+        [seen addObject:band];
+    }
+    return [selection sortedArrayUsingSelector:@selector(compare:)];
+}
+
+// The bands a user may choose from: what iOS already has enabled, intersected
+// with what this modem declares it supports.
+//
+// Neither side alone is right. Offering the active list alone would present
+// bands the modem does not report as supported; on the reviewed device that is
+// 27 of its 46 active NR entries. Offering the supported list alone would offer
+// bands iOS never had enabled, which is the expansion this feature must never
+// perform. The BandInfo contract permits an active list to contain values absent
+// from the supported list, so the intersection has to be computed rather than
+// assumed equal to either input.
+static NSArray<NSNumber *> *CCNMSelectableNRDomain(NSDictionary *active,
+                                                   NSDictionary *supported,
+                                                   NSString **failure) {
+    if (!CCNMValidateBandDictionary(active, failure) ||
+        !CCNMValidateBandDictionary(supported, failure)) {
+        return nil;
+    }
+    NSMutableArray<NSNumber *> *domain = [NSMutableArray array];
+    NSSet *supportedNR = [NSSet setWithArray:supported[CCNMNRKey]];
+    for (NSNumber *band in (NSArray *)active[CCNMNRKey]) {
+        if ([supportedNR containsObject:band]) {
+            [domain addObject:band];
+        }
+    }
+    if (domain.count == 0) {
+        if (failure) {
+            *failure = @"No NR band is both enabled by the system and supported by this modem.";
+        }
+        return nil;
+    }
+    return [domain sortedArrayUsingSelector:@selector(compare:)];
+}
+
+static BOOL CCNMValidateSelectedNRPayload(NSDictionary *original,
+                                          NSDictionary *payload,
+                                          NSArray<NSNumber *> *selection,
+                                          NSString **failure) {
+    NSArray *canonical = CCNMCanonicalNRSelection(selection, failure);
+    if (!canonical ||
+        !CCNMValidateBandDictionary(original, failure) ||
         !CCNMValidateBandDictionary(payload, failure) ||
         ![[NSSet setWithArray:original.allKeys] isEqualToSet:[NSSet setWithArray:payload.allKeys]]) {
         return NO;
     }
     for (NSString *key in original) {
-        NSArray *expected = [key isEqualToString:CCNMNRKey] ? @[ @78 ] : original[key];
+        NSArray *expected = [key isEqualToString:CCNMNRKey] ? canonical : original[key];
         if (![payload[key] isEqualToArray:expected]) {
             if (failure) {
                 *failure = [key isEqualToString:CCNMNRKey]
-                    ? @"The requested NR array is not exactly [78]."
+                    ? [NSString stringWithFormat:
+                        @"The requested NR array is not exactly the ascending selection %@.", canonical]
                     : [NSString stringWithFormat:@"The requested payload changed non-NR RAT %@.", key];
             }
             return NO;
@@ -700,23 +787,35 @@ static BOOL CCNMValidateN78OnlyPayload(NSDictionary *original,
     return YES;
 }
 
-static NSDictionary *CCNMBuildN78Payload(NSDictionary *active,
-                                          NSDictionary *supported,
-                                          NSString **failure) {
-    if (!CCNMValidateBandDictionary(active, failure) || !CCNMValidateBandDictionary(supported, failure)) {
+static NSDictionary *CCNMBuildSelectedNRPayload(NSDictionary *active,
+                                                NSDictionary *supported,
+                                                NSArray<NSNumber *> *selection,
+                                                NSString **failure) {
+    NSArray *canonical = CCNMCanonicalNRSelection(selection, failure);
+    NSArray *domain = CCNMSelectableNRDomain(active, supported, failure);
+    if (!canonical || !domain) {
         return nil;
     }
-    NSArray *activeNR = active[CCNMNRKey];
-    NSArray *supportedNR = supported[CCNMNRKey];
-    if (![activeNR containsObject:@78] || ![supportedNR containsObject:@78]) {
+    if (![[NSSet setWithArray:canonical] isSubsetOfSet:[NSSet setWithArray:domain]]) {
         if (failure) {
-            *failure = @"Band n78 is not present in both fresh active and supported NR arrays.";
+            *failure = [NSString stringWithFormat:
+                @"The NR selection %@ is not within the %lu band(s) this system currently allows.",
+                canonical, (unsigned long)domain.count];
         }
         return nil;
     }
-    if ([activeNR isEqualToArray:@[ @78 ]]) {
+    if ([canonical isEqualToArray:domain]) {
+        // Pinning everything the system already allows is what "off" means.
+        // Performing it would spend a modem write, a crash window and a baseline
+        // for no change in behaviour.
         if (failure) {
-            *failure = @"The live NR array is already exactly [78] without a retained policy baseline.";
+            *failure = @"The NR selection is every band this system already allows; turn the feature off instead.";
+        }
+        return nil;
+    }
+    if ([canonical isEqualToArray:active[CCNMNRKey]]) {
+        if (failure) {
+            *failure = @"The live NR array already equals this selection without a retained policy baseline.";
         }
         return nil;
     }
@@ -725,9 +824,63 @@ static NSDictionary *CCNMBuildN78Payload(NSDictionary *active,
         return nil;
     }
     NSMutableDictionary *draft = [copy mutableCopy];
-    draft[CCNMNRKey] = @[ @78 ];
+    draft[CCNMNRKey] = canonical;
     NSDictionary *payload = CCNMDeepCopyDictionary(draft, failure);
-    return CCNMValidateN78OnlyPayload(active, payload, failure) ? payload : nil;
+    return CCNMValidateSelectedNRPayload(active, payload, canonical, failure) ? payload : nil;
+}
+
+// The selection a persisted enable intent carries, checked against the evidence
+// that intent recorded for itself. Used by both the intent builder and the
+// intent validator so the two can never disagree.
+static BOOL CCNMValidateSelectedNRIntentPayload(NSDictionary *active,
+                                                NSDictionary *supported,
+                                                NSDictionary *requested,
+                                                NSString **failure) {
+    if (!CCNMValidateBandDictionary(requested, failure)) {
+        return NO;
+    }
+    NSArray *canonical = CCNMCanonicalNRSelection(requested[CCNMNRKey], failure);
+    NSArray *domain = CCNMSelectableNRDomain(active, supported, failure);
+    if (!canonical || !domain) {
+        return NO;
+    }
+    if (![[NSSet setWithArray:canonical] isSubsetOfSet:[NSSet setWithArray:domain]]) {
+        if (failure) {
+            *failure = [NSString stringWithFormat:
+                @"The recorded NR selection %@ is not within the bands its own pre-write evidence allowed.",
+                canonical];
+        }
+        return NO;
+    }
+    return CCNMValidateSelectedNRPayload(active, requested, canonical, failure);
+}
+
+// Band 78 alone is the selection a user who has never opened the band pane gets,
+// which keeps an upgrade from 1.5.0 byte-for-byte identical in behaviour.
+static NSArray<NSNumber *> *CCNMDefaultNRSelection(void) {
+    return @[ @78 ];
+}
+
+NSArray<NSNumber *> *CCNMReadSelectedNRBands(void) {
+    id stored = [NSDictionary dictionaryWithContentsOfFile:CCNMN78SelectedBandsPath()][@"selectedNRBands"];
+    NSArray *canonical = CCNMCanonicalNRSelection(stored, NULL);
+    // A malformed or absent file is not an error to report: it means the user has
+    // expressed no preference, and the shipped default is the right answer.
+    return canonical ?: CCNMDefaultNRSelection();
+}
+
+BOOL CCNMWriteSelectedNRBands(NSArray<NSNumber *> *selection, NSString **failure) {
+    NSArray *canonical = CCNMCanonicalNRSelection(selection, failure);
+    if (!canonical) {
+        return NO;
+    }
+    return CCNMReplaceDurableRecord(@{
+        @"schemaVersion": @1,
+        @"owner": CCNMPolicyOwner,
+        @"kind": @"selection",
+        @"updatedAt": @(CCNMUnixMilliseconds()),
+        @"selectedNRBands": canonical
+    }, CCNMN78SelectedBandsPath(), failure);
 }
 
 static BOOL CCNMValidateRestorePayload(NSDictionary *live,
@@ -842,6 +995,24 @@ static BOOL CCNMValidateStateRecord(NSDictionary *state, NSString **failure) {
     valid = valid && [uuid isKindOfClass:[NSString class]] &&
         ([(NSString *)uuid length] == 0 || CCNMCanonicalUUIDString(uuid) != nil) &&
         (!slotID || CCNMValidSlotID(slotID));
+    // A verified enabled record must name the selection it applied, because that
+    // array is the only thing the maintenance daemon can compare live NR against.
+    //
+    // The condition is deliberately narrower than "requestedMode is not
+    // systemDefault". A disable checkpoint carries the pre-disable
+    // n78Preferred mode with appliedPolicy=applying and no targetNRBands, and
+    // enable refuses outright against a state record that fails validation. The
+    // wider rule would therefore turn a crash mid-disable into an unusable
+    // install. Only a settled enabled state has a selection in effect.
+    if (valid &&
+        [state[@"requestedMode"] isEqual:CCNMRequestedModeN78Preferred] &&
+        [state[@"appliedPolicy"] isEqual:CCNMAppliedPolicyVerifiedN78Only] &&
+        !CCNMCanonicalNRSelection(state[@"targetNRBands"], NULL)) {
+        if (failure) {
+            *failure = @"The verified enabled policy state does not record a valid NR band selection.";
+        }
+        return NO;
+    }
     if (!valid && failure) {
         *failure = @"The durable n78 policy state record is malformed or foreign.";
     }
@@ -1067,7 +1238,8 @@ static NSDictionary *CCNMBuildIntentRecord(NSString *operation,
         ? baseline[@"slotID"] : nil;
     BOOL enable = [operation isEqual:@"enable"];
     BOOL payloadValid = enable
-        ? (CCNMBuildN78Payload(active, supported, failure) != nil && CCNMValidateN78OnlyPayload(active, requested, failure))
+        ? (CCNMBuildSelectedNRPayload(active, supported, requested[CCNMNRKey], failure) != nil &&
+           CCNMValidateSelectedNRIntentPayload(active, supported, requested, failure))
         : CCNMValidateRestorePayload(active, baseline[@"activeBands"], requested, failure);
     if (!uuid || !CCNMValidSlotID(slotID) || !payloadValid) {
         return nil;
@@ -1129,8 +1301,7 @@ static BOOL CCNMValidateIntentRecord(NSDictionary *intent,
         CCNMValidateBandDictionary(active, failure) && CCNMValidateBandDictionary(supported, failure);
     BOOL payload = NO;
     if (header && [operation isEqual:@"enable"]) {
-        payload = [active[CCNMNRKey] containsObject:@78] && [supported[CCNMNRKey] containsObject:@78] &&
-            CCNMValidateN78OnlyPayload(active, requested, failure);
+        payload = CCNMValidateSelectedNRIntentPayload(active, supported, requested, failure);
     } else if (header) {
         payload = CCNMValidateRestorePayload(active, baseline[@"activeBands"], requested, failure);
     }
@@ -1264,6 +1435,15 @@ static NSDictionary *CCNMSummaryFromState(NSDictionary *state,
         @"subscriptionUUID": base[@"subscriptionUUID"] ?: @"",
         @"uncertain": base[@"uncertain"] ?: @NO
     };
+    // The applied selection, published only for a stable enabled state. The
+    // daemon and the settings pane both need it, and CCNMSummaryFromState is the
+    // only thing either of them reads, so without this the recorded selection is
+    // invisible outside this file. It is deliberately omitted rather than
+    // defaulted while a transition is in flight: during an enable the modem does
+    // not yet hold the selection, and during a disable it no longer does, so any
+    // value here would be a claim the state record cannot support.
+    NSArray *appliedSelection = normalEnabled
+        ? CCNMCanonicalNRSelection(base[@"targetNRBands"], NULL) : nil;
     NSMutableDictionary *summary = [@{
         CCNMN78PolicySummarySuccessKey: @(success),
         CCNMN78PolicySummaryOperationKey: operation ?: @"read",
@@ -1292,6 +1472,9 @@ static NSDictionary *CCNMSummaryFromState(NSDictionary *state,
         @"removalGuardPath": CCNMN78PolicyRemovalGuardPath(),
         @"verifiedKnownOrphanRestore": @(CCNMStateHasVerifiedKnownOrphanRestore(base))
     } mutableCopy];
+    if (appliedSelection) {
+        summary[CCNMN78PolicySummaryTargetNRBandsKey] = appliedSelection;
+    }
     if (details) {
         [summary addEntriesFromDictionary:details];
     }
@@ -2398,13 +2581,28 @@ static BOOL CCNMFinishEnabledState(NSUInteger generation,
                                    NSDictionary *verifiedBands,
                                    NSString **failure) {
     NSNumber *verifiedAt = @(CCNMUnixMilliseconds());
+    // The applied selection is read out of the verified read-back rather than
+    // passed in separately. Reaching this function means the read-back equalled
+    // the payload exactly, so this array is the selection the modem confirmed,
+    // already ascending. Canonicalising it again is a fail-closed check, not a
+    // transformation: a record is the only thing the daemon can later compare
+    // live NR against, so it must not be written from an unverified source.
+    NSString *selectionFailure = nil;
+    NSArray *selection = CCNMCanonicalNRSelection(verifiedBands[CCNMNRKey], &selectionFailure);
+    if (!selection || ![selection isEqualToArray:verifiedBands[CCNMNRKey]]) {
+        if (failure) {
+            *failure = selectionFailure ?:
+                @"The verified NR read-back is not a canonical band selection.";
+        }
+        return NO;
+    }
     NSDictionary *proof = @{
         @"baselineCreatedAt": baseline[@"createdAt"],
         @"slotID": baseline[@"slotID"],
         @"readBackVerified": @YES,
         @"verifiedAt": verifiedAt,
         @"verifiedActiveBands": verifiedBands,
-        @"targetNRBands": @[ @78 ],
+        @"targetNRBands": selection,
         @"nonNRUnchanged": @YES
     };
     NSDictionary *checkpoint = CCNMBuildStateRecord(CCNMRequestedModeSystemDefault,
@@ -2668,9 +2866,15 @@ static BOOL CCNMIsVerifiedRestoreCleanupCheckpoint(NSDictionary *state) {
             // A read-only preflight failure must leave the durable clean state unchanged.
             return CCNMErrorSummary(@"enable", CCNMN78PolicyErrorInvalidBandInfo, failure, details);
         }
-        NSDictionary *payload = CCNMBuildN78Payload(initial[@"activeBands"], initial[@"supportedBands"], &failure);
+        NSArray<NSNumber *> *selection = CCNMReadSelectedNRBands();
+        NSDictionary *payload = CCNMBuildSelectedNRPayload(initial[@"activeBands"],
+            initial[@"supportedBands"], selection, &failure);
         if (!payload) {
-            CCNMN78PolicyErrorCode code = [failure containsString:@"not present"]
+            // "not within" is the multi-band generalisation of the old
+            // "n78 is not present" case: a selected band the system no longer
+            // allows. The wire value is unchanged so existing UI keeps working.
+            CCNMN78PolicyErrorCode code = [failure containsString:@"not within"] ||
+                [failure containsString:@"No NR band"]
                 ? CCNMN78PolicyErrorN78Unavailable : CCNMN78PolicyErrorInvalidBandInfo;
             return CCNMErrorSummary(@"enable", code, failure, details);
         }
@@ -2704,7 +2908,8 @@ static BOOL CCNMIsVerifiedRestoreCleanupCheckpoint(NSDictionary *state) {
             return CCNMErrorSummary(@"enable", context ? CCNMN78PolicyErrorInvalidBandInfo : CCNMN78PolicyErrorUUIDDrift,
                 failure, details);
         }
-        payload = CCNMBuildN78Payload(fresh[@"activeBands"], fresh[@"supportedBands"], &failure);
+        payload = CCNMBuildSelectedNRPayload(fresh[@"activeBands"], fresh[@"supportedBands"],
+            selection, &failure);
         id<CCNMBandInfo> payloadInfo = payload ? CCNMCreateBandPayload(payload, &failure) : nil;
         if (!payloadInfo) {
             CCNMMarkRecovery(CCNMRequestedModeSystemDefault, CCNMAppliedPolicyRecoveryRequired,

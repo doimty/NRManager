@@ -2,6 +2,7 @@
 #define CCNM_AUTOMATIC_MAINTENANCE_DECISION_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 typedef enum {
@@ -25,7 +26,13 @@ typedef struct {
     bool verificationPending;
     bool attemptUsedForDrop;
     bool unsafeOutstanding;
-    int targetBand;
+    /// The NR bands the policy pinned, as an ascending set. Any band in this set
+    /// is a legitimate place for the device to rest: the policy narrowed the
+    /// allowed list, it did not demand one specific serving band. A NULL pointer,
+    /// a zero count, or any non-positive entry means there is no target the daemon
+    /// can maintain, and it must refuse rather than guess.
+    const int *targetBands;
+    size_t targetBandCount;
     uint64_t nowMilliseconds;
     uint64_t cooldownUntilMilliseconds;
     CCNMAutomaticMaintenanceSample previous;
