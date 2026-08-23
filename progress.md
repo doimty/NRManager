@@ -300,3 +300,23 @@ watchdog, and a timeout still defers restore past a reboot.
 - 工具链：Xcode 15.4 (`15F31d`)、Apple clang 15.0.0 (clang-1500.3.9.4)、min iOS 14.0；roothide 走系统 SDK 17.5，rootless 走 Theos SDK 16.4（与上一轮一致）。roothide 两个注入 bundle 保持 `LC_DYLD_INFO_ONLY` 并依赖 libroothide，三个 exec 工具 `LC_DYLD_CHAINED_FIXUPS` 且不链 libroothide；plist program 为裸路径。
 - 产物：roothide SHA256 `a1bf442a4e889426cd8cf29f294f30dc48cfad5bbcdd348d4d2ad897f7810f41`，319706 bytes；rootless SHA256 `cf9df53e43ec57a08f4a9580bd6ad4fd308ab5a4928d8e5f396bc212d11aec8d`，302746 bytes。roothide 已交付。
 - 待定决策（需要老大拍板，未实施）：写入路径是否允许双卡在位时按数据线选定目标。读取路径（`CCNMServingTargetContext`）已有三级选择：`currentDataSubscription` → 唯一 `userDataPreferred` → 唯一可用卡，歧义时拒绝。写入路径没有这一层，仍要求整机恰好一张在位 SIM。若要放宽，必须明确：仅当 CoreTelephony 明确报出当前数据订阅时允许，且遵循 controller 自己的 client（避开跳 lock domain）。
+## 2026-08-23 写入目标改为「按数据卡选、按记录认」（双卡放宽）
+
+- 需求确认：老大要「按当前的数据卡来做」。原实现要求整机恰好一张在位 SIM，双卡直接拒绝，这就是真机上 `A modem write needs exactly one present SIM, but 2 are present` 的来源。
+- 关键区分（本轮全部设计的地基）：**数据线路是运行时可变的**，实测同一台机 10:46 数据在 SIM 2（NR n1）、11:30 在 SIM 1（NR n78）。所以数据卡只能用来「选目标」，绝不能用来「认目标」。绑定身份必须是订阅 UUID + 卡槽。
+- `CCNMSafeTargetContext` 新增显式模式参数 `CCNMTargetResolution`，不再从「记录字段是否为 nil」推断意图：
+  - `CCNMTargetResolutionFirstEnable`：仅首次 enable。单卡直接用那张；双卡用 CoreTelephony 自己报出的当前数据订阅。查询不可用 / 报错 / 报出的线不可写 → 一律拒绝，不猜。
+  - `CCNMTargetResolutionRecorded`：所有后续校验、read-back、restore、recover。只按 UUID（或旧记录的裸 slot）查找，**永不重选**，也不看数据线。
+  - `CCNMTargetResolutionRecordedSoleSIM`：known-orphan 回放专用，额外坚持整机单卡，因为它的评审证据来自单卡参考机。
+- 为什么必须显式传模式而不是看 nil：早于身份字段的旧记录什么都没记，如果用「没记录 ⇒ 可自由选择」的推断，一次旧 checkpoint 对账就会在双卡机上重新挑一条线。现在旧记录在双卡机上明确拒绝并如实说明「记录未指明订阅且当前 2 张卡在位，无法确定它当初写的是哪条线」。
+- 反向也锁死：持有记录的调用方传 FirstEnable 会被拒（`A recorded write target cannot be reselected.`）。
+- 数据线探针 `CCNMCurrentDataLineUUID` 走 controller 自己的 client（不跨 provider 的 modem lock 域），`getCurrentDataSubscriptionContextSync:` 声明为 `@optional` 并经 `CCNMValidateObjectErrorABI` 校验。与读取路径的关键差异：**写入路径不做静默降级**，四条无答案路径全部返回 nil + 具体原因，不回落 `userDataPreferred`，也不回落「唯一可用卡」。
+- 双卡下若数据线是不可写的那张（无 UUID / notGood / slot ≤ 0），拒绝而不是落到另一张。落过去等于把偏好悄悄写到用户没问的那条线上。
+- 新增歧义防护：两条可写线报同一 slot 或同一 UUID 时拒绝，否则后面所有查表都会静默取其中一条。
+- 布局摘要改为整表扫完之后再渲染一次（函数内只允许出现一次 `CCNMSubscriptionLayoutSummary(`），此前若在循环内渲染，关于第二张卡的拒绝可能只描述第一张。
+- 拒绝文案区分「卡还在但身份变了（被换）」与「记录的线根本不在（被拔/坏）」，只有后者能靠插回原卡解决。UUID 仍只报有无。
+- transient `details` 新增 `targetSelection` / `presentSubscriptionCount` / `writableSubscriptionCount` / `targetWasRecorded`，durable record 结构未动（避免 `CCNMRecordsRemainExact` 让老记录失效）。
+- 测试：`tests/test_write_path_subscription_slot.py` 的行为模型重写为镜像新逻辑，并补 8 条源码级断言。其中三条是防回归的结构约束：所有 `CCNMSafeTargetContext` 调用点必须显式带模式且只有一个 FirstEnable；函数内 `CCNMCurrentDataLineUUID(` 只能出现一次且必须排在 recorded 拒绝分支之后；`presentCount != 1` 的每一处拒绝都必须同时出现 `CCNMTargetResolutionRecordedSoleSIM`。新增 `calls_to()` 辅助按分号跨行重组调用，避免换行绕过断言。
+- 已知残留风险（如实记录）：双卡下 iOS 事后把数据线挪到另一张时，n78 仍 pin 在原订阅上，失效但无害，disable/restore 仍可用；真正新增的风险是用户拔掉或换掉被改过的那张卡 → 「孤儿 baseline」概率上升，恢复需插回原卡。
+- 验证：host 全套 320 passed / 3 skipped；定向 30/30；`clang -fsyntax-only -fobjc-arc -Wall -Wformat -target arm64-apple-ios14.0 -isysroot iPhoneOS16.5.sdk` 对 controller 与 provider 均干净；`verify_release_source` `status: passed`（`failures` / `forbidden` 空）；`py_compile`、`git diff --check` 干净；本地 rootless aggregate `build_rc=0`、`error:` 计数 0（仅编译证据，不交付）。
+- 文档同步：README 第 20 行的 `slot 1 has the single present/good SIM` 已改（上一轮误报为已改，实为未改）；release notes 的 Compatibility 段改写为三条目标来源规则 + 双卡行为与残留风险说明。

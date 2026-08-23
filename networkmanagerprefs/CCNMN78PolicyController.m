@@ -69,6 +69,13 @@ static const NSTimeInterval CCNMReadBackDeadlineSeconds = 30.0;
 - (id)getSubscriptionInfoWithError:(NSError **)error;
 - (id)getBandInfo:(id)context error:(NSError **)error;
 - (void)setActiveBandInfo:(id)context bands:(id)bands error:(NSError **)error;
+// Optional. CoreTelephony's own answer to "which subscription is the data line".
+// Declared @optional so -respondsToSelector: can be asked for it without a
+// compiler warning, and used only to pick a target on a device where more than one
+// SIM could take the write. It is never consulted to validate an already-recorded
+// target: the data line moves at runtime, a recorded target must not.
+@optional
+- (id)getCurrentDataSubscriptionContextSync:(NSError **)error;
 @end
 
 @protocol CCNMSubscriptionInfo <NSObject>
@@ -1607,8 +1614,8 @@ static id<CCNMCoreTelephonyClient> CCNMCreateClient(NSString **failure) {
 
 // Renders what each subscription slot actually reported, so a refusal can name
 // the observed layout instead of restating the rule that was violated. The write
-// gate is the only place a user meets this, and "one SIM is required" does not
-// tell a dual-line user which of their two lines is the problem.
+// gate is the only place a user meets this, and a rule restatement does not tell a
+// dual-line user which of their two lines is the problem.
 static NSString *CCNMSubscriptionLayoutSummary(NSArray *reports) {
     NSMutableArray *parts = [NSMutableArray array];
     for (NSDictionary *report in reports) {
@@ -1626,7 +1633,91 @@ static NSString *CCNMSubscriptionLayoutSummary(NSArray *reports) {
     return parts.count ? [parts componentsJoinedByString:@"; "] : @"no subscriptions";
 }
 
+// CoreTelephony's own answer to "which subscription is the data line". Used only
+// to choose between several writable SIMs, and only on a first enable, where
+// nothing has been recorded yet.
+//
+// Every no-answer path returns nil with a reason instead of a fallback guess,
+// because this decides where a modem write lands. "CoreTelephony has no opinion"
+// and "CoreTelephony named a line" must stay distinguishable; the read-only
+// serving provider can afford to degrade quietly here, a write cannot.
+//
+// Runs on the caller's own client. The serving provider has an equivalent probe,
+// but borrowing its client would reach across the shared modem lock domain.
+static NSString *CCNMCurrentDataLineUUID(id<CCNMCoreTelephonyClient> client, NSString **reason) {
+    SEL selector = @selector(getCurrentDataSubscriptionContextSync:);
+    if (!CCNMValidateObjectErrorABI(client, selector, 0, NULL)) {
+        if (reason) {
+            *reason = @"this build of CoreTelephony does not vend a usable data-line query";
+        }
+        return nil;
+    }
+    NSError *error = nil;
+    id context = nil;
+    @try {
+        context = [client getCurrentDataSubscriptionContextSync:&error];
+    } @catch (NSException *exception) {
+        if (reason) {
+            *reason = [NSString stringWithFormat:@"the data-line query raised %@", exception.name];
+        }
+        return nil;
+    }
+    if (error) {
+        if (reason) {
+            *reason = @"the data-line query returned an error";
+        }
+        return nil;
+    }
+    if (!context || ![context respondsToSelector:@selector(uuid)]) {
+        if (reason) {
+            *reason = @"the data-line query named no subscription";
+        }
+        return nil;
+    }
+    id rawUUID = [context uuid];
+    NSString *uuid = [rawUUID isKindOfClass:[NSUUID class]] ? [(NSUUID *)rawUUID UUIDString] : nil;
+    if (!uuid && reason) {
+        *reason = @"the reported data line carries no stable UUID";
+    }
+    return uuid;
+}
+
+// How a write target may be obtained. Passed explicitly at every call site rather
+// than inferred from whether the recorded fields happen to be nil, because a
+// record written before those fields existed carries nothing, and inferring
+// "choose freely" from "nothing recorded" is how a reconciliation of an old
+// checkpoint would end up re-picking a different line on a dual-SIM phone.
+typedef NS_ENUM(NSUInteger, CCNMTargetResolution) {
+    // Confirms the target a durable record already names. Never chooses.
+    CCNMTargetResolutionRecorded = 0,
+    // Chooses a target. Legal only on a first enable, where nothing is recorded.
+    CCNMTargetResolutionFirstEnable = 1,
+    // Confirms a recorded target and additionally requires that the phone hold a
+    // single SIM. Used by the known-orphan replay, whose reviewed evidence was
+    // captured on a single-SIM reference device; replaying that evidence on a
+    // phone in an unreviewed SIM configuration is outside what was approved.
+    CCNMTargetResolutionRecordedSoleSIM = 2
+};
+
+// Resolves the subscription a modem write may target.
+//
+// In CCNMTargetResolutionRecorded the caller already has a target and this only
+// confirms it is still present; nothing is chosen. A legacy record naming neither
+// an identity nor a slot still resolves only on a phone holding a single SIM,
+// which is the one case with no choice to make. CCNMTargetResolutionRecordedSoleSIM
+// behaves the same but also insists on that single-SIM layout.
+//
+// In CCNMTargetResolutionFirstEnable the target is picked: the sole present line,
+// or on a dual-SIM device the line CoreTelephony itself reports as the data line.
+// Ambiguity is refused rather than resolved by a guess.
+//
+// Keeping these apart is the safety property on a dual-SIM phone. The data line is
+// a runtime property and moves on its own, so it may pick a target but must never
+// validate one; a later revalidation or restore that consulted it would walk away
+// from the subscription the policy was actually written to. The recorded identity
+// is the binding key precisely because it does not move.
 static id<CCNMSubscriptionContext> CCNMSafeTargetContext(id<CCNMCoreTelephonyClient> client,
+                                                          CCNMTargetResolution resolution,
                                                           NSString *requiredUUID,
                                                           NSNumber *requiredSlotID,
                                                           NSMutableDictionary *details,
@@ -1651,9 +1742,8 @@ static id<CCNMSubscriptionContext> CCNMSafeTargetContext(id<CCNMCoreTelephonyCli
     }
 
     NSMutableArray *reports = [NSMutableArray array];
-    id<CCNMSubscriptionContext> target = nil;
+    NSMutableArray *writable = [NSMutableArray array];
     NSUInteger presentCount = 0;
-    NSUInteger targetCount = 0;
     for (id<CCNMSubscriptionContext> context in subscriptions) {
         if (![context respondsToSelector:@selector(slotID)] ||
             ![context respondsToSelector:@selector(isSimPresent)] ||
@@ -1679,70 +1769,183 @@ static id<CCNMSubscriptionContext> CCNMSafeTargetContext(id<CCNMCoreTelephonyCli
             presentCount++;
         }
         if (slot > 0 && present && good && uuid.length > 0) {
-            target = context;
-            targetCount++;
+            [writable addObject:context];
         }
     }
     if (details) {
         details[@"subscriptions"] = reports;
     }
-    if (presentCount != 1 || targetCount != 1 || !target) {
-        if (failure) {
-            // Two refusals share this branch and they mean different things to the
-            // user: more than one line is active, versus the single active line
-            // being unusable. Reporting them as one sentence sent a dual-line user
-            // looking for a slot problem that did not exist.
-            NSString *observed = CCNMSubscriptionLayoutSummary(reports);
-            if (presentCount != 1) {
+    // Indexed only after the whole layout is known, so a refusal can report every
+    // slot rather than the prefix scanned so far.
+    NSString *observedLayout = CCNMSubscriptionLayoutSummary(reports);
+    NSMutableDictionary *candidateByUUID = [NSMutableDictionary dictionary];
+    NSMutableDictionary *candidateBySlot = [NSMutableDictionary dictionary];
+    for (id<CCNMSubscriptionContext> context in writable) {
+        NSString *uuid = [[context uuid] UUIDString];
+        NSNumber *slot = @([context slotID]);
+        // Two lines reporting the same slot or the same identity would make every
+        // lookup below silently pick one of them. Nothing legitimate produces that
+        // shape, so refuse rather than resolve it.
+        if (!uuid || candidateByUUID[uuid] || candidateBySlot[slot]) {
+            if (failure) {
                 *failure = [NSString stringWithFormat:
-                    @"A modem write needs exactly one present SIM, but %lu are present (%@).",
-                    (unsigned long)presentCount, observed];
-            } else {
-                *failure = [NSString stringWithFormat:
-                    @"The one present SIM is not writable; a good state, a stable UUID, "
-                     "and a positive slot are all required (%@).", observed];
+                    @"Two subscriptions report the same slot or identity (%@).", observedLayout];
             }
+            return nil;
+        }
+        candidateByUUID[uuid] = context;
+        candidateBySlot[slot] = context;
+    }
+
+    // A recorded target is looked up, never re-chosen.
+    BOOL hasRecordedTarget = requiredUUID.length > 0 || requiredSlotID != nil;
+    if (resolution == CCNMTargetResolutionFirstEnable && hasRecordedTarget) {
+        // A caller that has a recorded target must confirm it, not re-pick.
+        if (failure) {
+            *failure = @"A recorded write target cannot be reselected.";
         }
         return nil;
     }
+    BOOL requiredSlotValid = !requiredSlotID || CCNMValidSlotID(requiredSlotID);
+    NSString *required = requiredUUID.length ? CCNMCanonicalUUIDString(requiredUUID) : nil;
+    if (!requiredSlotValid) {
+        if (failure) {
+            *failure = [NSString stringWithFormat:
+                @"The recorded target slot %@ is not a valid slot identifier.", requiredSlotID];
+        }
+        return nil;
+    }
+    if (requiredUUID.length && !required) {
+        if (failure) {
+            *failure = @"The recorded target subscription identity is malformed.";
+        }
+        return nil;
+    }
+    if (resolution == CCNMTargetResolutionRecordedSoleSIM && presentCount != 1) {
+        if (failure) {
+            *failure = [NSString stringWithFormat:
+                @"This recovery is approved only for a phone holding one SIM, but %lu are "
+                 "present (%@).", (unsigned long)presentCount, observedLayout];
+        }
+        return nil;
+    }
+    if (writable.count == 0) {
+        if (failure) {
+            *failure = [NSString stringWithFormat:
+                @"No SIM can take a modem write; a present and good SIM with a stable UUID "
+                 "in a positive slot is required (%@).", observedLayout];
+        }
+        return nil;
+    }
+
+    id<CCNMSubscriptionContext> target = nil;
+    NSString *selection = nil;
+    if (required) {
+        target = candidateByUUID[required];
+        selection = @"recordedIdentity";
+        if (!target) {
+            if (failure) {
+                // Distinguish a swapped SIM from a missing one. A different
+                // identity sitting in the recorded slot means the card was
+                // replaced; nothing there at all means it was removed or has
+                // gone bad, and only the second case can be fixed by putting
+                // the original card back. The UUID itself is never printed.
+                if (requiredSlotID && candidateBySlot[requiredSlotID]) {
+                    *failure = [NSString stringWithFormat:
+                        @"The subscription UUID in slot %@ no longer matches the recorded target (%@).",
+                        requiredSlotID, observedLayout];
+                } else {
+                    *failure = [NSString stringWithFormat:
+                        @"The recorded target subscription is not a writable line on this device (%@).",
+                        observedLayout];
+                }
+            }
+            return nil;
+        }
+    } else if (requiredSlotID) {
+        // A record written before the identity field existed pins only a slot.
+        target = candidateBySlot[requiredSlotID];
+        selection = @"recordedSlot";
+        if (!target) {
+            if (failure) {
+                *failure = [NSString stringWithFormat:
+                    @"The recorded target slot %@ has no writable subscription (%@).",
+                    requiredSlotID, observedLayout];
+            }
+            return nil;
+        }
+    } else if (presentCount == 1) {
+        // Only one SIM is in the phone, so there is nothing to disambiguate. This
+        // serves both a first enable and a legacy record that named no target at
+        // all: in neither case is a choice being made.
+        target = writable.firstObject;
+        selection = @"onlyPresentLine";
+    } else if (resolution != CCNMTargetResolutionFirstEnable) {
+        // A record predating the identity fields, on a phone holding more than one
+        // SIM. There is no way to tell which line it described, and picking the
+        // current data line would be a guess about history rather than a lookup.
+        if (failure) {
+            *failure = [NSString stringWithFormat:
+                @"The stored policy record names no subscription and %lu SIMs are present, "
+                 "so the line it was written for cannot be identified (%@).",
+                (unsigned long)presentCount, observedLayout];
+        }
+        return nil;
+    } else {
+        // More than one SIM is in the phone and this is a first enable, so the
+        // target comes from CoreTelephony's own answer to "which subscription is the
+        // data line". A guess is not acceptable here: the wrong choice writes the
+        // modem of a line the user did not intend and records that line as the thing
+        // restore must find later.
+        //
+        // The presence count decides that this branch is needed, not the writable
+        // count. If the data line happens to be the unwritable one, falling through
+        // to the other line would quietly apply the preference to a line the user was
+        // not asking about, so that case is refused rather than resolved.
+        NSString *unavailable = nil;
+        NSString *dataLineUUID = CCNMCurrentDataLineUUID(client, &unavailable);
+        target = dataLineUUID ? candidateByUUID[dataLineUUID] : nil;
+        selection = @"reportedDataLine";
+        if (!target) {
+            if (failure) {
+                *failure = dataLineUUID
+                    ? [NSString stringWithFormat:
+                        @"%lu SIMs are present and the reported data line cannot take a modem "
+                         "write (%@).", (unsigned long)presentCount, observedLayout]
+                    : [NSString stringWithFormat:
+                        @"%lu SIMs are present and the data line could not be identified: "
+                         "%@ (%@).", (unsigned long)presentCount,
+                        unavailable ?: @"no reason was reported", observedLayout];
+            }
+            return nil;
+        }
+    }
+
     NSString *uuid = [[target uuid] UUIDString];
     NSNumber *slotID = @([target slotID]);
-    NSString *required = requiredUUID.length ? CCNMCanonicalUUIDString(requiredUUID) : nil;
-    BOOL requiredSlotValid = !requiredSlotID || CCNMValidSlotID(requiredSlotID);
-    if (!uuid || !requiredSlotValid ||
-        (requiredUUID.length && (!required || ![uuid isEqualToString:required])) ||
-        (requiredSlotID && ![slotID isEqual:requiredSlotID])) {
+    if (!uuid || !CCNMValidSlotID(slotID)) {
         if (failure) {
-            // Name which half drifted. The two causes need different responses:
-            // a slot change means the SIM moved, a UUID change means it was
-            // swapped. The UUID itself is deliberately not printed. The invalid
-            // recorded slot is checked first because it also fails the equality
-            // test, and "your record is malformed" is the more precise answer.
-            BOOL slotDrifted = requiredSlotID && ![slotID isEqual:requiredSlotID];
-            BOOL uuidDrifted = !uuid ||
-                (requiredUUID.length && (!required || ![uuid isEqualToString:required]));
-            if (!requiredSlotValid) {
-                *failure = [NSString stringWithFormat:
-                    @"The recorded target slot %@ is not a valid slot identifier.", requiredSlotID];
-            } else if (slotDrifted && uuidDrifted) {
-                *failure = [NSString stringWithFormat:
-                    @"The target subscription changed: expected slot %@, found slot %@, "
-                     "and the subscription UUID no longer matches.", requiredSlotID, slotID];
-            } else if (slotDrifted) {
-                *failure = [NSString stringWithFormat:
-                    @"The target SIM moved: expected slot %@, found slot %@.",
-                    requiredSlotID, slotID];
-            } else {
-                *failure = [NSString stringWithFormat:
-                    @"The subscription UUID in slot %@ no longer matches the recorded target.",
-                    slotID];
-            }
+            *failure = @"The selected subscription no longer reports a usable identity.";
+        }
+        return nil;
+    }
+    if (requiredSlotID && ![slotID isEqual:requiredSlotID]) {
+        if (failure) {
+            // Reachable only through identity lookup, so the card itself is the
+            // recorded one and it moved. A slot-pinned lookup cannot land here.
+            *failure = [NSString stringWithFormat:
+                @"The target SIM moved: expected slot %@, found slot %@.",
+                requiredSlotID, slotID];
         }
         return nil;
     }
     if (details) {
         details[@"targetSubscriptionUUID"] = uuid;
         details[@"targetSlotID"] = slotID;
+        details[@"targetSelection"] = selection ?: @"unknown";
+        details[@"presentSubscriptionCount"] = @(presentCount);
+        details[@"writableSubscriptionCount"] = @(writable.count);
+        details[@"targetWasRecorded"] = @(hasRecordedTarget);
     }
     return target;
 }
@@ -1804,7 +2007,8 @@ static BOOL CCNMValidateKnownOrphanedN78HistoricalPredicate(
         return NO;
     }
     id<CCNMSubscriptionContext> context = CCNMSafeTargetContext(
-        client, CCNMKnownOrphanSubscriptionUUID, @1, details, failure);
+        client, CCNMTargetResolutionRecordedSoleSIM, CCNMKnownOrphanSubscriptionUUID, @1,
+        details, failure);
     if (!context) {
         return NO;
     }
@@ -2136,7 +2340,8 @@ static NSDictionary *CCNMWaitForReadBack(id<CCNMCoreTelephonyClient> client,
         result[@"attempts"] = @(attempt);
         NSString *identityFailure = nil;
         id<CCNMSubscriptionContext> context = CCNMSafeTargetContext(
-            client, subscriptionUUID, slotID, nil, &identityFailure);
+            client, CCNMTargetResolutionRecorded, subscriptionUUID, slotID, nil,
+            &identityFailure);
         if (!context) {
             result[@"identityUncertain"] = @YES;
             result[@"error"] = identityFailure ?: @"The target subscription could not be revalidated.";
@@ -2451,7 +2656,8 @@ static BOOL CCNMIsVerifiedRestoreCleanupCheckpoint(NSDictionary *state) {
         }
         id<CCNMCoreTelephonyClient> client = CCNMCreateClient(&failure);
         id<CCNMSubscriptionContext> context = client
-            ? CCNMSafeTargetContext(client, nil, nil, details, &failure) : nil;
+            ? CCNMSafeTargetContext(client, CCNMTargetResolutionFirstEnable, nil, nil,
+                details, &failure) : nil;
         if (!context) {
             return CCNMErrorSummary(@"enable", CCNMN78PolicyErrorUnsafeSubscription, failure, details);
         }
@@ -2485,7 +2691,8 @@ static BOOL CCNMIsVerifiedRestoreCleanupCheckpoint(NSDictionary *state) {
         }
         details[@"baselineCreated"] = @YES;
 
-        context = CCNMSafeTargetContext(client, subscriptionUUID, baseline[@"slotID"], details, &failure);
+        context = CCNMSafeTargetContext(client, CCNMTargetResolutionRecorded,
+            subscriptionUUID, baseline[@"slotID"], details, &failure);
         NSDictionary *fresh = context ? CCNMReadFreshBandInfo(client, context, &failure) : nil;
         if (!fresh || !CCNMDictionariesEqual(initial[@"activeBands"], fresh[@"activeBands"]) ||
             !CCNMDictionariesEqual(initial[@"supportedBands"], fresh[@"supportedBands"])) {
@@ -2532,7 +2739,8 @@ static BOOL CCNMIsVerifiedRestoreCleanupCheckpoint(NSDictionary *state) {
             return CCNMErrorSummary(@"enable", CCNMN78PolicyErrorPersistence, failure, details);
         }
 
-        context = CCNMSafeTargetContext(client, subscriptionUUID, baseline[@"slotID"], details, &failure);
+        context = CCNMSafeTargetContext(client, CCNMTargetResolutionRecorded,
+            subscriptionUUID, baseline[@"slotID"], details, &failure);
         NSDictionary *lastGuard = context ? CCNMReadFreshBandInfo(client, context, &failure) : nil;
         BOOL recordsExact = CCNMRecordsRemainExact(applying, baseline, intent, inFlight, &failure);
         BOOL bandsExact = lastGuard && CCNMDictionariesEqual(fresh[@"activeBands"], lastGuard[@"activeBands"]) &&
@@ -2758,7 +2966,8 @@ static BOOL CCNMIsVerifiedRestoreCleanupCheckpoint(NSDictionary *state) {
                 }
                 id<CCNMCoreTelephonyClient> client = CCNMCreateClient(&failure);
                 id context = client
-                    ? CCNMSafeTargetContext(client, state[@"subscriptionUUID"], state[@"slotID"], details, &failure) : nil;
+                    ? CCNMSafeTargetContext(client, CCNMTargetResolutionRecorded,
+                        state[@"subscriptionUUID"], state[@"slotID"], details, &failure) : nil;
                 NSDictionary *fresh = context ? CCNMReadFreshBandInfo(client, context, &failure) : nil;
                 if (!fresh || !CCNMDictionariesEqual(fresh[@"activeBands"], state[@"verifiedActiveBands"])) {
                     failure = failure ?: @"Live BandInfo no longer matches the verified restore cleanup checkpoint.";
@@ -2847,7 +3056,8 @@ static BOOL CCNMIsVerifiedRestoreCleanupCheckpoint(NSDictionary *state) {
         }
         id<CCNMCoreTelephonyClient> client = CCNMCreateClient(&failure);
         id<CCNMSubscriptionContext> context = client
-            ? CCNMSafeTargetContext(client, subscriptionUUID, baseline[@"slotID"], details, &failure) : nil;
+            ? CCNMSafeTargetContext(client, CCNMTargetResolutionRecorded,
+                subscriptionUUID, baseline[@"slotID"], details, &failure) : nil;
         if (!context) {
             CCNMMarkRecovery(state[@"requestedMode"] ?: CCNMRequestedModeN78Preferred,
                 CCNMAppliedPolicyRecoveryRequired, CCNMRecoveryStateRebootRequired,
@@ -2897,7 +3107,8 @@ static BOOL CCNMIsVerifiedRestoreCleanupCheckpoint(NSDictionary *state) {
                     failure ?: @"Durable policy evidence changed during no-write recovery and was preserved.", details);
             }
             if (enforceKnownOrphanGuard) {
-                context = CCNMSafeTargetContext(client, subscriptionUUID, baseline[@"slotID"], details, &failure);
+                context = CCNMSafeTargetContext(client, CCNMTargetResolutionRecorded,
+                    subscriptionUUID, baseline[@"slotID"], details, &failure);
                 NSDictionary *lastNoWriteGuard = context
                     ? CCNMReadFreshBandInfo(client, context, &failure) : nil;
                 if (!CCNMKnownOrphanBandInfoMatches(
@@ -2962,7 +3173,8 @@ static BOOL CCNMIsVerifiedRestoreCleanupCheckpoint(NSDictionary *state) {
             bandsExact = CCNMValidateKnownOrphanedN78HistoricalPredicate(
                 client, details, &context, &lastGuard, NULL, &failure);
         } else {
-            context = CCNMSafeTargetContext(client, subscriptionUUID, baseline[@"slotID"], details, &failure);
+            context = CCNMSafeTargetContext(client, CCNMTargetResolutionRecorded,
+                subscriptionUUID, baseline[@"slotID"], details, &failure);
             lastGuard = context ? CCNMReadFreshBandInfo(client, context, &failure) : nil;
             bandsExact = lastGuard &&
                 CCNMDictionariesEqual(fresh[@"activeBands"], lastGuard[@"activeBands"]) &&

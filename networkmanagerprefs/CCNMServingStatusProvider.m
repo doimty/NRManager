@@ -319,10 +319,11 @@ static NSString *CCNMServingPreferredDataLineUUID(id<CCNMServingCoreTelephonyCli
 // Picks the subscription whose serving cell is worth showing, and reports which
 // one that was.
 //
-// The write path requires exactly one present SIM in a positive slot, because
-// it has to bind a modem write to an unambiguous subscription. Reading has no
-// such constraint, and refusing to read on a dual-SIM phone was never a safety
-// property, only a leftover from sharing the write path's shape.
+// The write path binds a modem write to one subscription and then has to find that
+// same subscription again on every later revalidation and restore, so it refuses
+// any ambiguity it cannot resolve from CoreTelephony's own data-line answer.
+// Reading has no such constraint, and refusing to read on a dual-SIM phone was
+// never a safety property, only a leftover from sharing the write path's shape.
 //
 // Order of preference: the data line CoreTelephony itself reports, then the
 // per-context userDataPreferred flag, then the single usable subscription. Each

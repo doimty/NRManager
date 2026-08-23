@@ -14,44 +14,95 @@ DAEMON = ROOT / "maintenance-daemon/main.m"
 AUTOMATIC_RECORD = ROOT / "networkmanagerprefs/CCNMAutomaticMaintenanceRecord.m"
 
 
-def select_target(subscriptions, required_uuid=None, required_slot=None):
-    """Small model of the write gate; raises when a modem write is ambiguous."""
+def select_target(subscriptions, required_uuid=None, required_slot=None,
+                  data_line_uuid=None, first_enable=False):
+    """Small model of the write gate; raises when a modem write is ambiguous.
+
+    Mirrors CCNMSafeTargetContext. A recorded target is looked up and never
+    re-chosen; only a first enable may choose, and on a dual-SIM phone it may
+    only choose the line CoreTelephony itself reports as the data line.
+    """
     present = [item for item in subscriptions if item.get("present")]
-    usable = [
+    writable = [
         item for item in present
         if item.get("good") and item.get("uuid") and item.get("slot", 0) > 0
     ]
-    if len(present) != 1 or len(usable) != 1:
-        raise ValueError("ambiguous subscription")
-    target = usable[0]
-    if required_uuid is not None and target["uuid"] != required_uuid:
-        raise ValueError("subscription changed")
+    recorded = required_uuid is not None or required_slot is not None
+    if first_enable and recorded:
+        raise ValueError("a recorded target cannot be reselected")
+    if required_slot is not None and required_slot <= 0:
+        raise ValueError("invalid recorded slot")
+    if not writable:
+        raise ValueError("no writable subscription")
+    by_uuid = {item["uuid"]: item for item in writable}
+    by_slot = {item["slot"]: item for item in writable}
+    if len(by_uuid) != len(writable) or len(by_slot) != len(writable):
+        raise ValueError("duplicate slot or identity")
+
+    if required_uuid is not None:
+        target = by_uuid.get(required_uuid)
+        if target is None:
+            raise ValueError("recorded subscription is gone")
+    elif required_slot is not None:
+        target = by_slot.get(required_slot)
+        if target is None:
+            raise ValueError("recorded slot has no writable subscription")
+    elif len(present) == 1:
+        target = writable[0]
+    elif not first_enable:
+        # A record predating the identity fields, on a phone holding two SIMs:
+        # which line it described cannot be recovered.
+        raise ValueError("recorded target cannot be identified")
+    else:
+        target = by_uuid.get(data_line_uuid) if data_line_uuid else None
+        if target is None:
+            raise ValueError("the data line cannot take this write")
     if required_slot is not None and target["slot"] != required_slot:
         raise ValueError("slot changed")
     return target
 
 
 class WritePathSubscriptionSlotModelTests(unittest.TestCase):
+    DUAL = (
+        {"slot": 1, "present": True, "good": True, "uuid": "one"},
+        {"slot": 2, "present": True, "good": True, "uuid": "two"},
+    )
+
     def test_slot_one_single_sim_stays_supported(self):
         target = select_target([
             {"slot": 1, "present": True, "good": True, "uuid": "one"},
             {"slot": 2, "present": False, "good": True, "uuid": "two"},
-        ])
+        ], first_enable=True)
         self.assertEqual(target["slot"], 1)
 
     def test_slot_two_single_sim_is_supported(self):
         target = select_target([
             {"slot": 1, "present": False, "good": True, "uuid": "one"},
             {"slot": 2, "present": True, "good": True, "uuid": "two"},
-        ])
+        ], first_enable=True)
         self.assertEqual(target, {"slot": 2, "present": True, "good": True, "uuid": "two"})
 
-    def test_two_present_sims_remain_rejected(self):
+    def test_dual_sim_first_enable_follows_the_reported_data_line(self):
+        # The refusal a dual-line user actually hit. Nothing about the second SIM
+        # makes the data line ambiguous, so the write is allowed to land on it.
+        target = select_target(list(self.DUAL), data_line_uuid="two", first_enable=True)
+        self.assertEqual(target["slot"], 2)
+
+    def test_dual_sim_first_enable_without_a_data_line_answer_is_rejected(self):
+        # No answer from CoreTelephony means no target. Picking either line would
+        # be a guess about which line the user meant, and it would also decide
+        # which subscription a later restore has to find.
+        with self.assertRaises(ValueError):
+            select_target(list(self.DUAL), first_enable=True)
+
+    def test_dual_sim_first_enable_rejects_an_unwritable_data_line(self):
+        # Falling through to the other SIM would silently apply the preference to
+        # a line the user was not asking about.
         with self.assertRaises(ValueError):
             select_target([
                 {"slot": 1, "present": True, "good": True, "uuid": "one"},
-                {"slot": 2, "present": True, "good": True, "uuid": "two"},
-            ])
+                {"slot": 2, "present": True, "good": False, "uuid": "two"},
+            ], data_line_uuid="two", first_enable=True)
 
     def test_missing_uuid_and_nonpositive_slot_remain_rejected(self):
         for subscription in (
@@ -59,7 +110,7 @@ class WritePathSubscriptionSlotModelTests(unittest.TestCase):
             {"slot": 0, "present": True, "good": True, "uuid": "two"},
         ):
             with self.subTest(subscription=subscription), self.assertRaises(ValueError):
-                select_target([subscription])
+                select_target([subscription], first_enable=True)
 
     def test_revalidation_binds_both_uuid_and_actual_slot(self):
         subscription = {"slot": 2, "present": True, "good": True, "uuid": "two"}
@@ -68,6 +119,49 @@ class WritePathSubscriptionSlotModelTests(unittest.TestCase):
             select_target([subscription], "two", 1)
         with self.assertRaises(ValueError):
             select_target([subscription], "one", 2)
+
+    def test_revalidation_survives_a_second_present_sim(self):
+        # The reason the enable gate and the revalidation gate had to change
+        # together: an enable that succeeded on a dual-SIM phone must still be
+        # verifiable and restorable there, or it lands in reboot-required.
+        target = select_target(list(self.DUAL), "two", 2)
+        self.assertEqual(target["uuid"], "two")
+
+    def test_revalidation_ignores_the_data_line(self):
+        # The data line moves at runtime. Consulting it here would abandon the
+        # subscription the policy was written to as soon as iOS switched lines.
+        target = select_target(list(self.DUAL), "one", 1, data_line_uuid="two")
+        self.assertEqual(target["uuid"], "one")
+
+    def test_a_recorded_target_is_never_reselected(self):
+        with self.assertRaises(ValueError):
+            select_target(list(self.DUAL), "two", 2, data_line_uuid="two", first_enable=True)
+
+    def test_legacy_record_naming_no_line_is_rejected_on_a_dual_sim_phone(self):
+        # A record written before the identity fields names nothing. On one SIM
+        # there is no choice to make; on two there is no way to know which line
+        # it described, and the data line is an answer about now, not about then.
+        single = select_target([
+            {"slot": 1, "present": True, "good": True, "uuid": "one"},
+            {"slot": 2, "present": False, "good": True, "uuid": "two"},
+        ])
+        self.assertEqual(single["uuid"], "one")
+        with self.assertRaises(ValueError):
+            select_target(list(self.DUAL), data_line_uuid="two")
+
+    def test_duplicate_slot_or_identity_is_rejected(self):
+        for subscriptions in (
+            [
+                {"slot": 1, "present": True, "good": True, "uuid": "same"},
+                {"slot": 2, "present": True, "good": True, "uuid": "same"},
+            ],
+            [
+                {"slot": 1, "present": True, "good": True, "uuid": "one"},
+                {"slot": 1, "present": True, "good": True, "uuid": "two"},
+            ],
+        ):
+            with self.subTest(subscriptions=subscriptions), self.assertRaises(ValueError):
+                select_target(subscriptions, data_line_uuid="one", first_enable=True)
 
 
 class WritePathSubscriptionSlotSourceTests(unittest.TestCase):
@@ -84,6 +178,20 @@ class WritePathSubscriptionSlotSourceTests(unittest.TestCase):
     def function(source, marker):
         start = source.index(marker)
         return source[start:source.index("\n}\n", start) + 3]
+
+    @staticmethod
+    def calls_to(source, marker):
+        """Every call to marker, rejoined across line wraps, declarations aside."""
+        calls = []
+        index = source.find(marker)
+        while index != -1:
+            line_start = source.rfind("\n", 0, index) + 1
+            end = source.index(";", index)
+            call = " ".join(source[line_start:end].split())
+            if not call.startswith("static "):
+                calls.append(call)
+            index = source.find(marker, end)
+        return calls
 
     def test_target_selector_accepts_the_only_usable_positive_slot(self):
         body = self.function(self.controller, "static id<CCNMSubscriptionContext> CCNMSafeTargetContext")
@@ -117,6 +225,20 @@ class WritePathSubscriptionSlotSourceTests(unittest.TestCase):
                 self.assertIn('[intent[@"slotID"] isEqual:baseline[@"slotID"]]', intent)
                 inflight = self.function(source, "CCNMValidateInFlightRecord")
                 self.assertIn('[record[@"slotID"] isEqual:baseline[@"slotID"]]', inflight)
+
+    def test_known_orphan_replay_still_requires_a_single_sim(self):
+        # The reviewed evidence for this replay came from a single-SIM reference
+        # device. Relaxing the dual-SIM refusal for normal enables must not relax
+        # it here, so this path asks for the stricter resolution mode.
+        body = self.function(
+            self.controller,
+            "static BOOL CCNMValidateKnownOrphanedN78HistoricalPredicate",
+        )
+        self.assertIn("CCNMTargetResolutionRecordedSoleSIM", body)
+        self.assertEqual(self.controller.count("CCNMTargetResolutionRecordedSoleSIM,"), 1)
+        gate = self.function(self.controller, "static id<CCNMSubscriptionContext> CCNMSafeTargetContext")
+        self.assertIn("resolution == CCNMTargetResolutionRecordedSoleSIM && presentCount != 1", gate)
+        self.assertIn("approved only for a phone holding one SIM", gate)
 
     def test_known_orphan_replay_remains_pinned_to_slot_one(self):
         predicate = self.function(
@@ -165,8 +287,7 @@ class WritePathSubscriptionSlotSourceTests(unittest.TestCase):
         body = self.function(self.controller, "static id<CCNMSubscriptionContext> CCNMSafeTargetContext")
         self.assertNotIn("Exactly one present/good SIM", body)
         self.assertIn("CCNMSubscriptionLayoutSummary(reports)", body)
-        self.assertIn("but %lu are present", body)
-        self.assertIn("presentCount != 1", body)
+        self.assertIn("%lu SIMs are present", body)
         summary = self.function(self.controller, "static NSString *CCNMSubscriptionLayoutSummary")
         for field in ('@"slotID"', '@"isSimPresent"', '@"isSimGood"', '@"subscriptionUUID"'):
             self.assertIn(field, summary)
@@ -174,17 +295,95 @@ class WritePathSubscriptionSlotSourceTests(unittest.TestCase):
         self.assertIn("hasUUID", summary)
         self.assertNotIn("UUIDString", summary)
 
+    def test_observed_layout_is_rendered_after_the_whole_scan(self):
+        # Rendering it mid-scan would report only the slots walked so far, so a
+        # refusal about the second SIM could describe just the first one.
+        body = self.function(self.controller, "static id<CCNMSubscriptionContext> CCNMSafeTargetContext")
+        self.assertEqual(body.count("CCNMSubscriptionLayoutSummary("), 1)
+        self.assertLess(body.index('details[@"subscriptions"] = reports'),
+                        body.index("CCNMSubscriptionLayoutSummary("))
+
+    def test_dual_sim_is_no_longer_refused_outright(self):
+        # The gate used to require exactly one present SIM unconditionally, which
+        # refused every dual-line phone before it ever looked at which line was
+        # the data line. The count may still gate the reviewed-evidence replay,
+        # but only there, so every remaining refusal on it has to name that mode.
+        body = self.function(self.controller, "static id<CCNMSubscriptionContext> CCNMSafeTargetContext")
+        refusals = [line for line in body.splitlines() if "presentCount != 1" in line]
+        self.assertTrue(refusals)
+        for line in refusals:
+            with self.subTest(line=line.strip()):
+                self.assertIn("CCNMTargetResolutionRecordedSoleSIM", line)
+        self.assertIn("presentCount == 1", body)
+        self.assertIn("CCNMCurrentDataLineUUID(client", body)
+
+    def test_only_a_first_enable_may_choose_a_target(self):
+        # The data line moves at runtime, so it may pick a target but must never
+        # validate one. Every revalidation and restore call site has to arrive in
+        # the recorded mode, or a line switch would silently retarget the policy.
+        calls = self.calls_to(self.controller, "CCNMSafeTargetContext(")
+        self.assertGreater(len(calls), 1)
+        for call in calls:
+            with self.subTest(call=call):
+                self.assertIn("CCNMTargetResolution", call)
+        first_enable = [call for call in calls if "CCNMTargetResolutionFirstEnable" in call]
+        self.assertEqual(len(first_enable), 1)
+        # The one selecting call passes no recorded identity, and every other call
+        # passes one. Anything else means a recorded target reached selection mode.
+        self.assertIn("nil, nil", first_enable[0])
+        for call in calls:
+            if call in first_enable:
+                continue
+            with self.subTest(call=call):
+                self.assertNotIn("Recorded, nil, nil", call)
+
+    def test_recorded_mode_refuses_instead_of_consulting_the_data_line(self):
+        # A record predating the identity fields names no line. On a dual-SIM
+        # phone the current data line is an answer about now, not about the boot
+        # the record was written in, so it must not stand in for the recorded id.
+        body = self.function(self.controller, "static id<CCNMSubscriptionContext> CCNMSafeTargetContext")
+        self.assertEqual(body.count("CCNMCurrentDataLineUUID("), 1)
+        self.assertIn("resolution != CCNMTargetResolutionFirstEnable", body)
+        self.assertIn("names no subscription and %lu SIMs are present", body)
+        self.assertLess(body.index("resolution != CCNMTargetResolutionFirstEnable"),
+                        body.index("CCNMCurrentDataLineUUID("))
+        # And a caller holding a record cannot ask to re-pick.
+        self.assertIn("A recorded write target cannot be reselected.", body)
+
+    def test_data_line_probe_is_abi_guarded_and_never_guesses(self):
+        body = self.function(self.controller, "static NSString *CCNMCurrentDataLineUUID")
+        self.assertIn("CCNMValidateObjectErrorABI(client", body)
+        self.assertIn("@catch (NSException *exception)", body)
+        # Every no-answer path returns nil with a reason. The write path must not
+        # inherit the reader's quiet degradation to userDataPreferred or to the
+        # only usable line.
+        self.assertNotIn("userDataPreferred", body)
+        self.assertEqual(body.count("return nil;"), 4)
+        self.assertNotIn("UUIDString]);", body)
+
+    def test_duplicate_slot_or_identity_is_refused_before_any_lookup(self):
+        # Two lines sharing a slot or an identity would make every lookup below
+        # silently pick one of them.
+        body = self.function(self.controller, "static id<CCNMSubscriptionContext> CCNMSafeTargetContext")
+        self.assertIn("Two subscriptions report the same slot or identity", body)
+        self.assertLess(body.index("Two subscriptions report the same slot or identity"),
+                        body.index("id<CCNMSubscriptionContext> target = nil;"))
+
     def test_drift_refusal_distinguishes_a_moved_sim_from_a_swapped_one(self):
         # Slot drift and UUID drift need different user responses, and the
-        # combined message could not tell them apart.
+        # combined message could not tell them apart. A card sitting in the
+        # recorded slot under a different identity was swapped; nothing there at
+        # all was removed, and only that case is fixed by putting it back.
         body = self.function(self.controller, "static id<CCNMSubscriptionContext> CCNMSafeTargetContext")
         self.assertNotIn("The target subscription UUID or slot changed", body)
         self.assertIn("The target SIM moved: expected slot %@, found slot %@", body)
         self.assertIn("no longer matches the recorded target", body)
+        self.assertIn("is not a writable line on this device", body)
         self.assertIn("is not a valid slot identifier", body)
-        # An invalid recorded slot also fails the equality test, so it has to be
-        # answered before the drift cases or it gets reported as a moved SIM.
-        self.assertLess(body.index("!requiredSlotValid) {"), body.index("slotDrifted && uuidDrifted"))
+        # An invalid recorded slot is answered before it can be reported as a
+        # missing line or a moved SIM.
+        self.assertLess(body.index("!requiredSlotValid) {"),
+                        body.index("target = candidateByUUID[required];"))
 
     def test_structured_serving_summary_exports_the_actual_slot(self):
         self.assertIn("CCNMServingSummarySlotIDKey", self.provider_h)

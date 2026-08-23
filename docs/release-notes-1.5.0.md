@@ -30,11 +30,19 @@ The first end-to-end acceptance target was:
 - iOS 15.1.1 (19B81)
 - exactly one present and good SIM in slot 1
 
-The write path no longer requires slot 1. It requires exactly one present SIM, which must be good and carry a stable UUID in a positive slot, so a modem write binds to an unambiguous subscription. A dual-SIM phone with both SIMs present is refused for that reason, and the refusal now reports the observed layout per slot. Reading the serving cell carries no such restriction and works with two SIMs present.
+The write path no longer requires slot 1, and no longer requires that only one SIM be in the phone. It binds a modem write to one subscription identified by UUID plus slot, and it must be able to find that same subscription again on every later verification and restore. Where the target comes from depends on what is already recorded:
 
-The model and OS identity are now recorded baseline evidence, not a compatibility allowlist. Enable and restore accept any device/build that passes the runtime contract: the private CoreTelephony ABI is valid, the single present subscription is unambiguous in a positive slot, complete fresh active/supported BandInfo is readable, and n78 exists in both NR sets. The payload changes only NR; LTE and all other RAT arrays remain unchanged. Restore additionally requires the same hardware model, capability shape, and owned NR capability evidence. The saved active NR list is replayed exactly and is not required to be a subset of the current supported NR list, because the device's BandInfo contract permits that shape; an iOS update alone does not block a rollback.
+- A first enable on a phone holding one SIM uses that SIM.
+- A first enable on a dual-SIM phone uses the line CoreTelephony itself reports as the current data line. If that query is unavailable, errors, or names a line that cannot take a write, the enable is refused rather than resolved by a guess.
+- Every later verification, restore, and recovery looks up the recorded identity and never re-chooses. The data line moves at runtime, so consulting it there would abandon the subscription the policy was actually written to as soon as iOS switched lines.
 
-The dedicated known-orphan recovery remains stricter: it requires an exact match of the reviewed six-RAT active and supported dictionaries, subscription identity, and clean durable state. It is not a general fallback for arbitrary phones.
+Refusals report the observed layout per slot, and name whether a recorded SIM moved slots, was replaced, or is absent. A UUID is only ever reported as present or absent, never printed. Reading the serving cell carries no such restriction and works with two SIMs present.
+
+On a dual-SIM phone the preference stays bound to the line it was enabled on. If iOS later moves the data line to the other SIM, the preference remains on the original one, where it has no effect until the data line moves back; disable and restore continue to work. Removing or replacing that SIM leaves the recorded baseline unrestorable until it is put back.
+
+The model and OS identity are now recorded baseline evidence, not a compatibility allowlist. Enable and restore accept any device/build that passes the runtime contract: the private CoreTelephony ABI is valid, the target subscription resolves unambiguously in a positive slot by the rules above, complete fresh active/supported BandInfo is readable, and n78 exists in both NR sets. The payload changes only NR; LTE and all other RAT arrays remain unchanged. Restore additionally requires the same hardware model, capability shape, and owned NR capability evidence. The saved active NR list is replayed exactly and is not required to be a subset of the current supported NR list, because the device's BandInfo contract permits that shape; an iOS update alone does not block a rollback.
+
+The dedicated known-orphan recovery remains stricter: it requires an exact match of the reviewed six-RAT active and supported dictionaries, subscription identity, clean durable state, and a phone holding a single SIM, because its reviewed evidence was captured on a single-SIM reference device. It is not a general fallback for arbitrary phones.
 
 This feature is an n78 preference, not a guarantee of continuous 5G or n78 service. LTE fallback is expected and is not reported as policy failure.
 
