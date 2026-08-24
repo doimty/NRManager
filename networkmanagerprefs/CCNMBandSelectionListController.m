@@ -77,7 +77,19 @@ typedef NS_ENUM(NSInteger, CCNMBandSelectionAvailability) {
 @property (nonatomic, assign) CCNMBandSelectionAvailability availability;
 @property (nonatomic, copy) NSArray<NSNumber *> *domain;
 @property (nonatomic, copy) NSSet<NSNumber *> *workingSelection;
-@property (nonatomic, copy) NSArray<NSNumber *> *savedSelection;
+// What "unedited" means for this appearance: the stored selection narrowed to the
+// bands the current domain still offers, which is exactly what workingSelection is
+// seeded with.
+//
+// Comparing against the raw stored value instead reported an edit the user never
+// made. A stored band that has dropped out of the domain can never be in
+// workingSelection, so the two arrays differed on arrival and the save row enabled
+// itself on a pane that had only been looked at. The domain is the live active list
+// narrowed by supported, so it shrinks on its own when the modem's active set
+// changes, which is why re-entering the pane could flip the row on with no input.
+// The bands that dropped out are reported by droppedStoredBands; they are not kept
+// here, because a save can only ever write a subset of the domain.
+@property (nonatomic, copy) NSArray<NSNumber *> *baselineSelection;
 @property (nonatomic, copy) NSArray<NSNumber *> *droppedStoredBands;
 @property (nonatomic, assign) BOOL hasExplicitSavedSelection;
 @property (nonatomic, copy) NSString *evidenceFailure;
@@ -196,7 +208,7 @@ typedef NS_ENUM(NSInteger, CCNMBandSelectionAvailability) {
 
     self.availability = availability;
     self.domain = domain;
-    self.savedSelection = stored;
+    self.baselineSelection = [working.allObjects sortedArrayUsingSelector:@selector(compare:)];
     self.workingSelection = working;
     self.hasExplicitSavedSelection = hasExplicitSavedSelection;
     // Only worth reporting an explicit pending value. The shipped default is not a
@@ -238,9 +250,10 @@ typedef NS_ENUM(NSInteger, CCNMBandSelectionAvailability) {
     return [self.workingSelection.allObjects sortedArrayUsingSelector:@selector(compare:)];
 }
 
-- (BOOL)workingSelectionDiffersFromSaved {
-    return ![[self canonicalWorkingSelection] isEqualToArray:
-        [self.savedSelection sortedArrayUsingSelector:@selector(compare:)]];
+// Both sides are canonical and both are confined to the current domain, so this
+// answers only "did the user change something on this pane".
+- (BOOL)workingSelectionDiffersFromBaseline {
+    return ![[self canonicalWorkingSelection] isEqualToArray:self.baselineSelection];
 }
 
 - (NSString *)validationFailureForWorkingSelection {
@@ -270,7 +283,7 @@ typedef NS_ENUM(NSInteger, CCNMBandSelectionAvailability) {
 }
 
 - (BOOL)canSave {
-    return [self isEditable] && [self workingSelectionDiffersFromSaved] &&
+    return [self isEditable] && [self workingSelectionDiffersFromBaseline] &&
         [self validationFailureForWorkingSelection] == nil;
 }
 
@@ -302,7 +315,7 @@ typedef NS_ENUM(NSInteger, CCNMBandSelectionAvailability) {
     // user to press a button which is correctly disabled, because there is nothing
     // to save. Only an actual edit is unsaved.
     NSString *formatKey = @"BAND_STATUS_SAVED_FORMAT";
-    if ([self workingSelectionDiffersFromSaved]) {
+    if ([self workingSelectionDiffersFromBaseline]) {
         formatKey = @"BAND_STATUS_UNSAVED_FORMAT";
     } else if (!self.hasExplicitSavedSelection) {
         formatKey = @"BAND_STATUS_DEFAULT_FORMAT";

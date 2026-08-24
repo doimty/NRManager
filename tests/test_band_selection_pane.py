@@ -363,6 +363,36 @@ class PaneDomainTests(unittest.TestCase):
         requested_mode = body.index("CCNMN78PolicySummaryRequestedModeKey")
         self.assertLess(recovery_gate, requested_mode)
 
+    def test_an_unedited_pane_is_compared_against_what_it_actually_offered(self):
+        """The save row must not enable itself on a pane nobody touched.
+
+        The stored selection and the working set live in different spaces: working is
+        stored narrowed to the current domain. Comparing across that boundary reports
+        an edit whenever a stored band has dropped out, because such a band can never
+        be in working. The domain is the live active list narrowed by supported, so it
+        shrinks on its own when the modem's active set changes, which made the save
+        row turn itself on after the pane was merely re-entered. Both sides must be
+        the domain-narrowed set.
+
+        This also keeps the row honest in the other direction: the dropped bands are
+        reported in the group footer, which states they will not be saved again, so a
+        save that omits them is not a silent narrowing.
+        """
+        self.assertIn("workingSelectionDiffersFromBaseline", self.bodies)
+        reload_model = self.bodies["reloadModel"]
+        self.assertIn("self.baselineSelection = [working.allObjects", reload_model)
+        self.assertNotIn("self.baselineSelection = stored", reload_model)
+        # The raw stored array may seed working and dropped, and nothing else.
+        self.assertNotIn("savedSelection", self.source)
+        differs = self.bodies["workingSelectionDiffersFromBaseline"]
+        self.assertIn("self.baselineSelection", differs)
+        # Both operands are already canonical, so a re-sort here would mean one of
+        # them is some other array.
+        self.assertNotIn("sortedArrayUsingSelector", differs)
+        self.assertIn("workingSelectionDiffersFromBaseline", self.bodies["canSave"])
+        self.assertIn("workingSelectionDiffersFromBaseline", self.bodies["statusText"])
+        self.assertIn("BAND_GROUP_FOOTER_DROPPED", self.source)
+
     def test_the_default_selection_is_not_presented_as_an_explicit_save(self):
         self.assertIn("CCNMHasStoredSelectedNRBands", self.source)
         status = self.bodies["statusText"]
