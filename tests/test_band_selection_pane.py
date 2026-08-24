@@ -505,6 +505,135 @@ class PaneCellTests(unittest.TestCase):
                     self.assertFalse(value.strip().endswith(".class"),
                                      f"{source.name}: {key} takes a class name, not a Class")
 
+    def test_a_code_built_specifier_gets_its_id_as_a_property(self):
+        """Regression: the save row could never be re-enabled after a valid change.
+
+        -[PSSpecifier identifier] reads propertyForKey:@"id" and falls back to
+        @"label", then @"key", then -name. PSSpecifier declares no _identifier
+        storage, so the whole notion of an identifier is that property. A specifier
+        that never has it written answers the fallback -- a localized display name --
+        so -specifierForID: cannot match the ID the caller asked for, and every
+        refresh keyed on that lookup silently does nothing.
+
+        Writing PSIDKey makes the first branch of the getter hit, and it is what
+        Preferences itself does: +[PSSpecifier deleteButtonSpecifierWithName:target:
+        action:] sets the ID with setProperty:forKey:@"id" and never goes through
+        -setIdentifier:. Scanned across the bundle for the same reason as the
+        cell-class check: no build or packaging gate can see this, because assigning
+        the property compiles and links fine.
+        """
+        for source in sorted(PREFS.glob("*.m")):
+            text = code_only(source.read_text())
+            self.assertNotRegex(
+                text, r"\.identifier\s*=[^=]",
+                f"{source.name}: write a specifier ID with setProperty:forKey:PSIDKey",
+            )
+            self.assertNotIn(
+                "setIdentifier:", text,
+                f"{source.name}: write a specifier ID with setProperty:forKey:PSIDKey",
+            )
+
+        pane = code_only(PANE.read_text())
+        self.assertIn(
+            "static void CCNMSetSpecifierID(PSSpecifier *specifier, NSString *identifier)",
+            pane)
+        self.assertEqual(pane.count("forKey:PSIDKey"), 1,
+                         "PSIDKey must only be written by CCNMSetSpecifierID")
+        # Five call sites plus the definition: status, one band row, save, the
+        # unavailable row, and the shared group builder.
+        self.assertEqual(pane.count("CCNMSetSpecifierID("), 6)
+
+    def test_a_group_built_with_group_specifier_with_id_also_writes_the_property(self):
+        """+groupSpecifierWithID: routes through -setIdentifier:, so it needs the same fix.
+
+        A group whose ID does not resolve is not merely unfindable: group specifiers
+        are how the framework delimits sections, and code that looks one up by ID to
+        retitle or refoot it would edit the wrong object.
+        """
+        pane = code_only(PANE.read_text())
+        builder = method_bodies(pane)["groupSpecifierWithID"]
+        self.assertIn("CCNMSetSpecifierID(group, identifier)", builder)
+
+    def test_replacing_the_model_goes_through_the_framework_setter(self):
+        """Regression: the same bug from the other side.
+
+        _specifiersByID and the group index array are rebuilt only by
+        -prepareSpecifiersMetadata, which runs from -viewDidLoad, -setSpecifiers: and
+        -reloadSpecifiers. Assigning the ivar directly leaves both describing the
+        previous build, so an ID lookup can return an object the table no longer
+        holds; -reloadSpecifier: finds rows with -indexOfObject: and PSSpecifier does
+        not override -isEqual:, so that comparison is by pointer and the reload is
+        dropped. The stale group indices are the more dangerous half, because row
+        counts are computed from them and this pane's row count varies with the
+        capability evidence.
+
+        The one permitted direct assignment is the -specifiers getter, which
+        PSListController calls from within its own -viewDidLoad before it runs
+        -prepareSpecifiersMetadata; using the setter there would re-enter the getter.
+        """
+        pane = code_only(PANE.read_text())
+        bodies = method_bodies(pane)
+        for name, body in bodies.items():
+            if name in ("specifiers", "commitRebuiltSpecifiers"):
+                continue
+            self.assertNotRegex(
+                body, r"_specifiers\s*=[^=]",
+                f"-{name} must replace the model with -setSpecifiers:",
+            )
+        self.assertIn("[self setSpecifiers:rebuilt]", bodies["commitRebuiltSpecifiers"])
+        for name in ("rebuildFromWorld", "commitSelection"):
+            self.assertIn("commitRebuiltSpecifiers", bodies[name],
+                          f"-{name} must commit through the setter")
+
+    def test_the_two_refreshed_rows_are_held_not_looked_up_by_id(self):
+        """The refresh must not depend on an ID lookup at all.
+
+        Writing the ID property fixes the matching, but the lookup can still answer
+        with a specifier from an earlier build. Holding the objects the pane just
+        built removes the failure mode instead of narrowing it. The references are
+        weak so that a replaced model yields nil -- a skipped refresh, which shows --
+        rather than a stale object, which does not.
+        """
+        pane = code_only(PANE.read_text())
+        self.assertNotIn("specifierForID:", pane)
+        for line in ("@property (nonatomic, weak, nullable) PSSpecifier *currentStatusSpecifier;",
+                     "@property (nonatomic, weak, nullable) PSSpecifier *currentSaveSpecifier;"):
+            self.assertIn(line, pane)
+        refresh = method_bodies(pane)["refreshStatusAndSaveRows"]
+        self.assertIn("self.currentStatusSpecifier", refresh)
+        self.assertIn("self.currentSaveSpecifier", refresh)
+        self.assertIn("CCNMPreferenceValueKey", refresh)
+        self.assertIn("PSEnabledKey", refresh)
+
+    def test_an_untouched_factory_default_does_not_claim_to_be_unsaved(self):
+        """Three states, because the save button has three.
+
+        Band 78 alone is what a user who has never opened this pane has. Reporting it
+        as "not saved yet" points at a button that is correctly disabled, since there
+        is no edit to save. Only a selection that differs from what is stored is
+        unsaved.
+        """
+        pane = code_only(PANE.read_text())
+        status = method_bodies(pane)["statusText"]
+        self.assertIn("BAND_STATUS_DEFAULT_FORMAT", status)
+        self.assertNotIn("|| !self.hasExplicitSavedSelection", status)
+        for table in (strings_table(ENGLISH), strings_table(CHINESE)):
+            self.assertIn("BAND_STATUS_DEFAULT_FORMAT", table)
+            self.assertIn("%@", table["BAND_STATUS_DEFAULT_FORMAT"])
+
+    def test_the_save_handler_does_not_claim_disabled_rows_still_dispatch(self):
+        """The re-check is right; the reason recorded for it was not.
+
+        -[PSTableCell setCellEnabled:] clears userInteractionEnabled, so a disabled
+        PSButtonCell does not dispatch. The guard stays because the state it reads
+        can change after the row was rendered, which is a real race; the retracted
+        claim would have justified it with framework behaviour that does not exist.
+        """
+        pane = PANE.read_text()
+        self.assertNotIn("can still dispatch its action", pane)
+        save = method_bodies(code_only(pane))["saveBandSelection"]
+        self.assertIn("if (![self canSave])", save)
+
 
 class PanePackagingTests(unittest.TestCase):
     def test_the_pane_is_compiled_into_the_preference_bundle(self):

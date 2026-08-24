@@ -31,6 +31,7 @@
 "BAND_LIST_EMPTY" = "none";
 "BAND_STATUS_SAVED_FORMAT" = "Saved: %@";
 "BAND_STATUS_UNSAVED_FORMAT" = "Not saved yet: %@";
+"BAND_STATUS_DEFAULT_FORMAT" = "Using the default: %@";
 "BAND_SELECTED_FALLBACK_MARK" = "Selected";
 "GROUP_BAND_SAVE" = "Save";
 "BAND_SAVE_FOOTER" = "Saving records your choice only. Nothing is written to the modem until you turn the switch on, and the selection is checked again against live band evidence at that moment.";

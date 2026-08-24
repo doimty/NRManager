@@ -27,6 +27,21 @@ static void CCNMSetCellClass(PSSpecifier *specifier, Class cellClass) {
     [specifier setProperty:cellClass forKey:PSCellClassKey];
 }
 
+// The identifier is a property, so write it as one.
+//
+// -[PSSpecifier identifier] reads propertyForKey:@"id" and falls back to @"label",
+// then @"key", then -name, so a specifier that never has the property written
+// answers with a localized display name rather than nothing, and -specifierForID:
+// cannot match the ID the caller asked for.
+//
+// This is how Preferences itself builds a specifier in code:
+// +[PSSpecifier deleteButtonSpecifierWithName:target:action:] sets the ID with
+// setProperty:forKey:@"id" and never calls -setIdentifier:. PSSpecifier declares no
+// identifier storage of its own, so the property is the whole mechanism.
+static void CCNMSetSpecifierID(PSSpecifier *specifier, NSString *identifier) {
+    [specifier setProperty:identifier forKey:PSIDKey];
+}
+
 static long long CCNMBandSelectionUnixMilliseconds(void) {
     return (long long)([NSDate date].timeIntervalSince1970 * 1000.0);
 }
@@ -72,6 +87,22 @@ typedef NS_ENUM(NSInteger, CCNMBandSelectionAvailability) {
 // worse than saying nothing.
 @property (nonatomic, copy, nullable) NSNumber *servingNRBand;
 @property (nonatomic, copy, nullable) NSNumber *servingFrequencyMHz;
+
+// The two rows a band tap has to update, held directly rather than looked up by ID.
+//
+// -specifierForID: answers from _specifiersByID, which only PSListController's
+// -prepareSpecifiersMetadata rebuilds. This pane replaces its whole specifier array
+// on every appearance, so an ID lookup can hand back an object from an earlier
+// build; -reloadSpecifier: then fails to find it, because it locates rows with
+// -indexOfObject: and PSSpecifier does not override -isEqual:, making that a
+// pointer comparison. Writing to an orphan and reloading nothing is a silent
+// no-op, which is exactly how the save row stayed disabled after a valid change.
+//
+// Weak on purpose: when the array is replaced these must not resolve to an object
+// the table no longer shows. A nil reference skips the refresh, which is a visible
+// failure; a stale strong reference is an invisible one.
+@property (nonatomic, weak, nullable) PSSpecifier *currentStatusSpecifier;
+@property (nonatomic, weak, nullable) PSSpecifier *currentSaveSpecifier;
 
 @end
 
@@ -266,8 +297,16 @@ typedef NS_ENUM(NSInteger, CCNMBandSelectionAvailability) {
         return failure;
     }
     NSString *list = [self descriptionForBands:[self canonicalWorkingSelection]];
-    NSString *formatKey = [self workingSelectionDiffersFromSaved] || !self.hasExplicitSavedSelection
-        ? @"BAND_STATUS_UNSAVED_FORMAT" : @"BAND_STATUS_SAVED_FORMAT";
+    // Three states, not two. A selection that has never been saved and has not been
+    // touched is the factory default, and calling that "not saved yet" tells the
+    // user to press a button which is correctly disabled, because there is nothing
+    // to save. Only an actual edit is unsaved.
+    NSString *formatKey = @"BAND_STATUS_SAVED_FORMAT";
+    if ([self workingSelectionDiffersFromSaved]) {
+        formatKey = @"BAND_STATUS_UNSAVED_FORMAT";
+    } else if (!self.hasExplicitSavedSelection) {
+        formatKey = @"BAND_STATUS_DEFAULT_FORMAT";
+    }
     return [NSString stringWithFormat:CCNMPreferencesLocalizedString(formatKey), list];
 }
 
@@ -323,6 +362,7 @@ typedef NS_ENUM(NSInteger, CCNMBandSelectionAvailability) {
                             titleKey:(NSString *)titleKey
                            footerKey:(NSString *_Nullable)footerKey {
     PSSpecifier *group = [PSSpecifier groupSpecifierWithID:identifier];
+    CCNMSetSpecifierID(group, identifier);
     group.name = CCNMPreferencesLocalizedString(titleKey);
     [group setProperty:CCNMPreferencesLocalizedString(titleKey) forKey:PSTitleKey];
     if (footerKey.length > 0) {
@@ -335,9 +375,10 @@ typedef NS_ENUM(NSInteger, CCNMBandSelectionAvailability) {
     PSSpecifier *specifier = [PSSpecifier preferenceSpecifierNamed:
         CCNMPreferencesLocalizedString(@"ROW_BAND_SELECTION_STATUS")
         target:self set:NULL get:NULL detail:Nil cell:PSStaticTextCell edit:Nil];
-    specifier.identifier = CCNMBandStatusSpecifierID;
+    CCNMSetSpecifierID(specifier, CCNMBandStatusSpecifierID);
     CCNMSetCellClass(specifier, CCNMStatusCell.class);
     [specifier setProperty:[self statusText] forKey:CCNMPreferenceValueKey];
+    self.currentStatusSpecifier = specifier;
     return specifier;
 }
 
@@ -348,7 +389,7 @@ typedef NS_ENUM(NSInteger, CCNMBandSelectionAvailability) {
     PSSpecifier *specifier = [PSSpecifier preferenceSpecifierNamed:
         [NSString stringWithFormat:@"n%@", band]
         target:self set:NULL get:NULL detail:Nil cell:PSButtonCell edit:Nil];
-    specifier.identifier = [CCNMBandRowSpecifierIDPrefix stringByAppendingFormat:@"%@", band];
+    CCNMSetSpecifierID(specifier, [CCNMBandRowSpecifierIDPrefix stringByAppendingFormat:@"%@", band]);
     specifier->action = @selector(toggleBandSelection:);
     CCNMSetCellClass(specifier, CCNMBandSelectionCell.class);
     [specifier setProperty:band forKey:CCNMBandNumberPropertyKey];
@@ -362,9 +403,10 @@ typedef NS_ENUM(NSInteger, CCNMBandSelectionAvailability) {
     PSSpecifier *specifier = [PSSpecifier preferenceSpecifierNamed:
         CCNMPreferencesLocalizedString(@"BAND_SAVE_SELECTION")
         target:self set:NULL get:NULL detail:Nil cell:PSButtonCell edit:Nil];
-    specifier.identifier = CCNMBandSaveSpecifierID;
+    CCNMSetSpecifierID(specifier, CCNMBandSaveSpecifierID);
     specifier->action = @selector(saveBandSelection:);
     [specifier setProperty:@([self canSave]) forKey:PSEnabledKey];
+    self.currentSaveSpecifier = specifier;
     return specifier;
 }
 
@@ -372,7 +414,7 @@ typedef NS_ENUM(NSInteger, CCNMBandSelectionAvailability) {
     PSSpecifier *specifier = [PSSpecifier preferenceSpecifierNamed:
         CCNMPreferencesLocalizedString(@"ROW_BAND_UNAVAILABLE")
         target:self set:NULL get:NULL detail:Nil cell:PSStaticTextCell edit:Nil];
-    specifier.identifier = CCNMBandUnavailableSpecifierID;
+    CCNMSetSpecifierID(specifier, CCNMBandUnavailableSpecifierID);
     CCNMSetCellClass(specifier, CCNMStatusCell.class);
     [specifier setProperty:[self unavailableExplanation] forKey:CCNMPreferenceValueKey];
     return specifier;
@@ -412,6 +454,10 @@ typedef NS_ENUM(NSInteger, CCNMBandSelectionAvailability) {
 - (NSArray *)specifiers {
     if (!_specifiers) {
         [self reloadModel];
+        // Assigned directly, not through -setSpecifiers:, because PSListController
+        // calls this getter from inside its own -viewDidLoad and then runs
+        // -prepareSpecifiersMetadata itself. Going through the setter here would
+        // recurse into the getter before _specifiers is set.
         _specifiers = [self buildSpecifiers];
     }
     return _specifiers;
@@ -434,16 +480,26 @@ typedef NS_ENUM(NSInteger, CCNMBandSelectionAvailability) {
     [self rebuildFromWorld];
 }
 
-- (void)reloadRenderedSpecifiers {
-    if (self.isViewLoaded) {
-        [self.table reloadData];
+// Replacing the model after the first load must go through -setSpecifiers:.
+//
+// That setter is what rebuilds _specifiersByID and the group index array; a direct
+// _specifiers assignment leaves both describing the previous build. The ID map
+// going stale silently breaks -specifierForID:, and the group indices going stale
+// is worse than silent, because PSListController computes row counts from them and
+// this pane's row count changes with the capability evidence. The setter reloads the
+// table itself, so no separate reload is needed after it.
+- (void)commitRebuiltSpecifiers {
+    NSMutableArray<PSSpecifier *> *rebuilt = [self buildSpecifiers];
+    if (!self.isViewLoaded) {
+        _specifiers = rebuilt;
+        return;
     }
+    [self setSpecifiers:rebuilt];
 }
 
 - (void)rebuildFromWorld {
     [self reloadModel];
-    _specifiers = [self buildSpecifiers];
-    [self reloadRenderedSpecifiers];
+    [self commitRebuiltSpecifiers];
 }
 
 #pragma mark - Actions
@@ -472,12 +528,15 @@ typedef NS_ENUM(NSInteger, CCNMBandSelectionAvailability) {
 }
 
 - (void)refreshStatusAndSaveRows {
-    PSSpecifier *status = [self specifierForID:CCNMBandStatusSpecifierID];
+    // Both rows are refreshed from the references captured while they were built,
+    // never from -specifierForID:. See currentStatusSpecifier for why an ID lookup
+    // cannot be trusted here.
+    PSSpecifier *status = self.currentStatusSpecifier;
     if (status) {
         [status setProperty:[self statusText] forKey:CCNMPreferenceValueKey];
         [self reloadSpecifier:status animated:NO];
     }
-    PSSpecifier *save = [self specifierForID:CCNMBandSaveSpecifierID];
+    PSSpecifier *save = self.currentSaveSpecifier;
     if (save) {
         [save setProperty:@([self canSave]) forKey:PSEnabledKey];
         [self reloadSpecifier:save animated:NO];
@@ -486,9 +545,9 @@ typedef NS_ENUM(NSInteger, CCNMBandSelectionAvailability) {
 
 - (void)saveBandSelection:(PSSpecifier *)specifier {
     (void)specifier;
-    // Re-checked rather than trusted from the row's enabled flag: a disabled
-    // PSButtonCell can still dispatch its action on some iOS versions, and this is
-    // the only place a durable write happens.
+    // Re-checked rather than trusted from the row's enabled flag: this is the only
+    // place a durable write happens, and the state it depends on can have changed
+    // since the row was rendered.
     if (![self canSave]) {
         NSString *failure = ![self isEditable]
             ? [self unavailableExplanation] : [self validationFailureForWorkingSelection];
@@ -599,8 +658,7 @@ typedef NS_ENUM(NSInteger, CCNMBandSelectionAvailability) {
     // Re-read the whole model after the write. This clears droppedStoredBands and
     // rebuilds the status/footer from the value that is actually on disk.
     [self reloadModel];
-    _specifiers = [self buildSpecifiers];
-    [self reloadRenderedSpecifiers];
+    [self commitRebuiltSpecifiers];
 }
 
 - (void)presentAlertWithTitleKey:(NSString *)titleKey message:(NSString *)message {

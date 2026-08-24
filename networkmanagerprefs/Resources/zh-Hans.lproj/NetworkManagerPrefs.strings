@@ -31,6 +31,7 @@
 "BAND_LIST_EMPTY" = "无";
 "BAND_STATUS_SAVED_FORMAT" = "已保存：%@";
 "BAND_STATUS_UNSAVED_FORMAT" = "尚未保存：%@";
+"BAND_STATUS_DEFAULT_FORMAT" = "使用默认：%@";
 "BAND_SELECTED_FALLBACK_MARK" = "已选择";
 "GROUP_BAND_SAVE" = "保存";
 "BAND_SAVE_FOOTER" = "保存只记录你的选择。在开关打开之前不会写入基带；打开开关时会用当时读取的实时频段证据再次校验此选择。";
