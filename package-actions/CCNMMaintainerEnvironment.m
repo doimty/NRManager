@@ -449,14 +449,54 @@ BOOL CCNMVerifyMaintenanceLaunchdContract(NSError **error) {
     // the right relative path, and only one of them is loadable. This is the check
     // that catches a plist staged for the wrong lane, so it has to name what it
     // found.
-    if (![program isEqualToString:expectedProgram] ||
-        ![watchedPath isEqualToString:expectedBaseline]) {
+    //
+    // Two spellings are correct, for one file, at two different moments.
+    //
+    // What ships is the launchd-contract form, which on roothide is bare, because
+    // launchctl prepends the root on load. But launchctl does not prepend it in
+    // memory -- _patch_plist writes the rewritten values back to the file and
+    // stamps __Patched. So after the first successful load, the file on disk holds
+    // the install-prefix form, and it stays that way until dpkg unpacks over it.
+    //
+    // Any postinst run that does not unpack therefore sees the rewritten file:
+    // `dpkg --configure`, and the abort-remove rerun after a blocked prerm. Both
+    // are ordinary, and the reporting device hit the second one. Judging only the
+    // shipped spelling reports a contract violation against a plist that is
+    // correct and already loaded, and the shell then refuses to start a daemon
+    // that nothing is wrong with.
+    //
+    // The rewritten form is accepted only on the evidence that launchctl is what
+    // rewrote it: __Patched present and true, which is launchctl's own marker and
+    // is not something this package ever writes. The comparison stays exact, so
+    // the doubled path this project has already shipped once
+    // (<jbroot>/<jbroot>/usr/libexec/...) is still a mismatch, and so is a
+    // prefix left over from a previous jailbreak root -- which a re-jailbreak
+    // produces, and which correctly needs a reinstall rather than a load.
+    //
+    // Only roothide widens here. On rootless both prefixes are /var/jb, so the two
+    // spellings are the same string and this accepts exactly what it did before.
+    BOOL launchctlRewrote = [installed[@"__Patched"] isKindOfClass:NSNumber.class] &&
+        [installed[@"__Patched"] boolValue];
+    NSString *rewrittenProgram = executablePath;
+    NSString *rewrittenBaseline = CCNMMaintainerRootedPath(
+        CCNMMaintenanceBaselineRelativePath);
+    BOOL programMatches = [program isEqualToString:expectedProgram] ||
+        (launchctlRewrote && rewrittenProgram && [program isEqualToString:rewrittenProgram]);
+    BOOL baselineMatches = [watchedPath isEqualToString:expectedBaseline] ||
+        (launchctlRewrote && rewrittenBaseline && [watchedPath isEqualToString:rewrittenBaseline]);
+    if (!programMatches || !baselineMatches) {
         return CCNMSetError(error, CCNMMaintainerErrorPlist,
             [NSString stringWithFormat:
                 @"The installed launchd plist does not point at this install. "
-                 "Program is %@ and the watched path is %@; expected %@ and %@.",
+                 "Program is %@ and the watched path is %@; expected %@ and %@%@.",
                 program ?: @"absent", watchedPath ?: @"absent",
-                expectedProgram, expectedBaseline]);
+                expectedProgram, expectedBaseline,
+                launchctlRewrote
+                    ? [NSString stringWithFormat:
+                        @", or %@ and %@ once launchctl has rewritten them",
+                        rewrittenProgram ?: @"an unresolved path",
+                        rewrittenBaseline ?: @"an unresolved path"]
+                    : @""]);
     }
     return YES;
 }

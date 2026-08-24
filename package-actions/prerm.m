@@ -183,13 +183,50 @@ int main(int argc, const char *argv[]) {
             return CCNMPrermBlocked;
         }
 
-        if (![orphanEligibility[@"conclusive"] boolValue]) {
+        // An inconclusive live probe is a warning, not a verdict.
+        //
+        // It used to be fatal, on the reasoning that the known-orphan condition is
+        // precisely "the durable records say clean while the modem is still
+        // narrowed", so durable evidence cannot detect it and only a live read can.
+        // That reasoning is sound and the conclusion drawn from it was still wrong,
+        // because of something the reporting device settled: this probe cannot
+        // succeed here at all. CoreTelephony answered EACCES
+        // ("The operation couldn't be completed. Permission denied") for a guard
+        // running as euid 0. The guard links no libroothide and is exec'd through a
+        // bare path, so it receives neither the jailbreak's path redirection nor its
+        // exemptions -- the same process-scoped restriction that already took
+        // posix_spawn away from this binary. Nothing it could pass to CoreTelephony
+        // would change that.
+        //
+        // A check that can only ever return "inconclusive" is not a safety
+        // mechanism, it is an unconditional deny, and it made this package
+        // impossible to remove on any device. Keeping it fatal bought no protection
+        // that was ever available.
+        //
+        // What the probe is still allowed to do is convict. `eligible` above is a
+        // positive detection, and if a future build ever reaches CoreTelephony from
+        // here -- the rootless lane, or an entitled guard -- both that branch and
+        // the restore below start working again with no further change. So the call
+        // stays, and its inability to answer is reported rather than hidden.
+        //
+        // Residual risk, stated rather than waved away: on a device whose records
+        // are clean but whose modem is secretly narrowed, removal now proceeds. It
+        // is bounded by what this package is able to narrow. A baseline is refused
+        // unless its owned-band set is exactly the NR key
+        // (CCNMBuildBaselineRecord/ownedFieldsValid), so every other RAT array,
+        // including the whole LTE list, is written back byte-identical. The worst
+        // case is an NR subset with LTE intact, which the reporting device has
+        // already demonstrated keeps service, and which a reinstall can still fix.
+        BOOL liveProbeUnavailable = ![orphanEligibility[@"conclusive"] boolValue];
+        const char *liveProbeError = [orphanEligibility[CCNMN78PolicySummaryErrorKey]
+            isKindOfClass:NSString.class]
+            ? [orphanEligibility[CCNMN78PolicySummaryErrorKey] UTF8String] : "unknown";
+        if (liveProbeUnavailable) {
             fprintf(stderr,
-                "NetworkManagerReborn: removal blocked; the live band configuration could not be proven clean (error=%s).\n",
-                [orphanEligibility[CCNMN78PolicySummaryErrorKey] isKindOfClass:NSString.class]
-                    ? [orphanEligibility[CCNMN78PolicySummaryErrorKey] UTF8String] : "unknown");
+                "NetworkManagerReborn: warning \u2014 the live band configuration could not be read from the "
+                "package manager (error=%s), so this decision rests on the durable policy records alone.\n",
+                liveProbeError);
             fflush(stderr);
-            return CCNMPrermBlocked;
         }
         if (CCNMSummaryAllowsRemoval(current)) {
             return CCNMAllowRemoval(action);
@@ -197,6 +234,34 @@ int main(int argc, const char *argv[]) {
         if (CCNMSummaryIsClean(current)) {
             NSDictionary *armed = CCNMArmN78PolicyRemovalGuard();
             return CCNMSummaryAllowsRemoval(armed) ? CCNMAllowRemoval(action) : CCNMPrermBlocked;
+        }
+
+        // Past this point the records say this package still owns a modified modem,
+        // so it has to be restored before the restore implementation departs.
+        //
+        // The restore needs the same CoreTelephony access the probe just failed to
+        // get, so when the probe could not answer, attempting it is not merely
+        // futile -- it is harmful. Every failure path inside the recovery routine
+        // durably marks the policy state recoveryRequired/rebootRequired, and that
+        // marker keeps the removal guard armed, so one failed attempt from here
+        // turns every later install into a half-configured package whose Settings
+        // UI can no longer perform the recovery the error message demands. That is
+        // the same trap the upgrade exemption above exists to avoid.
+        //
+        // Settings is the owner that can actually do this. It runs inside a host
+        // that CoreTelephony will talk to, and its restore path is confirmed
+        // working on the reporting device. So the honest answer here is to refuse
+        // and name that action, rather than to burn the policy state proving a
+        // point already proven.
+        if (liveProbeUnavailable) {
+            fprintf(stderr,
+                "NetworkManagerReborn: removal blocked; this package still owns a modified NR band "
+                "configuration and the modem cannot be reached from the package manager (error=%s). "
+                "Open Settings > NetworkManagerReborn, restore the original band configuration there, "
+                "then remove the package.\n",
+                liveProbeError);
+            fflush(stderr);
+            return CCNMPrermBlocked;
         }
 
         fprintf(stderr,

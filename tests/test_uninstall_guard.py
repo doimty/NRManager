@@ -436,6 +436,55 @@ class UninstallGuardTests(unittest.TestCase):
         # Running launchctl belongs to the shell and the retired probe must not
         # come back; both are pinned in tests/test_launchctl_ownership.py.
 
+    def test_the_contract_accepts_the_plist_launchctl_rewrote_on_load(self):
+        """One file, two correct spellings, at two different moments.
+
+        roothide's launchctl rewrites absolute paths to jbroot(path) and writes the
+        result back to disk with its own __Patched marker, so after the first
+        successful load the file no longer holds the bare paths that shipped. Any
+        later postinst run that does not unpack sees the rewritten file: plain
+        `dpkg --configure`, and the abort-remove rerun after a blocked prerm. The
+        reporting device hit the second one and the guard reported a contract
+        violation against a plist that was correct and already loaded.
+
+        The widening is evidence-bound rather than lenient. __Patched is
+        launchctl's own marker and this package never writes it, the comparison
+        stays exact so the doubled path this project shipped once is still a
+        mismatch, and a prefix from a previous jailbreak root still fails -- which
+        is right, because a re-jailbreak needs a reinstall rather than a load.
+        """
+        source = MAINTAINER_SOURCE.read_text()
+        body = source[source.index("BOOL CCNMVerifyMaintenanceLaunchdContract"):]
+        code = "\n".join(
+            line for line in body.splitlines()
+            if not line.lstrip().startswith("//")
+        )
+        # Gated on launchctl's own marker, read as a boolean number rather than
+        # accepted for mere presence.
+        self.assertIn('installed[@"__Patched"] isKindOfClass:NSNumber.class', code)
+        self.assertIn('[installed[@"__Patched"] boolValue]', code)
+        self.assertIn("launchctlRewrote", code)
+        # The alternative is the install-prefix form, which is what launchctl
+        # produces. Reusing the already-resolved executablePath keeps it identical
+        # to the file the stat above proved is present and executable.
+        self.assertIn("NSString *rewrittenProgram = executablePath;", code)
+        self.assertIn("NSString *rewrittenBaseline = CCNMMaintainerRootedPath(", code)
+        # Both keys must widen, or a rewritten plist still fails on the watched
+        # path alone.
+        for name in ("programMatches", "baselineMatches"):
+            clause = code[code.index("BOOL %s =" % name):]
+            clause = clause[:clause.index(";")]
+            self.assertIn("isEqualToString:expected", clause)
+            self.assertIn("launchctlRewrote", clause)
+        self.assertIn("if (!programMatches || !baselineMatches)", code)
+        # Still exact: a doubled prefix and a stale jailbreak root must keep
+        # failing, so no suffix or containment test may appear.
+        for forbidden in ("hasSuffix:", "hasPrefix:", "containsString:", "rangeOfString:"):
+            self.assertNotIn(forbidden, code)
+        # The refusal names the accepted alternative too, or the mismatch is not
+        # diagnosable from the dpkg log.
+        self.assertIn("once launchctl has rewritten them", code)
+
     def test_missing_baseline_only_cleans_a_verified_restore_checkpoint(self):
         source = POLICY_SOURCE.read_text()
         self.assertIn("CCNMIsVerifiedRestoreCleanupCheckpoint", source)
@@ -443,6 +492,68 @@ class UninstallGuardTests(unittest.TestCase):
         self.assertIn('state[@"verifiedActiveBands"]', source)
         self.assertIn("CCNMDictionariesEqual(fresh[@\"activeBands\"], state[@\"verifiedActiveBands\"])", source)
         self.assertIn("A required policy baseline is missing; no modem write was issued.", source)
+
+    def test_an_unreadable_modem_does_not_make_the_package_unremovable(self):
+        """The live probe cannot succeed from a maintainer script, so it cannot be a gate.
+
+        CoreTelephony answers EACCES to the guard even at euid 0: it links no
+        libroothide and is exec'd through a bare path, so it gets neither the
+        jailbreak's path redirection nor its exemptions. A check that can only
+        return "inconclusive" is an unconditional deny, and it made the package
+        impossible to remove on every device.
+
+        The probe may still convict -- `eligible` is a positive detection -- but
+        an unanswered probe must fall through to the durable records.
+        """
+        source = self._prerm_code()
+        probe = source.index('BOOL liveProbeUnavailable = ![orphanEligibility[@"conclusive"]')
+        durable = source.index("CCNMSummaryAllowsRemoval(current)")
+        self.assertLess(probe, durable)
+        # Nothing between them may refuse. This is the whole fix: an inconclusive
+        # probe warns and the durable records decide.
+        self.assertNotIn("return CCNMPrermBlocked", source[probe:durable])
+        # A positive detection still blocks, and it is still checked first.
+        eligible = source.index('if ([orphanEligibility[@"eligible"] boolValue])')
+        self.assertLess(eligible, probe)
+        self.assertIn("return CCNMPrermBlocked", source[eligible:probe])
+        # The call itself stays, so an entitled or rootless guard starts working
+        # again with no further change.
+        self.assertIn("CCNMReadKnownOrphanedN78RemovalSafety()", source)
+
+    def test_an_unreachable_modem_refuses_instead_of_burning_the_policy_state(self):
+        """The restore needs the access the probe just failed to get.
+
+        Attempting it anyway is not merely futile: every failure path inside the
+        recovery routine durably marks recoveryRequired/rebootRequired, which
+        keeps the removal guard armed and turns every later install into a
+        half-configured package whose Settings UI can no longer perform the
+        recovery the error message demands. Settings is the owner that can
+        actually do this, so the guard names it and stops.
+        """
+        source = self._prerm_code()
+        guard = source.rindex("if (liveProbeUnavailable)")
+        restore = source.index("CCNMRecoverN78Preference")
+        self.assertLess(guard, restore)
+        self.assertIn("return CCNMPrermBlocked", source[guard:restore])
+        # The refusal has to be actionable, and the only actionable thing left is
+        # the Settings restore.
+        self.assertIn("Open Settings", source[guard:restore])
+        # Both the warning and the refusal name the observed error, so an
+        # unexpected failure mode is diagnosable from the dpkg log alone.
+        self.assertEqual(source.count("liveProbeError"), 3)
+
+    @staticmethod
+    def _prerm_code():
+        """prerm.m with // comments removed.
+
+        Every assertion here is about control flow, and this file explains its
+        reasoning at length in comments that quote the very tokens being
+        searched for. Matching one of those would make the test pass on prose.
+        """
+        return "\n".join(
+            line for line in PRERM_SOURCE.read_text().splitlines()
+            if not line.lstrip().startswith("//")
+        )
 
     def test_package_verifier_requires_and_inspects_prerm(self):
         self.assertEqual(verify_release_package.REQUIRED_MAINTAINER_FILES, {"postinst", "prerm"})
