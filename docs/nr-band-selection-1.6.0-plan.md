@@ -1,6 +1,6 @@
 # NR band selection (1.6.0) — implementation plan
 
-Status: **all work items landed; pinned cloud build passed, hardware verification pending.** Commits `5472aaa` (payload, records, summary, daemon, decision module) and `efc0669` (removal cleanup) implement work items 1–11, 16 and 17; commit `54ce741` implements items 12–15, which makes the feature reachable by a user for the first time — before it, `CCNMWriteSelectedNRBands` had no caller in the shipped bundle and every install read the default `@[ @78 ]`. Item 13 landed in a materially different form than planned, described at the item. Release run `32687636598` built and verified both lanes from the same source SHA; nothing here is device-verified. See "Implementation status".
+Status: **all work items landed; pinned cloud build passed, hardware verification pending.** Commits `5472aaa` (payload, records, summary, daemon, decision module) and `efc0669` (removal cleanup) implement work items 1–11, 16 and 17; commit `54ce741` plus the evidence-only follow-up `e233deb` implement items 12–15, which makes the feature reachable by a user for the first time — before it, `CCNMWriteSelectedNRBands` had no caller in the shipped bundle and every install read the default `@[ @78 ]`. Item 13 landed in a materially different form than planned, described at the item. Release run `32688526055` built and verified both lanes from the final source SHA; nothing here is device-verified. See "Implementation status".
 
 Supersedes nothing in 1.5.0; 1.5.0 remains the shipping line. Its dual-SIM write path is confirmed working on the reporting device; three of the four retest steps are still unreported. See "Sequencing".
 
@@ -10,7 +10,7 @@ Second scope decision, from grilling this plan: **no new policy operation.** The
 
 ## Implementation status
 
-Nothing below is a device-verified claim. The source and host evidence is supplemented by pinned cloud run `32687636598`; no package has been installed on hardware.
+Nothing below is a device-verified claim. The source and host evidence is supplemented by pinned cloud run `32688526055`; no package has been installed on hardware.
 
 Landed in `5472aaa`, 353 host tests green:
 
@@ -227,4 +227,4 @@ The dual-SIM write path on `58b81c9` is confirmed working on the reporting devic
 
 Restore is untouched by this plan and was verified on the single-SIM reference device in 1.5.0, so it does not block implementation. It does become more load-bearing than before: under the toggle round-trip, restore runs on every edit rather than only at uninstall, so the fourth retest step is worth closing early.
 
-The pinned cloud build is complete in run `32687636598`: `macos-14`, Xcode 15.4 (`15F31d`), clang 15.0.0, ld 1053.12, and iPhoneOS 17.5 for roothide; both package lanes passed source/package verification with zero `incompatible arm64e` diagnostics. The roothide injected bundles have `LC_DYLD_INFO_ONLY` and its three exec'd tools have `LC_DYLD_CHAINED_FIXUPS`. The remaining gate is device validation of the retest items above.
+The pinned cloud build is complete in run `32688526055`: `macos-14`, Xcode 15.4 (`15F31d`), clang 15.0.0, ld 1053.12, and iPhoneOS 17.5 for roothide; both package lanes passed source/package verification with zero `incompatible arm64e` diagnostics. The roothide injected bundles have `LC_DYLD_INFO_ONLY` and its three exec'd tools have `LC_DYLD_CHAINED_FIXUPS`. The remaining gate is device validation of the retest items above.
