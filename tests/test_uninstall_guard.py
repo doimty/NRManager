@@ -95,7 +95,7 @@ class UninstallGuardTests(unittest.TestCase):
         self.assertIn("CCNMArmN78PolicyRemovalGuard()", source)
         self.assertIn('summary[@"baselinePresent"]', source)
         self.assertIn('summary[@"transitionPresent"]', source)
-        self.assertIn("CCNMExitWhenSetterSettled(allowed ? CCNMAllowRemoval(action)", source)
+        self.assertIn("CCNMExitWhenSetterSettled(", source)
         self.assertIn("CCNMN78PolicyHasOutstandingSetter()", source)
         self.assertIn("dispatch_after", source)
         # Stopping the daemon is the shell's, after this guard returns a clean
@@ -123,14 +123,31 @@ class UninstallGuardTests(unittest.TestCase):
         self.assertIn("CCNMClearN78PolicyRemovalGuardIfSafe()", postinst)
         self.assertIn('@"abort-remove"', postinst)
 
-    def test_removal_is_fail_closed(self):
+    def test_the_guard_never_destroys_the_evidence_a_reinstall_needs(self):
+        """Removal is no longer fail-closed over radio state; this is what replaced it.
+
+        Since removal proceeds with a modified modem, a reinstall is the primary
+        recovery route, and it only works because the durable policy records
+        outlive the package. Destroying them here would convert a recoverable
+        state into an unrecoverable one -- the exact harm the old block existed to
+        prevent, now reachable by cleanup rather than by refusal.
+        """
         source = PRERM_SOURCE.read_text()
         self.assertIn("geteuid() != 0", source)
         self.assertIn("return CCNMPrermBlocked", source)
         self.assertNotIn("|| true", source)
-        self.assertNotIn("_exit(allowed ?", source)
         self.assertNotIn("unlink(CCNMN78PolicyBaselinePath", source)
         self.assertNotIn("removeItemAtPath:CCNMN78PolicyBaselinePath", source)
+        # The band selection is the one durable file this script may retire, and
+        # only on a real removal; see
+        # test_the_band_selection_is_discarded_when_the_install_is_retired.
+        for path in (
+            "CCNMN78PolicyStatePath",
+            "CCNMN78PolicyIntentPath",
+            "CCNMN78PolicyInFlightPath",
+        ):
+            self.assertNotIn(f"unlink({path}", source)
+            self.assertNotIn(f"removeItemAtPath:{path}", source)
 
     def test_the_band_selection_is_discarded_when_the_install_is_retired(self):
         """A preference that outlives the package makes reinstalling a dead remedy.
@@ -502,7 +519,7 @@ class UninstallGuardTests(unittest.TestCase):
         return "inconclusive" is an unconditional deny, and it made the package
         impossible to remove on every device.
 
-        The probe may still convict -- `eligible` is a positive detection -- but
+        The probe is kept for diagnosis and for the reviewed-orphan detection, but
         an unanswered probe must fall through to the durable records.
         """
         source = self._prerm_code()
@@ -512,35 +529,73 @@ class UninstallGuardTests(unittest.TestCase):
         # Nothing between them may refuse. This is the whole fix: an inconclusive
         # probe warns and the durable records decide.
         self.assertNotIn("return CCNMPrermBlocked", source[probe:durable])
-        # A positive detection still blocks, and it is still checked first.
-        eligible = source.index('if ([orphanEligibility[@"eligible"] boolValue])')
-        self.assertLess(eligible, probe)
-        self.assertIn("return CCNMPrermBlocked", source[eligible:probe])
         # The call itself stays, so an entitled or rootless guard starts working
         # again with no further change.
         self.assertIn("CCNMReadKnownOrphanedN78RemovalSafety()", source)
+        # The warning names the observed error, so a failure mode other than EACCES
+        # is diagnosable from the dpkg log alone.
+        self.assertEqual(source.count("liveProbeError"), 2)
 
-    def test_an_unreachable_modem_refuses_instead_of_burning_the_policy_state(self):
-        """The restore needs the access the probe just failed to get.
+    def test_a_modified_modem_warns_instead_of_making_the_package_unremovable(self):
+        """Removal never blocks over radio state, because that state is recoverable.
 
-        Attempting it anyway is not merely futile: every failure path inside the
-        recovery routine durably marks recoveryRequired/rebootRequired, which
-        keeps the removal guard armed and turns every later install into a
-        half-configured package whose Settings UI can no longer perform the
-        recovery the error message demands. Settings is the owner that can
-        actually do this, so the guard names it and stops.
+        The fail-closed design assumed a narrowed NR set could not be undone once
+        the restore implementation departed. Restoring the device's carrier
+        configuration clears it, established by operator report, so blocking buys
+        nothing and costs an unremovable package -- delivered as exit 73 plus
+        stderr, which a graphical package manager may discard entirely.
+
+        The three paths that can find a modified modem must all warn and continue,
+        and the durable records must survive so a reinstall can still recover.
+        """
+        source = self._prerm_code()
+        # Exactly one refusal remains, and it is the non-root invocation: dpkg
+        # always runs maintainer scripts as root, so that is an out-of-band call,
+        # not a device condition, and refusing it cannot strand a real removal.
+        self.assertEqual(source.count("return CCNMPrermBlocked"), 1)
+        root_check = source.index("geteuid() != 0")
+        refusal = source.index("return CCNMPrermBlocked")
+        self.assertLess(root_check, refusal)
+        self.assertLess(refusal, source.index("CCNMReadN78PolicyState()"))
+        # All three modified-modem outcomes funnel through one reporting helper:
+        # the reviewed-orphan detection, the unreachable modem, and a restore that
+        # did not verify.
+        self.assertEqual(source.count("CCNMAllowRemovalWithModifiedModem(action"), 3)
+        helper = source.index("static CCNMPrermExitCode CCNMAllowRemovalWithModifiedModem")
+        body = source[helper:source.index("int main(", helper)]
+        # It must go through the funnel, or the band selection is left behind.
+        self.assertIn("return CCNMAllowRemoval(action);", body)
+        self.assertNotIn("CCNMPrermBlocked", body)
+        self.assertIn("fprintf(stderr", body)
+        # The warning has to name both remedies and the reason it is safe, since
+        # this is the only thing the user will see.
+        self.assertIn("reinstall this package", body)
+        self.assertIn("carrier configuration", body)
+        self.assertIn("LTE was never modified", body)
+        # Records are what make a reinstall able to recover, so nothing here may
+        # retire them. The per-path assertions live in
+        # test_the_guard_never_destroys_the_evidence_a_reinstall_needs.
+        self.assertNotIn("CCNMN78PolicyBaselinePath", body)
+
+    def test_the_restore_is_still_attempted_when_the_modem_is_reachable(self):
+        """Warning instead of blocking must not become skipping the restore.
+
+        Restoring here is still the best available outcome; it is just no longer a
+        precondition for removal. It is skipped only when the probe proved the
+        access is unavailable, because every failure path inside the recovery
+        routine durably marks recoveryRequired/rebootRequired, and that marker
+        keeps the removal guard armed -- turning every later install into a
+        half-configured package whose Settings UI can no longer recover.
         """
         source = self._prerm_code()
         guard = source.rindex("if (liveProbeUnavailable)")
         restore = source.index("CCNMRecoverN78Preference")
         self.assertLess(guard, restore)
-        self.assertIn("return CCNMPrermBlocked", source[guard:restore])
-        # The refusal has to be actionable, and the only actionable thing left is
-        # the Settings restore.
-        self.assertIn("Open Settings", source[guard:restore])
-        # Both the warning and the refusal name the observed error, so an
-        # unexpected failure mode is diagnosable from the dpkg log alone.
-        self.assertEqual(source.count("liveProbeError"), 3)
+        # The skip is conditional on the probe, not unconditional.
+        self.assertIn("CCNMAllowRemovalWithModifiedModem(action", source[guard:restore])
+        # A verified restore takes the plain funnel, so a clean device still gets a
+        # silent removal with no scary warning.
+        self.assertIn("CCNMExitWhenSetterSettled(CCNMAllowRemoval(action));", source)
 
     @staticmethod
     def _prerm_code():

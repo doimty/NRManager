@@ -135,6 +135,43 @@ static CCNMPrermExitCode CCNMAllowRemoval(NSString *action) {
     return CCNMRemovalAllowed;
 }
 
+// Removal proceeds even when the modem is still narrowed, and the justification is
+// a fact about the device rather than a smaller appetite for risk.
+//
+// The fail-closed design rested on one premise: that a narrowed NR set with no
+// installed restore implementation could not be undone. That premise is false.
+// Restoring the device's carrier configuration clears it. That was established by
+// operator report on the reporting device, not derived here, and it is the reason
+// this file changed. So there are three independent ways out, and none of them
+// needs this package to be installed at the moment the user changes their mind:
+// reinstall it and recover from Settings, restore the carrier configuration, or --
+// where this guard can still reach CoreTelephony -- the restore attempted below.
+//
+// Against that, blocking has a cost that is not hypothetical. A blocked removal is
+// an unremovable package, and the refusal is delivered as dpkg exit 73 plus stderr,
+// which a graphical package manager may truncate or discard. What the user
+// experiences is "uninstall does nothing" with the explanation lost. Trading a
+// recoverable radio configuration for an unremovable package is the wrong trade.
+//
+// What replaces the block is the part that actually helps: the durable policy
+// records are deliberately left in place. They live under
+// /var/mobile/Library/Preferences and were never package payload, so dpkg does not
+// remove them, and a reinstall reads the same baseline and offers the same recovery.
+// Removal is therefore reversible by reinstalling, which is the remedy every user
+// reaches for first.
+static CCNMPrermExitCode CCNMAllowRemovalWithModifiedModem(NSString *action,
+                                                           const char *reason) {
+    fprintf(stderr,
+        "NetworkManagerReborn: warning \u2014 the NR band configuration this package applied is "
+        "still in place, and removal is proceeding anyway (%s). LTE was never modified, so the "
+        "device keeps service. The policy records are kept on purpose: reinstall this package "
+        "and use Settings > NetworkManagerReborn to put the original NR bands back. Restoring "
+        "the device's carrier configuration also clears it.\n",
+        reason ?: "reason unavailable");
+    fflush(stderr);
+    return CCNMAllowRemoval(action);
+}
+
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         NSString *action = argc > 1 ? [NSString stringWithUTF8String:argv[1]] : @"";
@@ -143,6 +180,10 @@ int main(int argc, const char *argv[]) {
             return CCNMAllowRemoval(action);
         }
         if (geteuid() != 0) {
+            // dpkg always runs maintainer scripts as root, so this is an unexpected
+            // invocation rather than a device condition. It stays fail-closed: with
+            // no root there is nothing this guard can read, restore, or clean up, and
+            // refusing an out-of-band invocation cannot strand a real removal.
             fprintf(stderr, "NetworkManagerReborn: removal guard must run as root.\n");
             return CCNMPrermBlocked;
         }
@@ -153,12 +194,9 @@ int main(int argc, const char *argv[]) {
         // device (EPERM), while the shell in the same dpkg run exec'd both
         // `jbroot` and this guard without trouble.
         //
-        // Ordering that way is safe in both directions. A live daemon cannot
-        // change this verdict or disturb a restore performed here: it only writes
-        // its own status and record files and never touches the modem. And on a
-        // blocked removal the daemon is deliberately left running, because the
-        // package stays installed and monitoring should keep working while the
-        // user performs the recovery they are being told to perform.
+        // Ordering that way is safe. A live daemon cannot change this verdict or
+        // disturb a restore performed here: it only writes its own status and record
+        // files and never touches the modem.
 
         // Upgrade to a restore-capable version keeps the recovery path
         // installed, so this script must not touch policy state at all: no
@@ -177,10 +215,8 @@ int main(int argc, const char *argv[]) {
         }
         NSDictionary<NSString *, id> *orphanEligibility = CCNMReadKnownOrphanedN78RemovalSafety();
         if ([orphanEligibility[@"eligible"] boolValue]) {
-            fprintf(stderr,
-                "NetworkManagerReborn: removal blocked; confirm the reviewed one-time NR recovery in Settings first.\n");
-            fflush(stderr);
-            return CCNMPrermBlocked;
+            return CCNMAllowRemovalWithModifiedModem(action,
+                "this device matches the reviewed orphaned-NR evidence");
         }
 
         // An inconclusive live probe is a warning, not a verdict.
@@ -203,20 +239,12 @@ int main(int argc, const char *argv[]) {
         // impossible to remove on any device. Keeping it fatal bought no protection
         // that was ever available.
         //
-        // What the probe is still allowed to do is convict. `eligible` above is a
-        // positive detection, and if a future build ever reaches CoreTelephony from
-        // here -- the rootless lane, or an entitled guard -- both that branch and
-        // the restore below start working again with no further change. So the call
-        // stays, and its inability to answer is reported rather than hidden.
-        //
-        // Residual risk, stated rather than waved away: on a device whose records
-        // are clean but whose modem is secretly narrowed, removal now proceeds. It
-        // is bounded by what this package is able to narrow. A baseline is refused
-        // unless its owned-band set is exactly the NR key
-        // (CCNMBuildBaselineRecord/ownedFieldsValid), so every other RAT array,
-        // including the whole LTE list, is written back byte-identical. The worst
-        // case is an NR subset with LTE intact, which the reporting device has
-        // already demonstrated keeps service, and which a reinstall can still fix.
+        // The probe is kept for its diagnostic value, not as a gate. It still
+        // identifies the reviewed orphaned-NR state above, and if a future build
+        // ever reaches CoreTelephony from here -- the rootless lane, or an entitled
+        // guard -- the restore below starts working again with no further change. Its
+        // inability to answer is reported rather than hidden, because "this decision
+        // used records only" is exactly what a later bug report needs to know.
         BOOL liveProbeUnavailable = ![orphanEligibility[@"conclusive"] boolValue];
         const char *liveProbeError = [orphanEligibility[CCNMN78PolicySummaryErrorKey]
             isKindOfClass:NSString.class]
@@ -232,12 +260,28 @@ int main(int argc, const char *argv[]) {
             return CCNMAllowRemoval(action);
         }
         if (CCNMSummaryIsClean(current)) {
+            // The guard closes the window between this verdict and dpkg actually
+            // unpacking the removal. Failing to arm it does not leave a modified
+            // modem behind -- the records say clean -- it only means a reinstall
+            // arriving inside that window re-examines the records instead of seeing
+            // an authorized removal. A lost optimisation, not a stranded radio, so
+            // it is reported and removal continues.
             NSDictionary *armed = CCNMArmN78PolicyRemovalGuard();
-            return CCNMSummaryAllowsRemoval(armed) ? CCNMAllowRemoval(action) : CCNMPrermBlocked;
+            if (!CCNMSummaryAllowsRemoval(armed)) {
+                fprintf(stderr,
+                    "NetworkManagerReborn: warning \u2014 the policy records are clean but the removal "
+                    "guard could not be armed (error=%s), so a reinstall during this removal will "
+                    "re-examine the records from scratch.\n",
+                    [armed[CCNMN78PolicySummaryErrorKey] isKindOfClass:NSString.class]
+                        ? [armed[CCNMN78PolicySummaryErrorKey] UTF8String] : "unknown");
+                fflush(stderr);
+            }
+            return CCNMAllowRemoval(action);
         }
 
-        // Past this point the records say this package still owns a modified modem,
-        // so it has to be restored before the restore implementation departs.
+        // Past this point the records say this package still owns a modified modem.
+        // Restoring it here is the best available outcome, so it is attempted, but it
+        // is no longer a precondition for removal.
         //
         // The restore needs the same CoreTelephony access the probe just failed to
         // get, so when the probe could not answer, attempting it is not merely
@@ -245,23 +289,17 @@ int main(int argc, const char *argv[]) {
         // durably marks the policy state recoveryRequired/rebootRequired, and that
         // marker keeps the removal guard armed, so one failed attempt from here
         // turns every later install into a half-configured package whose Settings
-        // UI can no longer perform the recovery the error message demands. That is
-        // the same trap the upgrade exemption above exists to avoid.
+        // UI can no longer perform the recovery the user needs. That is the same trap
+        // the upgrade exemption above exists to avoid.
         //
         // Settings is the owner that can actually do this. It runs inside a host
-        // that CoreTelephony will talk to, and its restore path is confirmed
-        // working on the reporting device. So the honest answer here is to refuse
-        // and name that action, rather than to burn the policy state proving a
-        // point already proven.
+        // that CoreTelephony will talk to, and its restore path is confirmed working
+        // on the reporting device. So the honest answer here is to skip the attempt,
+        // name that owner, and let the package go, rather than to burn the policy
+        // state proving a point already proven.
         if (liveProbeUnavailable) {
-            fprintf(stderr,
-                "NetworkManagerReborn: removal blocked; this package still owns a modified NR band "
-                "configuration and the modem cannot be reached from the package manager (error=%s). "
-                "Open Settings > NetworkManagerReborn, restore the original band configuration there, "
-                "then remove the package.\n",
-                liveProbeError);
-            fflush(stderr);
-            return CCNMPrermBlocked;
+            return CCNMAllowRemovalWithModifiedModem(action,
+                "the modem cannot be reached from the package manager");
         }
 
         fprintf(stderr,
@@ -272,17 +310,24 @@ int main(int argc, const char *argv[]) {
         CCNMRecoverN78Preference(^(NSDictionary<NSString *, id> *summary) {
             NSDictionary *finalSummary = CCNMSummaryIsClean(summary)
                 ? CCNMArmN78PolicyRemovalGuard() : summary;
-            BOOL allowed = CCNMSummaryAllowsRemoval(finalSummary);
-            if (!allowed) {
+            // A failed restore is reported with its own error code, and the modem is
+            // left as the recovery routine left it, including any
+            // recoveryRequired/rebootRequired marker it wrote. Removal still
+            // proceeds, and preserving that marker is the reason it can: the marker
+            // is what tells a reinstalled Settings UI there is something to recover.
+            if (!CCNMSummaryAllowsRemoval(finalSummary)) {
                 NSString *errorCode = [finalSummary[CCNMN78PolicySummaryErrorCodeKey] isKindOfClass:NSString.class]
                     ? finalSummary[CCNMN78PolicySummaryErrorCodeKey] : @"unknown";
                 fprintf(stderr,
-                    "NetworkManagerReborn: removal blocked; original NR configuration was not verified (error=%s, reboot=%s).\n",
+                    "NetworkManagerReborn: the original NR configuration was not verified (error=%s, reboot=%s).\n",
                     errorCode.UTF8String,
                     [finalSummary[CCNMN78PolicySummaryRequiresRebootKey] boolValue] ? "required" : "not-required");
                 fflush(stderr);
+                CCNMExitWhenSetterSettled(
+                    CCNMAllowRemovalWithModifiedModem(action, "the restore did not verify"));
+                return;
             }
-            CCNMExitWhenSetterSettled(allowed ? CCNMAllowRemoval(action) : CCNMPrermBlocked);
+            CCNMExitWhenSetterSettled(CCNMAllowRemoval(action));
         });
         dispatch_main();
     }

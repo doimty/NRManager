@@ -508,7 +508,19 @@ class KnownOrphanRecoverySourceTests(unittest.TestCase):
         self.assertLess(trusted, probe)
         self.assertIn('![current[@"removalGuardPresent"] boolValue]', self.prerm)
 
-    def test_prerm_blocks_exact_orphan_without_automatic_modem_write(self):
+    def test_prerm_never_performs_the_automatic_known_orphan_modem_write(self):
+        """The one-time orphan recovery is a Settings action, never a dpkg one.
+
+        It replays a reviewed historical BandInfo table, so it is the most
+        consequential write in the project and it requires a user who can see the
+        result. A maintainer script has no UI, no way to report a partial write,
+        and -- as the reporting device established -- no CoreTelephony access, so
+        it must never invoke that path.
+
+        prerm's detection of the orphan state is now a warning rather than a
+        refusal: blocking removal made the package unremovable, and the state is
+        recoverable by reinstalling or by restoring the carrier configuration.
+        """
         probe = self.prerm.index("CCNMReadKnownOrphanedN78RemovalSafety()")
         existing_guard_acceptance = self.prerm.index(
             "CCNMSummaryAllowsRemoval(current)", probe
@@ -518,9 +530,16 @@ class KnownOrphanRecoverySourceTests(unittest.TestCase):
         self.assertLess(probe, guard)
         self.assertIn("allowValidRemovalGuard", self.policy)
         self.assertIn("CCNMValidateRemovalGuardRecord(removalGuard", self.policy)
-        self.assertIn("confirm the reviewed one-time NR recovery in Settings", self.prerm)
+        # The automatic replay must not be reachable from a maintainer script.
         self.assertNotIn("CCNMRecoverKnownOrphanedN78WithCompletion", self.prerm)
-        self.assertIn("return CCNMPrermBlocked", self.prerm)
+        # A positive detection is reported and removal continues, with the records
+        # left intact so a reinstalled Settings UI can still offer the recovery.
+        detection = self.prerm.index('if ([orphanEligibility[@"eligible"] boolValue])')
+        verdict = self.prerm.index("}", self.prerm.index("(", detection))
+        self.assertIn(
+            "CCNMAllowRemovalWithModifiedModem", self.prerm[detection:verdict]
+        )
+        self.assertNotIn("CCNMPrermBlocked", self.prerm[detection:verdict])
 
 
 if __name__ == "__main__":
