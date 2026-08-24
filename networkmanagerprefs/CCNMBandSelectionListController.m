@@ -13,6 +13,20 @@ static NSString * const CCNMBandStatusSpecifierID = @"bandSelectionStatus";
 static NSString * const CCNMBandNumberPropertyKey = @"ccnmBandNumber";
 static const long long CCNMBandSelectionFreshnessLifetimeMilliseconds = 30000;
 
+// PSCellClassKey must hold a Class, never its name.
+//
+// Root.plist may spell a cell class as a string because Preferences' own plist
+// loader replaces it with NSClassFromString before the specifier exists. A
+// specifier built in code skips that conversion, and +[PSTableCell
+// cellClassForSpecifier:] returns the property verbatim; PSListController then
+// sends the class method +isSubclassOfClass: to it. An NSString does not respond
+// to that selector, so the row throws while the table is laying out and
+// Preferences aborts. A Class here is the difference between the pane opening and
+// Settings dying on entry.
+static void CCNMSetCellClass(PSSpecifier *specifier, Class cellClass) {
+    [specifier setProperty:cellClass forKey:PSCellClassKey];
+}
+
 static long long CCNMBandSelectionUnixMilliseconds(void) {
     return (long long)([NSDate date].timeIntervalSince1970 * 1000.0);
 }
@@ -322,7 +336,7 @@ typedef NS_ENUM(NSInteger, CCNMBandSelectionAvailability) {
         CCNMPreferencesLocalizedString(@"ROW_BAND_SELECTION_STATUS")
         target:self set:NULL get:NULL detail:Nil cell:PSStaticTextCell edit:Nil];
     specifier.identifier = CCNMBandStatusSpecifierID;
-    [specifier setProperty:@"CCNMStatusCell" forKey:PSCellClassKey];
+    CCNMSetCellClass(specifier, CCNMStatusCell.class);
     [specifier setProperty:[self statusText] forKey:CCNMPreferenceValueKey];
     return specifier;
 }
@@ -336,7 +350,7 @@ typedef NS_ENUM(NSInteger, CCNMBandSelectionAvailability) {
         target:self set:NULL get:NULL detail:Nil cell:PSButtonCell edit:Nil];
     specifier.identifier = [CCNMBandRowSpecifierIDPrefix stringByAppendingFormat:@"%@", band];
     specifier->action = @selector(toggleBandSelection:);
-    [specifier setProperty:@"CCNMBandSelectionCell" forKey:PSCellClassKey];
+    CCNMSetCellClass(specifier, CCNMBandSelectionCell.class);
     [specifier setProperty:band forKey:CCNMBandNumberPropertyKey];
     [specifier setProperty:[self detailForBand:band] forKey:CCNMPreferenceSubtitleKey];
     [specifier setProperty:@([self.workingSelection containsObject:band]) forKey:CCNMPreferenceCheckedKey];
@@ -359,7 +373,7 @@ typedef NS_ENUM(NSInteger, CCNMBandSelectionAvailability) {
         CCNMPreferencesLocalizedString(@"ROW_BAND_UNAVAILABLE")
         target:self set:NULL get:NULL detail:Nil cell:PSStaticTextCell edit:Nil];
     specifier.identifier = CCNMBandUnavailableSpecifierID;
-    [specifier setProperty:@"CCNMStatusCell" forKey:PSCellClassKey];
+    CCNMSetCellClass(specifier, CCNMStatusCell.class);
     [specifier setProperty:[self unavailableExplanation] forKey:CCNMPreferenceValueKey];
     return specifier;
 }

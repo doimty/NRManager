@@ -226,6 +226,27 @@ MAINTENANCE_BASELINE_RELATIVE = (
     "/var/mobile/Library/Preferences/"
     "me.nixuge.networkmanager.n78-policy.baseline.plist"
 )
+PREFERENCE_BUNDLE_BINARY_RELATIVE = (
+    "Library/PreferenceBundles/NetworkManagerPrefs.bundle/NetworkManagerPrefs"
+)
+# Cell classes the preference bundle defines. A specifier built in code must be
+# handed the Class; only Root.plist may name one as a string, because Preferences'
+# plist loader converts it with NSClassFromString before the specifier exists.
+#
+# Handing PSCellClassKey an NSString instead crashed Settings on entry to the band
+# selection pane: +[PSTableCell cellClassForSpecifier:] returns the property
+# verbatim and PSListController then sends +isSubclassOfClass: to it, which an
+# NSString does not answer.
+#
+# The check lives here, against the artifact, because nothing else could see it.
+# The wrong type compiles, links, signs, and passed every source and build gate
+# this repository has -- the crashing deb was green on all of them.
+PREFERENCE_CELL_CLASS_NAMES = (
+    "CCNMHeaderCell",
+    "CCNMStatusCell",
+    "CCNMRepositoryLinkCell",
+    "CCNMBandSelectionCell",
+)
 
 
 class CommandFailure(RuntimeError):
@@ -365,6 +386,117 @@ def scan_payload_for_diagnostics(extract_root: Path) -> List[Dict[str, object]]:
                     }
                 )
     return findings
+
+
+def macho_slice_offsets(data: bytes) -> List[int]:
+    """Byte offsets of each 64-bit Mach-O image in a thin or fat file.
+
+    An empty result means the file is not one, which the caller reports as such.
+    Accepting anything here and letting the section reads come back empty would
+    turn "unreadable" into "clean", which is the failure mode this whole check
+    exists to avoid.
+    """
+    if len(data) < 8:
+        return []
+    magic = int.from_bytes(data[:4], "big")
+    if magic in (0xCAFEBABE, 0xBEBAFECA):
+        count = int.from_bytes(data[4:8], "big")
+        offsets = []
+        for index in range(count):
+            entry = 8 + index * 20
+            if entry + 20 > len(data):
+                break
+            offsets.append(int.from_bytes(data[entry + 8:entry + 12], "big"))
+        return offsets
+    if int.from_bytes(data[:4], "little") == 0xFEEDFACF:
+        return [0]
+    return []
+
+
+def macho_section_bytes(data: bytes, base: int, segment: str, section: str) -> bytes:
+    """The contents of one section of one slice, or b"" when absent."""
+    LC_SEGMENT_64 = 0x19
+    if base + 32 > len(data):
+        return b""
+    if int.from_bytes(data[base:base + 4], "little") != 0xFEEDFACF:
+        return b""
+    command_count = int.from_bytes(data[base + 16:base + 20], "little")
+    cursor = base + 32
+    for _ in range(command_count):
+        if cursor + 8 > len(data):
+            break
+        command = int.from_bytes(data[cursor:cursor + 4], "little")
+        command_size = int.from_bytes(data[cursor + 4:cursor + 8], "little")
+        if command_size == 0:
+            break
+        if command == LC_SEGMENT_64:
+            section_count = int.from_bytes(data[cursor + 64:cursor + 68], "little")
+            entry = cursor + 72
+            for _ in range(section_count):
+                if entry + 80 > len(data):
+                    break
+                name = data[entry:entry + 16].rstrip(b"\0").decode("ascii", "replace")
+                owner = data[entry + 16:entry + 32].rstrip(b"\0").decode("ascii", "replace")
+                if owner == segment and name == section:
+                    size = int.from_bytes(data[entry + 40:entry + 48], "little")
+                    offset = int.from_bytes(data[entry + 48:entry + 52], "little")
+                    return data[base + offset:base + offset + size]
+                entry += 80
+        cursor += command_size
+    return b""
+
+
+def verify_preference_cell_classes(
+    extract_root: Path, failures: List[str]
+) -> Dict[str, object]:
+    """Refuse a preference bundle that names one of its own cell classes as a string.
+
+    A cell class name legitimately appears in __objc_classname, which is the
+    runtime's class metadata and says nothing about how the code refers to it.
+    Finding the same name in __cstring is the signal: that section holds the bytes
+    behind an NSString literal, and the only reason this bundle would build one
+    out of a cell class name is to store it where a Class belongs.
+
+    So the section is the whole test. A plain `strings` scan cannot make this
+    distinction and would flag every build.
+    """
+    evidence: Dict[str, object] = {"binary": PREFERENCE_BUNDLE_BINARY_RELATIVE}
+    binary = extract_root / PREFERENCE_BUNDLE_BINARY_RELATIVE
+    if not binary.is_file():
+        failures.append("the preference bundle binary is missing from the payload")
+        return evidence
+    data = binary.read_bytes()
+    offsets = macho_slice_offsets(data)
+    evidence["slices"] = len(offsets)
+    if not offsets:
+        failures.append("the preference bundle binary is not a Mach-O image")
+        return evidence
+
+    literals: List[str] = []
+    metadata: List[str] = []
+    for base in offsets:
+        cstrings = macho_section_bytes(data, base, "__TEXT", "__cstring").split(b"\0")
+        classnames = macho_section_bytes(data, base, "__TEXT", "__objc_classname").split(b"\0")
+        for name in PREFERENCE_CELL_CLASS_NAMES:
+            encoded = name.encode()
+            if encoded in cstrings and name not in literals:
+                literals.append(name)
+            if encoded in classnames and name not in metadata:
+                metadata.append(name)
+    evidence["cell_classes_as_string_literals"] = literals
+    evidence["cell_classes_in_objc_metadata"] = metadata
+    if literals:
+        failures.append(
+            "the preference bundle stores cell class name(s) as string literals, "
+            "which crashes Preferences when a code-built specifier is rendered: %s"
+            % ", ".join(literals)
+        )
+    if not metadata:
+        failures.append(
+            "the preference bundle defines none of its cell classes, so this check "
+            "is not reading the intended binary"
+        )
+    return evidence
 
 
 def is_macho_file(path: Path) -> bool:
@@ -841,6 +973,11 @@ def verify_package(args: argparse.Namespace) -> Dict[str, object]:
             failures.append("package contains removed social-link assets: %s" % ", ".join(legacy_assets))
         report["plists"] = verify_plists(payload_root, manifest, failures)
         report["launchd_plist"] = verify_launchd_plist(payload_root, args.lane, failures)
+        # Pure Mach-O section parsing, so unlike the otool checks below this runs on
+        # any host rather than only on macOS.
+        report["preference_cell_classes"] = verify_preference_cell_classes(
+            payload_root, failures
+        )
 
         forbidden = scan_payload_for_diagnostics(extract_root)
         control_forbidden = scan_payload_for_diagnostics(control_root)

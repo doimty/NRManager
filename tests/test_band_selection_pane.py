@@ -452,6 +452,59 @@ class PaneCellTests(unittest.TestCase):
         self.assertNotIn("PSTableCellHeightKey", pane)
         self.assertIn("preferredHeightForWidth", self.cells)
 
+    def test_a_code_built_specifier_carries_a_cell_class_not_its_name(self):
+        """Regression: this crashed Preferences on entering the pane.
+
+        Root.plist may spell a cell class as a string because Preferences' plist
+        loader replaces it with NSClassFromString before building the specifier.
+        Nothing performs that conversion for a specifier built in code, and
+        +[PSTableCell cellClassForSpecifier:] returns the property as it was stored.
+        PSListController then sends +isSubclassOfClass: to it while laying out the
+        row, which an NSString does not answer, and the unrecognised selector
+        aborts Settings.
+
+        Scanned across the whole bundle rather than just this pane, because the
+        mistake is available to any future controller that builds a specifier in
+        code, and no build-time or packaging gate can see it: the string compiles,
+        links, signs, and passes every verifier this repository has.
+        """
+        for source in sorted(PREFS.glob("*.m")):
+            text = code_only(source.read_text())
+            for value in re.findall(r"setProperty:([^\n]*?)\s+forKey:PSCellClassKey", text):
+                value = value.strip()
+                self.assertTrue(
+                    value == "cellClass" or value.endswith(".class"),
+                    f"{source.name}: PSCellClassKey must be given a Class, got {value!r}",
+                )
+            for name in ("CCNMStatusCell", "CCNMBandSelectionCell", "CCNMHeaderCell",
+                         "CCNMRepositoryLinkCell"):
+                self.assertNotIn(
+                    f'setProperty:@"{name}"', text,
+                    f"{source.name}: {name} must be passed as a Class, not a name",
+                )
+
+        pane = code_only(PANE.read_text())
+        self.assertIn("static void CCNMSetCellClass(PSSpecifier *specifier, Class cellClass)",
+                      pane)
+        self.assertEqual(pane.count("forKey:PSCellClassKey"), 1,
+                         "PSCellClassKey must only be written by CCNMSetCellClass")
+        self.assertEqual(pane.count("CCNMSetCellClass("), 4)
+
+    def test_the_group_header_and_footer_cell_keys_stay_strings(self):
+        """The sibling keys that look identical but are not.
+
+        Preferences resolves PSHeaderCellClassGroupKey and PSFooterCellClassGroupKey
+        with NSClassFromString on the framework side, so those two want a name.
+        Converting them alongside PSCellClassKey would break them in the opposite
+        direction, so the distinction is pinned rather than left to memory.
+        """
+        for source in sorted(PREFS.glob("*.m")):
+            text = code_only(source.read_text())
+            for key in ("PSHeaderCellClassGroupKey", "PSFooterCellClassGroupKey"):
+                for value in re.findall(rf"setProperty:([^\n]*?)\s+forKey:{key}", text):
+                    self.assertFalse(value.strip().endswith(".class"),
+                                     f"{source.name}: {key} takes a class name, not a Class")
+
 
 class PanePackagingTests(unittest.TestCase):
     def test_the_pane_is_compiled_into_the_preference_bundle(self):

@@ -10,6 +10,10 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Dict, List, Tuple
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import machofixtures  # noqa: E402
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -376,6 +380,112 @@ Load command 1
             verify_release_package.ROOTHIDE_RELEASE_DEPENDENCIES[
                 "networkmanager-maintenance"],
         )
+
+
+class PreferenceCellClassGateTests(unittest.TestCase):
+    """The artifact check for the crash that every other gate let through.
+
+    A specifier built in code must be handed a Class for PSCellClassKey. Handing it
+    the class *name* compiles, links, signs, and passed source verification, the
+    diagnostic-string scan, the build-log gate and both Mach-O lanes -- the shipped
+    deb was green on all of them and Settings died on entry to the pane.
+
+    So the gate has to read the built binary, and it has to read the right section:
+    the name legitimately appears in __objc_classname for any class the bundle
+    defines, and only its presence in __cstring means an NSString was built out of
+    it. Fixtures are synthesised Mach-O images, so both answers are exercised
+    without a device or a macOS host.
+    """
+
+    def _check(self, image: bytes) -> Tuple[List[str], Dict[str, object]]:
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / verify_release_package.PREFERENCE_BUNDLE_BINARY_RELATIVE
+            binary.parent.mkdir(parents=True)
+            binary.write_bytes(image)
+            failures: List[str] = []
+            evidence = verify_release_package.verify_preference_cell_classes(
+                Path(directory), failures
+            )
+        return failures, evidence
+
+    def test_the_gate_accepts_class_metadata_alone(self) -> None:
+        """Every build defines these classes, so metadata alone must stay clean."""
+        names = verify_release_package.PREFERENCE_CELL_CLASS_NAMES
+        failures, evidence = self._check(machofixtures.preference_bundle_binary(
+            names, ["some unrelated literal", "GROUP_BAND_SELECTION"]))
+        self.assertEqual(failures, [])
+        self.assertEqual(evidence["cell_classes_as_string_literals"], [])
+        self.assertEqual(sorted(evidence["cell_classes_in_objc_metadata"]), sorted(names))
+
+    def test_the_gate_rejects_a_cell_class_name_as_a_string_literal(self) -> None:
+        """Red case: exactly the shape of the crashing build."""
+        names = verify_release_package.PREFERENCE_CELL_CLASS_NAMES
+        failures, evidence = self._check(machofixtures.preference_bundle_binary(
+            names, ["CCNMStatusCell", "CCNMBandSelectionCell"]))
+        self.assertEqual(len(failures), 1, failures)
+        self.assertIn("crashes Preferences", failures[0])
+        self.assertEqual(
+            evidence["cell_classes_as_string_literals"],
+            ["CCNMStatusCell", "CCNMBandSelectionCell"],
+        )
+
+    def test_every_slice_is_inspected(self) -> None:
+        """arm64 and arm64e are compiled separately, so one clean slice proves nothing."""
+        names = verify_release_package.PREFERENCE_CELL_CLASS_NAMES
+        clean = machofixtures.preference_bundle_binary(names, ["nothing to see"], slices=1)
+        dirty = machofixtures.preference_bundle_binary(
+            names, ["CCNMBandSelectionCell"], slices=1)
+        failures, evidence = self._check(machofixtures.fat_macho([clean, dirty]))
+        self.assertEqual(evidence["slices"], 2)
+        self.assertEqual(evidence["cell_classes_as_string_literals"],
+                         ["CCNMBandSelectionCell"])
+        self.assertEqual(len(failures), 1, failures)
+
+    def test_a_binary_without_the_classes_is_reported_not_passed(self) -> None:
+        """Guard against the check silently reading the wrong file and finding nothing.
+
+        A clean result and an unread binary look identical from the outside, which
+        is how a gate rots into decoration.
+        """
+        failures, evidence = self._check(
+            machofixtures.preference_bundle_binary([], ["unrelated"]))
+        self.assertEqual(evidence["cell_classes_in_objc_metadata"], [])
+        self.assertEqual(len(failures), 1, failures)
+        self.assertIn("defines none of its cell classes", failures[0])
+
+    def test_a_missing_or_non_macho_binary_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            failures: List[str] = []
+            verify_release_package.verify_preference_cell_classes(
+                Path(directory), failures)
+            self.assertEqual(len(failures), 1, failures)
+            self.assertIn("missing from the payload", failures[0])
+        failures, _ = self._check(b"#!/bin/sh\nexit 0\n")
+        self.assertEqual(len(failures), 1, failures)
+        self.assertIn("not a Mach-O image", failures[0])
+
+    def test_a_truncated_fat_header_does_not_read_as_clean(self) -> None:
+        """Malformed input must fail loudly rather than yield an empty literal list."""
+        names = verify_release_package.PREFERENCE_CELL_CLASS_NAMES
+        image = machofixtures.preference_bundle_binary(names, ["CCNMStatusCell"])
+        failures, _ = self._check(image[:6])
+        self.assertEqual(len(failures), 1, failures)
+        self.assertIn("not a Mach-O image", failures[0])
+
+    def test_the_gate_runs_on_any_host_not_only_macos(self) -> None:
+        """It parses sections directly instead of shelling out to otool, so it runs in
+        the host-tests job as well as the two macOS packaging jobs."""
+        verifier_source = (REPO / "scripts/verify_release_package.py").read_text()
+        _, _, after = verifier_source.partition('report["preference_cell_classes"]')
+        self.assertNotIn("macho_requested", after.split("\n\n", 1)[0])
+        self.assertIn("verify_preference_cell_classes(", verifier_source)
+
+    def test_the_watched_names_are_classes_the_bundle_actually_has(self) -> None:
+        """The two halves of the fix must not drift apart: a name that no longer
+        exists would make the gate quietly stop protecting that cell."""
+        cells = (REPO / "networkmanagerprefs/CCNMPreferencesCells.h").read_text()
+        for name in verify_release_package.PREFERENCE_CELL_CLASS_NAMES:
+            self.assertIn("@interface " + name, cells, name)
 
 
 class LaunchdPlistLaneTests(unittest.TestCase):

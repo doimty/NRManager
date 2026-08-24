@@ -42,15 +42,25 @@ sys.path.insert(0, str(SCRIPTS))
 
 import verify_release_package as verifier  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import machofixtures  # noqa: E402
+
 _spec = importlib.util.spec_from_file_location(
     "patch_maintenance_launchd", SCRIPTS / "patch-maintenance-launchd.py")
 patcher = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(patcher)
 
 
-# Mach-O verification is a macOS-only stage and is not requested here, so these
-# only need the fat magic that is_macho_file looks for.
-FAKE_MACHO = b"\xca\xfe\xba\xbe" + b"\0" * 512
+# The payload binaries. otool-based Mach-O verification is a macOS-only stage and
+# is not requested here, but the preference-bundle cell-class gate parses sections
+# on every host, so a bare four-byte magic is not enough: an unreadable image is
+# reported as such rather than passing quietly. These are therefore structurally
+# valid images that define the real cell classes and contain no class-name string
+# literals, which is what a correctly built bundle looks like.
+FAKE_MACHO = machofixtures.preference_bundle_binary(
+    verifier.PREFERENCE_CELL_CLASS_NAMES,
+    ["an unrelated literal"],
+)
 
 BINARY_PAYLOAD = (
     "Library/ControlCenter/Bundles/NetworkManager.bundle/NetworkManager",
@@ -86,7 +96,8 @@ TEXT_PAYLOAD = {
 
 @unittest.skipIf(shutil.which("dpkg-deb") is None, "dpkg-deb is not available")
 class PackageEndToEndTests(unittest.TestCase):
-    def stage(self, lane: str, root: Path, run_before_package: bool = True) -> Path:
+    def stage(self, lane: str, root: Path, run_before_package: bool = True,
+              preference_binary: bytes | None = None) -> Path:
         """Reproduce Theos staging for one lane, optionally skipping the patch step."""
         payload_root = root / "var" / "jb" if lane == "rootless" else root
 
@@ -104,7 +115,10 @@ class PackageEndToEndTests(unittest.TestCase):
         for relative in BINARY_PAYLOAD:
             path = payload_root / relative
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(FAKE_MACHO)
+            if relative == verifier.PREFERENCE_BUNDLE_BINARY_RELATIVE and preference_binary:
+                path.write_bytes(preference_binary)
+            else:
+                path.write_bytes(FAKE_MACHO)
             path.chmod(0o755)
 
         control = root / "DEBIAN"
@@ -136,12 +150,13 @@ class PackageEndToEndTests(unittest.TestCase):
             path.write_bytes(plistlib.dumps(plistlib.loads(raw),
                                             fmt=plistlib.FMT_BINARY))
 
-    def verify(self, lane: str, run_before_package: bool = True) -> dict:
+    def verify(self, lane: str, run_before_package: bool = True,
+               preference_binary: bytes | None = None) -> dict:
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory)
             root = workspace / "stage"
             root.mkdir()
-            self.stage(lane, root, run_before_package)
+            self.stage(lane, root, run_before_package, preference_binary)
             package = workspace / ("nmr-%s.deb" % lane)
             subprocess.run(
                 ["dpkg-deb", "-Znone", "--root-owner-group", "-b",
@@ -165,6 +180,30 @@ class PackageEndToEndTests(unittest.TestCase):
                 self.assertEqual(report["launchd_plist"]["status"], "passed")
                 # Binary is what actually ships, and it must not be a failure.
                 self.assertFalse(report["launchd_plist"]["xml"])
+
+    def test_a_bundle_naming_a_cell_class_as_a_string_fails_the_whole_package(self) -> None:
+        """The crash that shipped: PSCellClassKey given a name instead of a Class.
+
+        Asserted end to end rather than only against the checking function, because
+        the previous release was green on every gate that was actually wired into
+        this report. A check that exists but is not reached is worth nothing.
+        """
+        crashing = machofixtures.preference_bundle_binary(
+            verifier.PREFERENCE_CELL_CLASS_NAMES,
+            ["CCNMStatusCell", "CCNMBandSelectionCell"],
+        )
+        for lane in ("roothide", "rootless"):
+            with self.subTest(lane=lane):
+                report = self.verify(lane, preference_binary=crashing)
+                self.assertEqual(report["status"], "failed")
+                self.assertEqual(
+                    report["preference_cell_classes"]["cell_classes_as_string_literals"],
+                    ["CCNMStatusCell", "CCNMBandSelectionCell"],
+                )
+                self.assertTrue(
+                    any("crashes Preferences" in failure for failure in report["failures"]),
+                    report["failures"],
+                )
 
     def test_no_unresolved_token_ships_in_either_lane(self) -> None:
         # Checked against the package as Theos really leaves it, not against the
