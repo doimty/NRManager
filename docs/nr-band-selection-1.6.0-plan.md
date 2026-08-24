@@ -1,6 +1,6 @@
 # NR band selection (1.6.0) — implementation plan
 
-Status: **infrastructure landed, UI outstanding.** Commits `5472aaa` (payload, records, summary, daemon, decision module) and `efc0669` (removal cleanup) implement work items 1–11, 16 and 17. Items 12–15, the settings pane, are the whole remaining feature: without them `CCNMWriteSelectedNRBands` has no caller in the shipped bundle, every install reads the default `@[ @78 ]`, and none of the landed work is reachable by a user. See "Implementation status".
+Status: **all work items landed; unbuilt and unverified on hardware.** Commits `5472aaa` (payload, records, summary, daemon, decision module) and `efc0669` (removal cleanup) implement work items 1–11, 16 and 17; the pane commit implements items 12–15, which makes the feature reachable by a user for the first time — before it, `CCNMWriteSelectedNRBands` had no caller in the shipped bundle and every install read the default `@[ @78 ]`. Item 13 landed in a materially different form than planned, described at the item. Nothing here is device-verified: no 1.6.0 build exists. See "Implementation status".
 
 Supersedes nothing in 1.5.0; 1.5.0 remains the shipping line. Its dual-SIM write path is confirmed working on the reporting device; three of the four retest steps are still unreported. See "Sequencing".
 
@@ -25,7 +25,17 @@ Landed in `efc0669`, 355 host tests green:
 
 - `prerm` discards the stored selection on `remove` (work item 16, also missed by this plan).
 
-Outstanding: work items 12–15, plus the two open questions at the end of this section.
+Landed in the pane change set, 388 host tests green (`tests/test_band_selection_pane.py`, 32 tests):
+
+- Work items 12–15: the child pane, its cell, its localisation, and the source-level assertion the test section listed as waiting on item 12.
+- Shared exported selection helpers, including `CCNMCanonicalNRSelection`, `CCNMSelectableNRBandDomain` and `CCNMValidateNRBandSelectionAgainstDomain`, so the pane shares the write path's canonicalisation, domain and validation implementation instead of computing a lookalike intersection. `CCNMHasStoredSelectedNRBands` distinguishes the shipped default from an explicit pending choice.
+- The pane accepts only fresh capability evidence, shows the applied target while the policy is enabled, localises validation failures, rechecks delayed warning confirmations, and rebuilds its model after a save. The shipped default is not labelled as an explicit user save.
+- New header `CCNMNRBandSupport.h`: static band-number facts only, deliberately separate from `CCNMServingStatusSupport.h`, which converts a measured channel number.
+- `Root.plist` is now 23 specifiers, not 21: a group plus a `PSLinkCell` whose `detail` is the pane.
+
+**Work item 13 did not land as written; see the item for what replaced it and why.**
+
+Outstanding: nothing in this plan's work-item list. Remaining before anything is installable: a pinned cloud build, then the device retest items under "Tests" and "Sequencing". The two open questions at the end of this section are still open.
 
 ### Facts established while implementing, which the plan had as assumptions
 
@@ -37,6 +47,7 @@ Outstanding: work items 12–15, plus the two open questions at the end of this 
 - **`enum`, not `static const size_t`, for the daemon's target-buffer bound.** `static const size_t` makes `int targetBands[N]` a folded VLA in ObjC and trips `-Wgnu-folding-constant`, which is an error under `-Werror`.
 - **ObjC syntax checks on this host need an explicit sysroot.** `/root/.openclaw/workspace/toolchains/theos/sdks/iPhoneOS16.5.sdk`; without `-isysroot` clang cannot find `Foundation/Foundation.h`. `prerm.m` must additionally be checked with `-DCCNM_MAINTAINER_SCRIPT=1`, which is how it is really compiled.
 - **The CI test gate needs no registration for new test files.** `.github/workflows/livecc-prototype.yml` asserts a floor (279 root / 12 livecc) against `unittest discover`, so added files are picked up automatically. The floor is deliberately allowed to drift below the real count, and `tests/test_ci_test_gates.py` pins that direction, so it must not be bumped to match 355.
+- **A ban assertion on this pane has to read comment-stripped source.** The pane, the cell and `CCNMNRBandSupport.h` all carry comments that name the very tokens the tests forbid, because the comment's job is to record why the token is absent. The first run of `tests/test_band_selection_pane.py` failed three times on its own explanations: `NRARFCN` in two files and `UITableViewCellAccessoryCheckmark` in the cell. `code_only` is copied from `tests/test_serving_status_provider.py`, which had already solved this; a Makefile variant strips `#` lines so a commented-out source file cannot read as compiled. Each of the four ban assertions was then re-verified by injecting the real token or comment and watching it fail.
 
 ### Open questions, neither of which blocks the UI
 
@@ -151,18 +162,30 @@ Daemon — **all landed in `5472aaa`**:
 9. [x] Stop consuming `CCNMServingSummaryCapabilityN78Supported/ActiveKey` in the decision path; the generic `ActiveNRBands` / `SupportedNRBands` arrays it already receives are sufficient. Leave the two booleans in the summary for the UI rather than redefining their meaning. *The booleans now appear in `main.m` only where the durable record is built, as factual telemetry.*
 10. [x] **Generalise the decision module itself.** *Missing from the original plan and found during review.* `CCNMAutomaticMaintenanceInput.targetBand` was a single `int` compared for equality, so a chosen set such as `{41, 78}` resting on 41 would have been judged a deviation and would have spent the boot's one correction attempt on an already-correct state. Replaced with `targetBands` + `targetBandCount` and set membership in `CCNMSampleIsTarget`. `CCNMTargetSelectionIsUsable` refuses an absent, empty or malformed selection as `StopIncompatible`, ranked **above** `VerificationPending`: refusing to act is always available, acting on an unknown target never is. The buffer bound is `enum { CCNMMaintenanceMaximumTargetBands = 128 }` for the `-Wgnu-folding-constant` reason noted above; 128 is fail-closed headroom against the reference device's 46 active NR bands.
 
-Serving status and UI — **item 11 landed, 12–15 outstanding and are the remaining feature**:
+Serving status and UI — **all landed; item 13 in a different form than planned**:
 
 11. [x] `CCNMServingStatusProvider` is not changed. An earlier draft of this plan had it classify "NR on a selected band" vs "NR outside the selection"; that would make the provider depend on durable policy state, which it does not read today and should not start reading — it is deliberately a capability/serving reporter, and the daemon links the reader precisely to keep these concerns apart. The provider already emits the serving band number alongside the RAT, so membership-in-selection is computed by whoever holds the selection: the daemon and the settings pane. `CCNMServingStateNRN78` keeps both its wire value and its current meaning, serving band is 78; it becomes a special case of a general question rather than the question itself. Two of its three consumers (`livecc/Sources/NetworkManagerLiveModule.m:34`, `maintenance-daemon/main.m:124`) already treat it identically to `NROther`; only `CCNMRootListController.m:318` distinguishes it, and that is a label.
-12. [ ] New child pane: a `PSListController` subclass rendering one row per selectable band with a checkmark accessory, reading live BandInfo through the reader and the applied set from the policy summary. It writes only the pending preference; it performs no modem write. Custom cells already exist in `CCNMPreferencesCells.m`.
+12. [x] New child pane: a `PSListController` subclass rendering one row per selectable band with a checkmark accessory, reading live BandInfo through the reader and the applied set from the policy summary. It writes only the pending preference; it performs no modem write. Custom cells already exist in `CCNMPreferencesCells.m`.
 
     Two constraints found while reviewing the landed code, both of which shape the pane rather than decorate it:
 
     - **The domain is a runtime read, so the pane cannot be static `Root.plist` rows.** `Root.plist` currently holds 21 specifiers and no band entry. The selectable set is fresh active NR ∩ fresh supported NR, which is only knowable at display time, so the rows must be constructed in code.
     - **The pane must be unavailable, and visibly so, while the feature is on.** `performEnable` hard-refuses when a baseline exists, so a selection edited in the on state cannot be applied. Grey the rows out and say the switch must be turned off first, rather than accepting taps and failing at apply time.
-13. [ ] Each row shows the band's frequency, not just its number. A bare list of integers is not actionable for a user; the sampler already computes NRARFCN/GSCN → MHz.
-14. [ ] Mark the band currently being camped on, and warn before applying a selection that excludes it.
-15. [ ] Localised strings for both `en.lproj` and `zh-Hans.lproj`.
+
+    *Landed as `CCNMBandSelectionListController`, with these differences from the sketch above:*
+
+    - *The checkmark is a glyph driven by a specifier property, not `UITableViewCellAccessoryCheckmark` and not `PSTableCell`'s `-setChecked:`. The accessory type is reset when Preferences hands back a recycled cell, and `-setChecked:` is radio-group machinery, which is the wrong shape for multi-select. A checkmark surviving onto the wrong row would be a false claim about what a later enable will write.*
+    - *Unavailability is one enum decided in a single pass before any specifier exists, with three distinct causes — policy on, recovery needed, no capability evidence — so each row renders a decision instead of re-deriving it. A policy problem outranks missing evidence, because it is the more actionable statement.*
+    - *The pane never samples. `CCNMServingStatusProvider`'s sampler is an async private-API call behind a cross-process lock with an unsafe-outstanding latch, already owned and refreshed by the parent pane. A second owner buys nothing and could leave the latch set, which blocks the write path the user is walking towards.*
+    - *The whole model is rebuilt in `-viewWillAppear:`, discarding unsaved checkmarks. Keeping them would mean showing a selection checked against a domain that may no longer exist.*
+    - *A stored band that is not in the current domain is dropped from the working selection and named in the group footer, rather than silently vanishing — that is the exact state work item 16 exists to prevent, and it is still reachable when the SIM changes.*
+13. [x] ~~Each row shows the band's frequency, not just its number. A bare list of integers is not actionable for a user; the sampler already computes NRARFCN/GSCN → MHz.~~
+
+    **This item was wrong and did not land as written.** The sampler converts a *measured* NRARFCN or GSCN, which exists only for a cell the modem is currently reporting. A band number alone does not determine a frequency; that needs the 3GPP band table (TS 38.101-1 Table 5.2-1 for FR1, TS 38.101-2 Table 5.2-1 for FR2), which this project has never transcribed. Showing a made-up MHz figure for 18 other bands would have been worse than showing none.
+
+    What a band number *does* determine is its frequency range, because 3GPP allocates the numbers themselves by range. So each row shows Sub-6 GHz or mmWave, and the one band actually being served additionally shows its real measured frequency. That distinction carries the consequence the user cannot otherwise see: a selection of nothing but mmWave leaves them with essentially no 5G coverage, and a bare `n260` gives no hint of that. `CCNMNRBandSupport.h` holds the classifier as `static inline` C with a compiled test harness, since its whole job is a numeric judgement; its band ceiling is pinned by test to the policy mirrors' own `CCNMMaximumBandIdentifier`, so it cannot offer a band the write path would reject.
+14. [x] Mark the band currently being camped on, and warn before applying a selection that excludes it. *Landed, and the serving band is adopted only from a fresh, successful, non-stale NR sample — nil for LTE and for any failed read, because a guessed serving band would produce a warning about nothing. A second warning covers the mmWave-only case above. Both are warnings, not refusals: LTE is untouched either way, so the user is told and then allowed to proceed.*
+15. [x] Localised strings for both `en.lproj` and `zh-Hans.lproj`. *34 keys each. Tests pin that every key the pane asks for exists in both, that validation failures are localised before reaching the UI, that `%@` counts agree between locales (a mismatch crashes `-stringWithFormat:` rather than degrading), and that both locales still contain the sentence saying a save writes nothing to the modem.*
 
 Packaging — **landed in `efc0669`**:
 
@@ -192,7 +215,8 @@ Source-level, in the style already used in this repo:
 
 - [x] No shipped path may compare an NR array against a literal `@[ @78 ]` outside the known-orphan replay. This is the assertion that flushes out remaining hardcoded sites; per the slot-1 cleanup, write it before hunting for call sites rather than after. *Landed: `containsObject:@78`, `isEqualToArray:@[ @78 ]` and `? @[ @78 ] :` are forbidden, and `@"targetNRBands": @[ @78 ]` is pinned to exactly one occurrence.*
 - [x] Every durable path the policy names must be either retired with the policy records or discarded on removal. *Landed with work item 16. Written against the set of `CCNMPolicyRoot()` paths rather than the one filename that broke the rule, because the next preference file added will land in the same gap and the symptom is invisible until a user reinstalls. It also asserts each path is reachable through exactly one named accessor, so an inline literal cannot defeat the audit, and that the removal funnel itself touches no policy state.*
-- [ ] The band-selection pane must not call any policy write entry point from a row-selection handler, only from the apply action. *Waits on work item 12.*
+- [x] The band-selection pane must not call any policy write entry point from a row-selection handler, only from the apply action. *Landed. Written against every policy write entry point and every known modem setter, per method body, with a guard test asserting the body extractor actually found the methods so the scoping assertions cannot pass on an empty string. The preference write is additionally pinned to exactly one call site.*
+- [x] The pane must not build a domain from stale capability evidence, display a pending preference as an applied target, or retain stale dropped-band state after saving. *Landed with the pane review hardening: capability timestamp gate, applied-target branch, explicit-default tracking, and full model rebuild after write.*
 - [x] The four operation-domain literals must stay exactly `enable`, `disable`, `recover`, `knownOrphanRecovery`, so a future in-place edit path cannot be added without deliberately touching this assertion.
 
 No registration step is needed for new test files: the CI gate asserts a floor against `unittest discover`, and `tests/test_ci_test_gates.py` pins that the floor stays at or below the real count. Do not raise the 279 literal to match the current 355.
@@ -203,4 +227,4 @@ The dual-SIM write path on `58b81c9` is confirmed working on the reporting devic
 
 Restore is untouched by this plan and was verified on the single-SIM reference device in 1.5.0, so it does not block implementation. It does become more load-bearing than before: under the toggle round-trip, restore runs on every edit rather than only at uninstall, so the fourth retest step is worth closing early.
 
-Remaining order of work: items 12–15 (the pane), then the pane's source-level assertion, then a pinned cloud build — `macos-14`, Xcode 15.4 (`15F31d`), clang 15.0.0, iPhoneOS 17.5 SDK — checked for zero `incompatible arm64e` warnings, `LC_DYLD_INFO_ONLY` on both injected bundles, and `LC_DYLD_CHAINED_FIXUPS` on the three exec'd tools. Only then is there anything to install, and only then can any of the device retest items above be attempted.
+Remaining order of work: a pinned cloud build — `macos-14`, Xcode 15.4 (`15F31d`), clang 15.0.0, iPhoneOS 17.5 SDK — checked for zero `incompatible arm64e` warnings, `LC_DYLD_INFO_ONLY` on both injected bundles, and `LC_DYLD_CHAINED_FIXUPS` on the three exec'd tools. Only then is there anything to install, and only then can any of the device retest items above be attempted.

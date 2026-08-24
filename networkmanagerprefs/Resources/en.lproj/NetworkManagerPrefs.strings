@@ -10,6 +10,40 @@
 "TRANSITION_VERIFIED" = "Verified";
 "TRANSITION_RECOVERY_REQUIRED" = "Recovery required";
 
+"GROUP_BAND_SELECTION_LINK" = "NR Band Selection";
+"BAND_SELECTION_LINK_FOOTER" = "Choose which of the NR bands your system already allows should remain enabled. The selection is applied by the switch above; changing it requires turning the switch off first.";
+"ROW_BAND_SELECTION" = "Bands to keep enabled";
+
+"BAND_SELECTION_TITLE" = "NR Bands";
+"GROUP_BAND_SELECTION" = "Selectable Bands";
+"BAND_GROUP_FOOTER" = "Only bands that are both enabled by iOS and reported as supported by this modem can be chosen. Selecting every band is the same as turning the feature off.";
+"BAND_GROUP_FOOTER_DROPPED" = "Only bands that are both enabled by iOS and reported as supported by this modem can be chosen. Your saved selection also contained %@, which this device does not currently offer; those bands are not shown and will not be saved again.";
+"ROW_BAND_SELECTION_STATUS" = "Selection";
+"ROW_BAND_UNAVAILABLE" = "Unavailable";
+"BAND_UNAVAILABLE_ENABLED" = "The n78 preference is currently on, so the bands iOS reports are the ones already applied rather than your original configuration. Turn the switch off on the previous screen, then change the selection.";
+"BAND_UNAVAILABLE_RECOVERY" = "Saved policy evidence needs attention before the selection can change. Resolve the recovery state on the previous screen first.";
+"BAND_UNAVAILABLE_NO_EVIDENCE" = "No usable NR band evidence has been read from this device yet. Return to the previous screen and refresh the serving status.";
+"BAND_RANGE_SUB6" = "Sub-6 GHz";
+"BAND_RANGE_MMWAVE" = "mmWave";
+"BAND_RANGE_UNKNOWN" = "Unrecognised band number";
+"BAND_DETAIL_SERVING_FORMAT" = "%@ · currently connected";
+"BAND_DETAIL_SERVING_WITH_FREQUENCY_FORMAT" = "%@ · currently connected at %@";
+"BAND_LIST_EMPTY" = "none";
+"BAND_STATUS_SAVED_FORMAT" = "Saved: %@";
+"BAND_STATUS_UNSAVED_FORMAT" = "Not saved yet: %@";
+"BAND_SELECTED_FALLBACK_MARK" = "Selected";
+"GROUP_BAND_SAVE" = "Save";
+"BAND_SAVE_FOOTER" = "Saving records your choice only. Nothing is written to the modem until you turn the switch on, and the selection is checked again against live band evidence at that moment.";
+"BAND_SAVE_SELECTION" = "Save selection";
+"BAND_SAVE_FAILED_TITLE" = "Selection Not Saved";
+"BAND_SAVE_EMPTY" = "Choose at least one NR band.";
+"BAND_SAVE_OUTSIDE_DOMAIN" = "The selection includes a band this device does not currently allow.";
+"BAND_SAVE_WHOLE_DOMAIN" = "All currently available bands are selected. Turn the feature off instead.";
+"BAND_SAVE_INVALID_GENERIC" = "This selection cannot be applied on this device.";
+"BAND_WARNING_ALERT_TITLE" = "Save this selection?";
+"BAND_WARNING_MMWAVE_ONLY" = "Every band in this selection is mmWave, which has very limited coverage. 5G will be unavailable almost everywhere. LTE is unaffected and will still be used.";
+"BAND_WARNING_EXCLUDES_SERVING_FORMAT" = "This selection excludes %@, which is the band you are connected to right now. Applying it will drop that 5G connection; the device will use another selected band if one is available, or LTE.";
+
 "GROUP_CURRENT_STATE" = "Current State";
 "CURRENT_STATE_FOOTER" = "Requested policy, verified applied policy, and the actual serving network are shown independently.";
 "ROW_REQUESTED_POLICY" = "Requested policy";

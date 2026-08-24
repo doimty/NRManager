@@ -10,6 +10,40 @@
 "TRANSITION_VERIFIED" = "已验证";
 "TRANSITION_RECOVERY_REQUIRED" = "需要恢复";
 
+"GROUP_BAND_SELECTION_LINK" = "NR 频段选择";
+"BAND_SELECTION_LINK_FOOTER" = "从系统当前已允许的 NR 频段中，选择要保留启用的频段。选择由上方开关应用；要修改选择，需先关闭开关。";
+"ROW_BAND_SELECTION" = "要保留的频段";
+
+"BAND_SELECTION_TITLE" = "NR 频段";
+"GROUP_BAND_SELECTION" = "可选频段";
+"BAND_GROUP_FOOTER" = "只有同时被 iOS 启用、且被本机基带报告为支持的频段才可选。全选等同于关闭本功能。";
+"BAND_GROUP_FOOTER_DROPPED" = "只有同时被 iOS 启用、且被本机基带报告为支持的频段才可选。已保存的选择中还包含 %@，本机当前不提供这些频段，因此不予显示，也不会再次保存。";
+"ROW_BAND_SELECTION_STATUS" = "当前选择";
+"ROW_BAND_UNAVAILABLE" = "暂不可用";
+"BAND_UNAVAILABLE_ENABLED" = "n78 偏好当前已开启，此时 iOS 报告的频段是已应用的结果，而不是原始配置。请先在上一页关闭开关，再修改选择。";
+"BAND_UNAVAILABLE_RECOVERY" = "已保存的策略记录需要先处理，之后才能修改选择。请先在上一页处理恢复状态。";
+"BAND_UNAVAILABLE_NO_EVIDENCE" = "尚未从本机读到可用的 NR 频段证据。请返回上一页刷新驻网状态。";
+"BAND_RANGE_SUB6" = "Sub-6 GHz";
+"BAND_RANGE_MMWAVE" = "毫米波";
+"BAND_RANGE_UNKNOWN" = "无法识别的频段号";
+"BAND_DETAIL_SERVING_FORMAT" = "%@ · 当前已连接";
+"BAND_DETAIL_SERVING_WITH_FREQUENCY_FORMAT" = "%@ · 当前已连接，%@";
+"BAND_LIST_EMPTY" = "无";
+"BAND_STATUS_SAVED_FORMAT" = "已保存：%@";
+"BAND_STATUS_UNSAVED_FORMAT" = "尚未保存：%@";
+"BAND_SELECTED_FALLBACK_MARK" = "已选择";
+"GROUP_BAND_SAVE" = "保存";
+"BAND_SAVE_FOOTER" = "保存只记录你的选择。在开关打开之前不会写入基带；打开开关时会用当时读取的实时频段证据再次校验此选择。";
+"BAND_SAVE_SELECTION" = "保存选择";
+"BAND_SAVE_FAILED_TITLE" = "未保存选择";
+"BAND_SAVE_EMPTY" = "至少选择一个 NR 频段。";
+"BAND_SAVE_OUTSIDE_DOMAIN" = "选择中包含本机当前不允许的频段。";
+"BAND_SAVE_WHOLE_DOMAIN" = "已选择当前全部可用频段，请改为关闭本功能。";
+"BAND_SAVE_INVALID_GENERIC" = "此选择无法在本机应用。";
+"BAND_WARNING_ALERT_TITLE" = "确认保存此选择？";
+"BAND_WARNING_MMWAVE_ONLY" = "此选择中全部为毫米波频段，覆盖极为有限，几乎所有场景都将无法使用 5G。LTE 不受影响，仍可正常使用。";
+"BAND_WARNING_EXCLUDES_SERVING_FORMAT" = "此选择未包含 %@，而那正是当前已连接的频段。应用后会断开该 5G 连接；设备会改用其他已选频段，若均不可用则回落 LTE。";
+
 "GROUP_CURRENT_STATE" = "当前状态";
 "CURRENT_STATE_FOOTER" = "请求策略、已验证的应用策略与真实驻网状态分别显示，互不混用。";
 "ROW_REQUESTED_POLICY" = "请求策略";

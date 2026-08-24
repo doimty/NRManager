@@ -4,6 +4,7 @@
 NSString * const CCNMPreferenceSubtitleKey = @"subtitle";
 NSString * const CCNMPreferenceValueKey = @"value";
 NSString * const CCNMPreferenceURLKey = @"url";
+NSString * const CCNMPreferenceCheckedKey = @"checked";
 
 static NSString * const CCNMPreferencesStringsTable = @"NetworkManagerPrefs";
 
@@ -22,6 +23,10 @@ static UIColor *CCNMPrimaryTextColor(void) {
 
 static UIColor *CCNMSecondaryTextColor(void) {
     return CCNMColorFromClassSelector(@selector(secondaryLabelColor), UIColor.grayColor);
+}
+
+static UIColor *CCNMDisabledTextColor(void) {
+    return CCNMColorFromClassSelector(@selector(tertiaryLabelColor), UIColor.lightGrayColor);
 }
 
 static UIColor *CCNMLinkColor(void) {
@@ -314,6 +319,133 @@ static void CCNMHideStandardCellContent(PSTableCell *cell) {
     self.accessibilityLabel = [NSString stringWithFormat:@"%@, %@",
         self.linkTitleLabel.text ?: @"",
         self.linkSubtitleLabel.text ?: @""];
+}
+
+- (CGFloat)preferredHeightForWidth:(CGFloat)width {
+    (void)width;
+    return CCNMUsesAccessibilityText(self.traitCollection) ? 76.0 : 60.0;
+}
+
+@end
+
+@interface CCNMBandSelectionCell ()
+
+@property (nonatomic, strong) UILabel *bandTitleLabel;
+@property (nonatomic, strong) UILabel *bandDetailLabel;
+@property (nonatomic, strong) UIImageView *checkmarkView;
+
+@end
+
+@implementation CCNMBandSelectionCell
+
+- (instancetype)initWithStyle:(UITableViewCellStyle)style
+               reuseIdentifier:(NSString *)reuseIdentifier
+                     specifier:(PSSpecifier *)specifier {
+    (void)style;
+    self = [super initWithStyle:UITableViewCellStyleDefault
+                reuseIdentifier:reuseIdentifier
+                      specifier:specifier];
+    if (!self) {
+        return nil;
+    }
+
+    CCNMHideStandardCellContent(self);
+
+    _bandTitleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+    _bandTitleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    _bandTitleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+    _bandTitleLabel.adjustsFontForContentSizeCategory = YES;
+    _bandTitleLabel.numberOfLines = 1;
+
+    _bandDetailLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+    _bandDetailLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    _bandDetailLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+    _bandDetailLabel.adjustsFontForContentSizeCategory = YES;
+    _bandDetailLabel.numberOfLines = 2;
+
+    UIStackView *textStack = [[UIStackView alloc] initWithArrangedSubviews:@[
+        _bandTitleLabel,
+        _bandDetailLabel,
+    ]];
+    textStack.translatesAutoresizingMaskIntoConstraints = NO;
+    textStack.axis = UILayoutConstraintAxisVertical;
+    textStack.alignment = UIStackViewAlignmentFill;
+    textStack.spacing = 1.0;
+
+    // A glyph rather than UITableViewCellAccessoryCheckmark, because the accessory
+    // type is one of the attributes Preferences resets when it hands a recycled
+    // cell back, and a checkmark that survives onto the wrong row is a false claim
+    // about what will be written to the modem.
+    _checkmarkView = [[UIImageView alloc] initWithFrame:CGRectZero];
+    _checkmarkView.translatesAutoresizingMaskIntoConstraints = NO;
+    _checkmarkView.contentMode = UIViewContentModeScaleAspectFit;
+    if ([UIImage respondsToSelector:@selector(systemImageNamed:)]) {
+        _checkmarkView.image = [UIImage performSelector:@selector(systemImageNamed:)
+                                            withObject:@"checkmark"];
+    }
+
+    [self.contentView addSubview:textStack];
+    [self.contentView addSubview:_checkmarkView];
+    UILayoutGuide *margins = self.contentView.layoutMarginsGuide;
+    [NSLayoutConstraint activateConstraints:@[
+        [textStack.leadingAnchor constraintEqualToAnchor:margins.leadingAnchor],
+        [textStack.trailingAnchor constraintLessThanOrEqualToAnchor:_checkmarkView.leadingAnchor constant:-12.0],
+        [textStack.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor],
+        [textStack.topAnchor constraintGreaterThanOrEqualToAnchor:self.contentView.topAnchor constant:6.0],
+        [textStack.bottomAnchor constraintLessThanOrEqualToAnchor:self.contentView.bottomAnchor constant:-6.0],
+        [_checkmarkView.trailingAnchor constraintEqualToAnchor:margins.trailingAnchor],
+        [_checkmarkView.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor],
+        [_checkmarkView.widthAnchor constraintEqualToConstant:18.0],
+        [_checkmarkView.heightAnchor constraintEqualToConstant:18.0],
+    ]];
+
+    [self refreshCellContentsWithSpecifier:specifier];
+    return self;
+}
+
+- (void)refreshCellContentsWithSpecifier:(PSSpecifier *)specifier {
+    [super refreshCellContentsWithSpecifier:specifier];
+    CCNMHideStandardCellContent(self);
+
+    // Every visual attribute is assigned on every refresh, including its negative
+    // case, because this cell is recycled across rows whose checked and enabled
+    // states differ.
+    BOOL checked = [[specifier propertyForKey:CCNMPreferenceCheckedKey] boolValue];
+    id enabledProperty = [specifier propertyForKey:PSEnabledKey];
+    BOOL enabled = enabledProperty == nil || [enabledProperty boolValue];
+    NSString *detail = [specifier propertyForKey:CCNMPreferenceSubtitleKey];
+    detail = [detail isKindOfClass:NSString.class] ? detail : @"";
+
+    self.bandTitleLabel.text = specifier.name ?: [specifier propertyForKey:PSTitleKey];
+    self.bandTitleLabel.textColor = enabled ? CCNMPrimaryTextColor() : CCNMDisabledTextColor();
+    self.bandDetailLabel.textColor = enabled ? CCNMSecondaryTextColor() : CCNMDisabledTextColor();
+    self.checkmarkView.tintColor = enabled ? CCNMLinkColor() : CCNMDisabledTextColor();
+    self.checkmarkView.hidden = !checked;
+    self.selectionStyle = enabled
+        ? UITableViewCellSelectionStyleDefault
+        : UITableViewCellSelectionStyleNone;
+
+    // Without SF Symbols the glyph view is empty, so a checked row would look
+    // identical to an unchecked one. Say it in text instead of silently losing it.
+    if (checked && self.checkmarkView.image == nil) {
+        self.checkmarkView.hidden = YES;
+        NSString *mark = CCNMPreferencesLocalizedString(@"BAND_SELECTED_FALLBACK_MARK");
+        detail = detail.length > 0
+            ? [NSString stringWithFormat:@"%@ · %@", mark, detail]
+            : mark;
+    }
+    self.bandDetailLabel.text = detail;
+
+    self.accessibilityLabel = [NSString stringWithFormat:@"%@, %@",
+        self.bandTitleLabel.text ?: @"", detail];
+    UIAccessibilityTraits traits = UIAccessibilityTraitButton;
+    if (checked) {
+        traits |= UIAccessibilityTraitSelected;
+    }
+    if (!enabled) {
+        traits |= UIAccessibilityTraitNotEnabled;
+    }
+    self.accessibilityTraits = traits;
 }
 
 - (CGFloat)preferredHeightForWidth:(CGFloat)width {

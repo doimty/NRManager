@@ -699,7 +699,7 @@ static NSDictionary *CCNMDeepCopyDictionary(NSDictionary *dictionary, NSString *
 // normalises it, and every NR array in the reviewed device evidence is
 // ascending. Canonicalising here, in the only place a payload is built, is what
 // keeps a tap order from ever reaching the baseband.
-static NSArray<NSNumber *> *CCNMCanonicalNRSelection(NSArray *selection, NSString **failure) {
+NSArray<NSNumber *> *CCNMCanonicalNRSelection(NSArray *selection, NSString **failure) {
     if (![selection isKindOfClass:NSArray.class] || selection.count == 0) {
         if (failure) {
             *failure = @"An NR band selection must be a non-empty array.";
@@ -738,17 +738,40 @@ static NSArray<NSNumber *> *CCNMCanonicalNRSelection(NSArray *selection, NSStrin
 // perform. The BandInfo contract permits an active list to contain values absent
 // from the supported list, so the intersection has to be computed rather than
 // assumed equal to either input.
-static NSArray<NSNumber *> *CCNMSelectableNRDomain(NSDictionary *active,
-                                                   NSDictionary *supported,
-                                                   NSString **failure) {
-    if (!CCNMValidateBandDictionary(active, failure) ||
-        !CCNMValidateBandDictionary(supported, failure)) {
-        return nil;
+// Split into an array-level core and a dictionary-level wrapper so the settings
+// pane, which holds only the two NR arrays out of a serving summary, computes the
+// domain with the same code the write path uses rather than a lookalike.
+static BOOL CCNMValidateNRBandArray(NSArray *bands, NSString *role, NSString **failure) {
+    if (![bands isKindOfClass:NSArray.class]) {
+        if (failure) {
+            *failure = [NSString stringWithFormat:
+                @"The %@ NR band list is missing or not an array.", role];
+        }
+        return NO;
     }
+    NSMutableSet *seen = [NSMutableSet set];
+    for (id band in bands) {
+        if (!CCNMNSNumberIsInteger(band) || [band longLongValue] <= 0 ||
+            [band longLongValue] > CCNMMaximumBandIdentifier || [seen containsObject:band]) {
+            if (failure) {
+                *failure = [NSString stringWithFormat:
+                    @"The %@ NR band list contains an invalid or duplicate identifier: %@.",
+                    role, band];
+            }
+            return NO;
+        }
+        [seen addObject:band];
+    }
+    return YES;
+}
+
+static NSArray<NSNumber *> *CCNMSelectableNRDomainFromArrays(NSArray *activeNR,
+                                                            NSArray *supportedNR,
+                                                            NSString **failure) {
     NSMutableArray<NSNumber *> *domain = [NSMutableArray array];
-    NSSet *supportedNR = [NSSet setWithArray:supported[CCNMNRKey]];
-    for (NSNumber *band in (NSArray *)active[CCNMNRKey]) {
-        if ([supportedNR containsObject:band]) {
+    NSSet *supportedSet = [NSSet setWithArray:supportedNR];
+    for (NSNumber *band in activeNR) {
+        if ([supportedSet containsObject:band]) {
             [domain addObject:band];
         }
     }
@@ -759,6 +782,62 @@ static NSArray<NSNumber *> *CCNMSelectableNRDomain(NSDictionary *active,
         return nil;
     }
     return [domain sortedArrayUsingSelector:@selector(compare:)];
+}
+
+static NSArray<NSNumber *> *CCNMSelectableNRDomain(NSDictionary *active,
+                                                   NSDictionary *supported,
+                                                   NSString **failure) {
+    if (!CCNMValidateBandDictionary(active, failure) ||
+        !CCNMValidateBandDictionary(supported, failure)) {
+        return nil;
+    }
+    return CCNMSelectableNRDomainFromArrays(active[CCNMNRKey], supported[CCNMNRKey], failure);
+}
+
+NSArray<NSNumber *> *CCNMSelectableNRBandDomain(NSArray<NSNumber *> *activeNRBands,
+                                                NSArray<NSNumber *> *supportedNRBands,
+                                                NSString **failure) {
+    if (!CCNMValidateNRBandArray(activeNRBands, @"system-enabled", failure) ||
+        !CCNMValidateNRBandArray(supportedNRBands, @"modem-supported", failure)) {
+        return nil;
+    }
+    return CCNMSelectableNRDomainFromArrays(activeNRBands, supportedNRBands, failure);
+}
+
+// The refusals CCNMBuildSelectedNRPayload applies, minus the payload. The pane
+// needs the reason before the user commits, so it can decline to save with the
+// real message instead of letting a later enable fail. This is a preview of the
+// write path's decision, never a substitute for it: enable recomputes everything
+// against band evidence read at that moment, and only its answer authorises a
+// modem write.
+//
+// The "equals the live array" refusal is deliberately absent. Here the domain is
+// the live active list narrowed by supported, so a selection equalling the live
+// array is already caught by the whole-domain refusal in every case the pane can
+// construct; restating it would only add a second message for one situation.
+BOOL CCNMValidateNRBandSelectionAgainstDomain(NSArray<NSNumber *> *selection,
+                                              NSArray<NSNumber *> *domain,
+                                              NSString **failure) {
+    NSArray *canonicalSelection = CCNMCanonicalNRSelection(selection, failure);
+    if (!canonicalSelection || !CCNMValidateNRBandArray(domain, @"selectable", failure)) {
+        return NO;
+    }
+    NSArray *canonicalDomain = [domain sortedArrayUsingSelector:@selector(compare:)];
+    if (![[NSSet setWithArray:canonicalSelection] isSubsetOfSet:[NSSet setWithArray:canonicalDomain]]) {
+        if (failure) {
+            *failure = [NSString stringWithFormat:
+                @"The NR selection %@ is not within the %lu band(s) this system currently allows.",
+                canonicalSelection, (unsigned long)canonicalDomain.count];
+        }
+        return NO;
+    }
+    if ([canonicalSelection isEqualToArray:canonicalDomain]) {
+        if (failure) {
+            *failure = @"The NR selection is every band this system already allows; turn the feature off instead.";
+        }
+        return NO;
+    }
+    return YES;
 }
 
 static BOOL CCNMValidateSelectedNRPayload(NSDictionary *original,
@@ -867,6 +946,11 @@ NSArray<NSNumber *> *CCNMReadSelectedNRBands(void) {
     // A malformed or absent file is not an error to report: it means the user has
     // expressed no preference, and the shipped default is the right answer.
     return canonical ?: CCNMDefaultNRSelection();
+}
+
+BOOL CCNMHasStoredSelectedNRBands(void) {
+    id stored = [NSDictionary dictionaryWithContentsOfFile:CCNMN78SelectedBandsPath()][@"selectedNRBands"];
+    return CCNMCanonicalNRSelection(stored, NULL) != nil;
 }
 
 BOOL CCNMWriteSelectedNRBands(NSArray<NSNumber *> *selection, NSString **failure) {

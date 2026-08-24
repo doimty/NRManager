@@ -64,6 +64,27 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
+			<string>BAND_SELECTION_LINK_FOOTER</string>
+			<key>id</key>
+			<string>bandSelectionGroup</string>
+			<key>label</key>
+			<string>GROUP_BAND_SELECTION_LINK</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSLinkCell</string>
+			<key>detail</key>
+			<string>CCNMBandSelectionListController</string>
+			<key>id</key>
+			<string>bandSelection</string>
+			<key>label</key>
+			<string>ROW_BAND_SELECTION</string>
+		</dict>
+
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
 			<string>CURRENT_STATE_FOOTER</string>
 			<key>id</key>
 			<string>currentStateGroup</string>
