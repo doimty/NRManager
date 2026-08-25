@@ -92,6 +92,19 @@ MAINTAINER_SCRIPTS = ("postinst", "prerm")
 # hand-maintained copies in two maintainer scripts is how the halves drift apart,
 # and this logic is the part that had to move out of the compiled guards.
 LAUNCHCTL_INCLUDE = "launchctl.sh.inc"
+CARRIER_RESET_INCLUDE = "carrier-reset.sh.inc"
+
+# The first version whose prerm reloads carrier defaults on removal.
+#
+# prerm uses it to tell an upgrade from a downgrade, because dpkg spells both
+# `upgrade` and hands the incoming version as the second argument. Handing a
+# narrowed modem to a version that predates the reload leaves the user with no
+# in-package way to undo it, so those are treated as a retirement.
+#
+# Deliberately not read from `control`. It is the floor, not the current version:
+# once 1.6.1 ships, the floor must stay at 1.6.0 or every 1.6.1 -> 1.6.0
+# downgrade would reset a modem the target version can undo perfectly well.
+CARRIER_RESET_FLOOR = "1.6.0"
 
 # Placeholders each rendered script must contain, so a template that stops using
 # one is caught at package time rather than by a silently skipped substitution.
@@ -107,7 +120,11 @@ REQUIRED_PLACEHOLDERS = {
     # Only postinst loads the job, so only postinst needs the plist it loads.
     # prerm boots the job out, which needs the label alone.
     "postinst": COMMON_PLACEHOLDERS + ("@LAUNCHD_PLIST@",),
-    "prerm": COMMON_PLACEHOLDERS,
+    # Only prerm reloads carrier defaults. Installing does not undo a band
+    # configuration, so postinst has no business carrying a killall adapter --
+    # and a reset there would fight the policy the user just installed.
+    "prerm": COMMON_PLACEHOLDERS + ("@CARRIER_RESET_SUPPORT@",
+                                    "@CARRIER_RESET_FLOOR@"),
 }
 # Retired, and still scanned for. @BASELINE@ was how postinst decided whether to
 # kickstart the job. The kickstart is gone, so neither script carries the token
@@ -179,6 +196,7 @@ def render_maintainer_scripts(staging: Path, source: Path, scheme: str) -> list:
     launchd_prefix = plist_prefix(scheme)
     needs_jbroot = "" if scheme == "rootless" else "1"
     launchctl_support = (source / LAUNCHCTL_INCLUDE).read_text().rstrip("\n")
+    carrier_reset_support = (source / CARRIER_RESET_INCLUDE).read_text().rstrip("\n")
     written = []
     for name in MAINTAINER_SCRIPTS:
         template = source / f"{name}.sh.in"
@@ -199,9 +217,14 @@ def render_maintainer_scripts(staging: Path, source: Path, scheme: str) -> list:
         text = text.replace("@LAUNCHD_LABEL@", LABEL)
         text = text.replace("@LAUNCHD_PLIST@",
                             launchd_prefix + "/" + PLIST_RELATIVE.as_posix())
-        # Substituted last, so its own text is never scanned for placeholders it
-        # does not carry and cannot accidentally supply one.
+        text = text.replace("@CARRIER_RESET_FLOOR@", CARRIER_RESET_FLOOR)
+        # Substituted last, so their own text is never scanned for placeholders
+        # they do not carry and cannot accidentally supply one. Both are
+        # unconditional replaces: the token is absent from the script that does
+        # not want the block, so the substitution is a no-op there rather than a
+        # second place that has to know which script gets which include.
         text = text.replace("@LAUNCHCTL_SUPPORT@", launchctl_support)
+        text = text.replace("@CARRIER_RESET_SUPPORT@", carrier_reset_support)
         # Nothing unresolved may ship. These scripts run as root during dpkg, and
         # a skipped substitution would leave a literal @TOKEN@ in a path or a
         # launchctl target, where it would be a silent no-op at best.

@@ -137,13 +137,18 @@ int main(void) {
         policy = code_only(POLICY.read_text())
         for gate in (
             "CCNMValidateSelfSourcedWriteTarget",
-            "CCNMValidateHistoricalReplayTarget",
             "CCNMValidateTargetIdentity",
             "CCNMBuildSelectedNRPayload",
             "CCNMValidateSelectedNRPayload",
             "CCNMValidateRestorePayload",
         ):
             self.assertIn(gate, policy)
+        # There was a second gate, for a historical-replay path carrying a reviewed
+        # BandInfo table captured from one device. It is gone with that path: a
+        # carrier reset undoes a narrowed modem without needing to know what it was
+        # narrowed from, so nothing writes bands it did not read from the device in
+        # front of it, and the one gate above covers every write that remains.
+        self.assertNotIn("CCNMValidateHistoricalReplayTarget", policy)
         self.assertNotIn("iPhone14,3", policy)
         self.assertNotIn("19B81", policy)
         # What remains in the read path is the ABI and shape validation that does

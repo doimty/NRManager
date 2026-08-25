@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify a 1.5.0 rootless or roothide deb and emit release evidence."""
+"""Verify a rootless or roothide deb and emit release evidence."""
 
 from __future__ import annotations
 
@@ -118,13 +118,21 @@ ROOTHIDE_RELEASE_DEPENDENCIES[MAINTENANCE_HELPER_NAME] = {
     "/usr/lib/libSystem.B.dylib",
 }
 
-# The policy guards moved out of DEBIAN/ and into the payload. They are no
-# longer maintainer scripts: on roothide a compiled maintainer script has no
-# jbroot redirection and no sandbox exemption, so it cannot write or exec inside
-# the jailbreak root. The shell postinst/prerm own the privileged work and
-# delegate the policy verdict to these.
+# The install guard moved out of DEBIAN/ and into the payload. It is no longer a
+# maintainer script: on roothide a compiled maintainer script has no jbroot
+# redirection and no sandbox exemption, so it cannot write or exec inside the
+# jailbreak root. The shell postinst owns the privileged work and delegates the
+# launchd-contract verdict to this binary.
 INSTALL_GUARD_RELATIVE = "usr/libexec/networkmanager-install-guard"
-REMOVAL_GUARD_RELATIVE = "usr/libexec/networkmanager-removal-guard"
+# Retired, and asserted absent rather than simply unlisted. The removal guard
+# existed to decide whether the package still held a band configuration that had
+# to be restored before it could be removed, and to block removal until the user
+# did that in Settings. The carrier reset needs no such record -- it discards the
+# whole carrier configuration, so it undoes a narrowed modem without knowing what
+# was narrowed -- so removal has nothing left to refuse. Shipping the old binary
+# alongside the new prerm would put a fail-closed gate back on a path that is now
+# unconditionally non-blocking.
+RETIRED_REMOVAL_GUARD_RELATIVE = "usr/libexec/networkmanager-removal-guard"
 MAINTENANCE_HELPER_RELATIVE = "usr/libexec/" + MAINTENANCE_HELPER_NAME
 REQUIRED_PAYLOAD_FILES = {
     "Library/ControlCenter/Bundles/NetworkManager.bundle/Info.plist",
@@ -140,14 +148,12 @@ REQUIRED_PAYLOAD_FILES = {
     "Library/PreferenceBundles/NetworkManagerPrefs.bundle/zh-Hans.lproj/NetworkManagerPrefs.strings",
     "Library/PreferenceLoader/Preferences/NetworkManagerPrefs.plist",
     INSTALL_GUARD_RELATIVE,
-    REMOVAL_GUARD_RELATIVE,
     MAINTENANCE_HELPER_RELATIVE,
 }
 BINARY_PAYLOAD_FILES = (
     "Library/ControlCenter/Bundles/NetworkManager.bundle/NetworkManager",
     "Library/PreferenceBundles/NetworkManagerPrefs.bundle/NetworkManagerPrefs",
     INSTALL_GUARD_RELATIVE,
-    REMOVAL_GUARD_RELATIVE,
     MAINTENANCE_HELPER_RELATIVE,
 )
 REQUIRED_MAINTAINER_FILES = {"postinst", "prerm"}
@@ -165,7 +171,6 @@ REQUIRED_MAINTAINER_FILES = {"postinst", "prerm"}
 # Absence is asserted, not merely tolerated -- see verify_macho.
 UNLINKED_ROOTHIDE_TOOLS = (
     "networkmanager-install-guard",
-    "networkmanager-removal-guard",
     MAINTENANCE_HELPER_NAME,
 )
 # A separate and deliberately narrower question: which roothide binaries may carry
@@ -190,10 +195,10 @@ UNLINKED_ROOTHIDE_TOOLS = (
 # release, not a shared rule; see the test that pins both.
 CHAINED_FIXUPS_ALLOWED_TOOLS = (
     "networkmanager-install-guard",
-    "networkmanager-removal-guard",
     MAINTENANCE_HELPER_NAME,
 )
 FORBIDDEN_LEGACY_PAYLOAD_BASENAMES = {
+    RETIRED_REMOVAL_GUARD_RELATIVE.rsplit("/", 1)[-1],
     "discord@2x.png",
     "discord@3x.png",
     "reddit@2x.png",
@@ -554,9 +559,20 @@ def verify_maintainer_scripts(control_root: Path, failures: List[str]) -> Dict[s
                 failures.append(
                     "maintainer script %s still contains the %s placeholder" % (name, placeholder)
                 )
-        guard = INSTALL_GUARD_RELATIVE if name == "postinst" else REMOVAL_GUARD_RELATIVE
-        if guard.rsplit("/", 1)[-1] not in text:
-            failures.append("maintainer script %s does not delegate to %s" % (name, guard))
+        # Only postinst delegates to a compiled guard. prerm's privileged work
+        # is a carrier reset and a record cleanup, both of which the shell does
+        # itself, so requiring a delegation there would demand the retired
+        # removal guard be shipped again.
+        if name == "postinst":
+            guard = INSTALL_GUARD_RELATIVE.rsplit("/", 1)[-1]
+            if guard not in text:
+                failures.append(
+                    "maintainer script %s does not delegate to %s" % (name, guard))
+        else:
+            retired = RETIRED_REMOVAL_GUARD_RELATIVE.rsplit("/", 1)[-1]
+            if retired in text:
+                failures.append(
+                    "maintainer script %s still invokes the retired %s" % (name, retired))
     evidence["status"] = "passed" if len(failures) == failure_count_before else "failed"
     return evidence
 

@@ -66,7 +66,6 @@ BINARY_PAYLOAD = (
     "Library/ControlCenter/Bundles/NetworkManager.bundle/NetworkManager",
     "Library/PreferenceBundles/NetworkManagerPrefs.bundle/NetworkManagerPrefs",
     verifier.INSTALL_GUARD_RELATIVE,
-    verifier.REMOVAL_GUARD_RELATIVE,
     verifier.MAINTENANCE_HELPER_RELATIVE,
 )
 

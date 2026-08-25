@@ -20,6 +20,8 @@ CCNMRecoveryState const CCNMRecoveryStateClean = @"clean";
 CCNMRecoveryState const CCNMRecoveryStateEnablePending = @"enablePending";
 CCNMRecoveryState const CCNMRecoveryStateEnabledWithBaseline = @"enabledWithBaseline";
 CCNMRecoveryState const CCNMRecoveryStateRestorePending = @"restorePending";
+CCNMRecoveryState const CCNMRecoveryStateCarrierResetPending = @"carrierResetPending";
+CCNMRecoveryState const CCNMRecoveryStateCarrierResetFailed = @"carrierResetFailed";
 CCNMRecoveryState const CCNMRecoveryStateRebootRequired = @"rebootRequired";
 CCNMRecoveryState const CCNMRecoveryStateRecoveryFailed = @"recoveryFailed";
 
@@ -37,6 +39,7 @@ CCNMN78PolicyErrorCode const CCNMN78PolicyErrorSetterFailed = @"setterFailed";
 CCNMN78PolicyErrorCode const CCNMN78PolicyErrorSetterUncertain = @"setterUncertain";
 CCNMN78PolicyErrorCode const CCNMN78PolicyErrorReadBackMismatch = @"readBackMismatch";
 CCNMN78PolicyErrorCode const CCNMN78PolicyErrorRecoveryRequired = @"recoveryRequired";
+CCNMN78PolicyErrorCode const CCNMN78PolicyErrorCarrierResetFailed = @"carrierResetFailed";
 
 NSString *const CCNMN78PolicySummarySuccessKey = @"success";
 NSString *const CCNMN78PolicySummaryOperationKey = @"operation";

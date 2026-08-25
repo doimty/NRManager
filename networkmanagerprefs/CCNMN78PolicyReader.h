@@ -42,17 +42,12 @@ FOUNDATION_EXPORT NSDictionary * _Nullable CCNMDeepCopyDictionary(NSDictionary *
 
 FOUNDATION_EXPORT BOOL CCNMValidateStateRecord(NSDictionary *state, NSString * _Nullable * _Nullable failure);
 FOUNDATION_EXPORT BOOL CCNMValidateBaselineRecord(NSDictionary *baseline, NSString * _Nullable * _Nullable failure);
-FOUNDATION_EXPORT BOOL CCNMValidateBaselineCompatibility(NSDictionary *baseline,
-                                                          NSDictionary *currentSupportedBands,
-                                                          NSDictionary *identity,
-                                                          NSString * _Nullable * _Nullable failure);
 FOUNDATION_EXPORT BOOL CCNMValidateIntentRecord(NSDictionary *intent, NSDictionary *baseline,
                                                  NSString * _Nullable * _Nullable failure);
 FOUNDATION_EXPORT BOOL CCNMValidateInFlightRecord(NSDictionary *record, NSDictionary *baseline,
                                                    NSDictionary * _Nullable intent,
                                                    BOOL requireIntentLink,
                                                    NSString * _Nullable * _Nullable failure);
-FOUNDATION_EXPORT BOOL CCNMValidateRemovalGuardRecord(NSDictionary *guard, NSString * _Nullable * _Nullable failure);
 
 FOUNDATION_EXPORT NSDictionary *CCNMDefaultState(void);
 

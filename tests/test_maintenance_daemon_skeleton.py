@@ -61,11 +61,17 @@ class MaintenanceDaemonSkeletonTests(unittest.TestCase):
             "CCNMMaintenanceCapabilityCompatible",
             "CCNMServingSummarySubscriptionUUIDKey",
             'summary[@"transitionPresent"]',
-            'summary[@"removalGuardPresent"]',
             "previousSample",
             "currentSample",
         ):
             self.assertIn(token, source)
+        # The stable-enabled test used to also require the removal guard to be
+        # absent, because a present guard meant a removal was mid-flight and the
+        # daemon would have been maintaining a policy on its way out. The guard is
+        # gone: prerm reloads carrier defaults instead of recording a verdict for
+        # a later step to consult, so there is no window for the daemon to observe
+        # and nothing left for it to read.
+        self.assertNotIn("removalGuard", source)
         self.assertIn('CCNMSysctlString("hw.machine")', source)
         self.assertIn('CCNMSysctlString("kern.osproductversion")', source)
         self.assertIn('CCNMSysctlString("kern.osversion")', source)

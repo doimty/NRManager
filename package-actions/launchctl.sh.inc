@@ -101,6 +101,13 @@ resolve_delay_command() {
 # Returns the command's own exit status, 124 if the deadline expired or it died
 # from a signal, or 125 if no delay command was resolved.
 #
+# Deliberately knows nothing about launchd. Three different kinds of child run
+# through here now -- launchctl, dpkg --compare-versions, and killall -- and only
+# the first has anything to do with the not-answering latch. Folding the latch in
+# here made a hung dpkg suppress the carrier reset, because the reset's killall
+# calls then returned 124 without being run. launchctl_run below adds the latch;
+# every other caller uses this directly.
+#
 # The wait is a real wait() on our own child, not a kill -0 poll: an exited child
 # stays a zombie until it is reaped, so kill -0 keeps succeeding after it is gone
 # and a poll would sit out the full deadline on every success.
@@ -119,9 +126,8 @@ resolve_delay_command() {
 # untested into a root maintainer script is the worse trade. The escalation below
 # is verified: a child that ignores TERM is killed 2s later and the call returns
 # 124.
-launchctl_run() {
+bounded_run() {
     [ -n "$LAUNCHCTL_DELAY" ] || return 125
-    [ -z "$LAUNCHCTL_STUCK" ] || return 124
     "$@" </dev/null >/dev/null 2>&1 &
     _run_pid=$!
     (
@@ -138,10 +144,21 @@ launchctl_run() {
     # 128+signum. Any signal death means it did not finish on its own, which is
     # the same verdict as the deadline for every caller here.
     if [ "$_run_status" -ge 128 ]; then
-        LAUNCHCTL_STUCK=1
         return 124
     fi
     return "$_run_status"
+}
+
+# bounded_run, plus the launchd not-answering latch. Only for children that ask
+# launchd something.
+launchctl_run() {
+    [ -z "$LAUNCHCTL_STUCK" ] || return 124
+    bounded_run "$@"
+    _launchctl_run_status=$?
+    if [ "$_launchctl_run_status" -eq 124 ]; then
+        LAUNCHCTL_STUCK=1
+    fi
+    return "$_launchctl_run_status"
 }
 
 # Resolves LAUNCHCTL, or returns nonzero with LAUNCHCTL_REPORT naming what was

@@ -219,35 +219,34 @@ class WritePathSubscriptionSlotSourceTests(unittest.TestCase):
         for name, source in (("controller", self.controller), ("reader", self.reader)):
             with self.subTest(source=name):
                 self.assertIn("CCNMValidSlotID", source)
-                baseline = self.function(source, "CCNMValidateBaselineRecord")
+                # Definitions, matched with the return type and the open paren. A
+                # bare name also matches the cross-reference comments the two
+                # copies carry about each other, which would hand back the wrong
+                # function body.
+                baseline = self.function(source, "BOOL CCNMValidateBaselineRecord(")
                 self.assertIn('CCNMValidSlotID(baseline[@"slotID"])', baseline)
-                intent = self.function(source, "CCNMValidateIntentRecord")
+                intent = self.function(source, "BOOL CCNMValidateIntentRecord(")
                 self.assertIn('[intent[@"slotID"] isEqual:baseline[@"slotID"]]', intent)
-                inflight = self.function(source, "CCNMValidateInFlightRecord")
+                inflight = self.function(source, "BOOL CCNMValidateInFlightRecord(")
                 self.assertIn('[record[@"slotID"] isEqual:baseline[@"slotID"]]', inflight)
 
-    def test_known_orphan_replay_still_requires_a_single_sim(self):
-        # The reviewed evidence for this replay came from a single-SIM reference
-        # device. Relaxing the dual-SIM refusal for normal enables must not relax
-        # it here, so this path asks for the stricter resolution mode.
-        body = self.function(
-            self.controller,
-            "static BOOL CCNMValidateKnownOrphanedN78HistoricalPredicate",
-        )
-        self.assertIn("CCNMTargetResolutionRecordedSoleSIM", body)
-        self.assertEqual(self.controller.count("CCNMTargetResolutionRecordedSoleSIM,"), 1)
-        gate = self.function(self.controller, "static id<CCNMSubscriptionContext> CCNMSafeTargetContext")
-        self.assertIn("resolution == CCNMTargetResolutionRecordedSoleSIM && presentCount != 1", gate)
-        self.assertIn("approved only for a phone holding one SIM", gate)
-
-    def test_known_orphan_replay_remains_pinned_to_slot_one(self):
-        predicate = self.function(
-            self.controller,
-            "static BOOL CCNMValidateKnownOrphanedN78HistoricalPredicate",
-        )
-        self.assertIn("CCNMKnownOrphanSubscriptionUUID, @1", predicate)
-        known_baseline = self.function(self.controller, "static BOOL CCNMKnownOrphanBaselineMatchesEvidence")
-        self.assertIn('[baseline[@"slotID"] isEqual:@1]', known_baseline)
+    def test_the_sole_sim_resolution_mode_is_gone_with_its_only_caller(self):
+        # A third resolution mode existed for the known-orphan replay, which
+        # carried BandInfo reviewed on a single-SIM reference device and so had to
+        # refuse a phone holding two. The replay is gone -- a carrier reset undoes
+        # a narrowed modem without knowing what it was narrowed from -- and a
+        # stricter mode with no caller is a trap: the next path that wants "be
+        # careful here" would reach for it without the reviewed evidence that made
+        # the strictness meaningful.
+        for token in ("CCNMTargetResolutionRecordedSoleSIM",
+                      "CCNMKnownOrphan",
+                      "approved only for a phone holding one SIM"):
+            with self.subTest(token=token):
+                self.assertNotIn(token, self.controller)
+        enum = self.function(self.controller, "typedef NS_ENUM(NSUInteger, CCNMTargetResolution)")
+        self.assertIn("CCNMTargetResolutionRecorded = 0", enum)
+        self.assertIn("CCNMTargetResolutionFirstEnable = 1", enum)
+        self.assertNotIn("= 2", enum)
 
     def test_no_shipped_path_defaults_a_missing_slot_to_one(self):
         # A record written before the slot field existed has no slot at all.
@@ -264,18 +263,24 @@ class WritePathSubscriptionSlotSourceTests(unittest.TestCase):
                 self.assertNotIn('slotID"] ?: @1', source)
                 self.assertNotIn('slotID"] ?: @(1)', source)
 
-    def test_restore_cleanup_checkpoint_records_the_revalidated_slot(self):
-        # This branch reconciles a checkpoint from an earlier boot. It already
-        # revalidates the subscription through CCNMSafeTargetContext, so the
-        # proof it writes has to use that answer rather than the stored one, and
-        # it must fail closed instead of putting a nil into a literal.
-        marker = 'NSNumber *cleanupSlotID'
-        start = self.controller.index(marker)
-        body = self.controller[start:self.controller.index("} mutableCopy];", start)]
-        self.assertIn('details[@"targetSlotID"]', body)
-        self.assertIn("CCNMValidSlotID(cleanupSlotID)", body)
-        self.assertIn('@"slotID": cleanupSlotID', body)
-        self.assertNotIn('state[@"slotID"]', body)
+    def test_carrier_reset_records_only_a_slot_it_could_validate(self):
+        # The reset replaced a restore that replayed a baseline, and it inherited
+        # this obligation from it: the slot it writes into the pending checkpoint
+        # names what the post-reset observation should read back, so a wrong value
+        # would have the reset confirm itself against the wrong line.
+        #
+        # It needs no subscription to run, which is the whole point of it, so an
+        # absent slot is not a failure -- it is omitted from the record rather than
+        # defaulted, because a record claiming slot 1 on a phone never observed
+        # there is worse than a record that claims nothing.
+        start = self.controller.index("- (NSDictionary *)performCarrierReset:")
+        body = self.controller[start:self.controller.index("\n}\n", start)]
+        self.assertIn("NSNumber *slotID = CCNMValidSlotID(baseline[@\"slotID\"]) ? baseline[@\"slotID\"]",
+                      body)
+        self.assertIn("CCNMValidSlotID(state[@\"slotID\"]) ? state[@\"slotID\"] : nil", body)
+        self.assertIn("if (slotID) {", body)
+        self.assertIn('pendingExtra[@"slotID"] = slotID;', body)
+        self.assertNotIn('@"slotID": @1', body)
 
     def test_refusal_names_the_observed_layout_not_just_the_rule(self):
         # The device screenshot that started this work said only "exactly one
@@ -306,14 +311,14 @@ class WritePathSubscriptionSlotSourceTests(unittest.TestCase):
     def test_dual_sim_is_no_longer_refused_outright(self):
         # The gate used to require exactly one present SIM unconditionally, which
         # refused every dual-line phone before it ever looked at which line was
-        # the data line. The count may still gate the reviewed-evidence replay,
-        # but only there, so every remaining refusal on it has to name that mode.
+        # the data line. Nothing refuses on the count now: the sole caller that
+        # did was the known-orphan replay, whose reviewed evidence came from a
+        # single-SIM device.
         body = self.function(self.controller, "static id<CCNMSubscriptionContext> CCNMSafeTargetContext")
-        refusals = [line for line in body.splitlines() if "presentCount != 1" in line]
-        self.assertTrue(refusals)
-        for line in refusals:
-            with self.subTest(line=line.strip()):
-                self.assertIn("CCNMTargetResolutionRecordedSoleSIM", line)
+        self.assertEqual(
+            [line.strip() for line in body.splitlines() if "presentCount != 1" in line], [])
+        # What the count still does is decide whether there is anything to
+        # disambiguate, which is a different question from whether to refuse.
         self.assertIn("presentCount == 1", body)
         self.assertIn("CCNMCurrentDataLineUUID(client", body)
 

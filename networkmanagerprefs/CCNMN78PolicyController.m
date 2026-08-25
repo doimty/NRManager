@@ -1,4 +1,5 @@
 #import "CCNMN78PolicyController.h"
+#import "CCNMCarrierReset.h"
 
 #import <CoreFoundation/CoreFoundation.h>
 #import <dispatch/dispatch.h>
@@ -53,11 +54,6 @@ static NSString *CCNMPolicyRootForMaintainer(NSString *path) {
 
 static NSString *const CCNMPolicyOwner = @"me.nixuge.networkmanager.n78-policy";
 static NSString *const CCNMNRKey = @"kCTRegistrationRadioAccessTechnologyNR";
-static NSString *const CCNMKnownOrphanRecoverySource = @"known-device-orphaned-n78";
-static NSString *const CCNMKnownOrphanEvidenceSHA256 = @"9e6230dfae679537b5b827518975e7675abf864cd403e96f97f11de63316ac76";
-// This exact placeholder is part of the reviewed private-API evidence and is
-// intentionally required again at recovery time; it is not a general SIM ID.
-static NSString *const CCNMKnownOrphanSubscriptionUUID = @"00000000-0000-0000-0000-000000000001";
 static const long long CCNMMaximumBandIdentifier = 1024;
 static const NSTimeInterval CCNMSetterDeadlineSeconds = 20.0;
 static const useconds_t CCNMReadBackPollMicroseconds = 1000000;
@@ -150,8 +146,7 @@ NSArray<NSString *> *CCNMN78PolicyPaths(void) {
         CCNMN78PolicyBaselinePath(),
         CCNMN78PolicyIntentPath(),
         CCNMN78PolicyInFlightPath(),
-        CCNMN78PolicyLockPath(),
-        CCNMN78PolicyRemovalGuardPath()
+        CCNMN78PolicyLockPath()
     ];
 }
 
@@ -518,73 +513,6 @@ static NSSet<NSString *> *CCNMRequiredRATKeys(void) {
     return keys;
 }
 
-static NSDictionary *CCNMKnownOrphanHistoricalOriginalBands(void) {
-    static NSDictionary *bands;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        bands = @{
-            @"kCTRegistrationRadioAccessTechnologyCDMAHybrid": @[
-                @1, @2, @3, @4, @5, @6, @7, @8, @9, @10,
-                @11, @12, @13, @14, @15, @16, @17, @18, @19, @20
-            ],
-            @"kCTRegistrationRadioAccessTechnologyGSM": @[
-                @1, @2, @3, @4, @5, @6, @7, @8, @9
-            ],
-            @"kCTRegistrationRadioAccessTechnologyLTE": @[
-                @1, @2, @3, @4, @5, @6, @7, @8, @9, @10, @11, @12, @13, @14,
-                @17, @18, @19, @20, @21, @24, @25, @26, @27, @28, @29, @30,
-                @33, @34, @35, @36, @37, @38, @39, @40, @41, @42, @43, @46,
-                @48, @66, @71
-            ],
-            @"kCTRegistrationRadioAccessTechnologyNR": @[
-                @1, @2, @3, @5, @7, @8, @12, @13, @14, @18, @20, @25, @26,
-                @28, @30, @34, @38, @39, @40, @41, @48, @50, @51, @53, @65,
-                @66, @70, @71, @74, @75, @76, @77, @78, @79, @80, @81, @82,
-                @83, @84, @85, @86, @257, @258, @259, @260, @261
-            ],
-            @"kCTRegistrationRadioAccessTechnologyTDSCDMA": @[ @1, @2, @3, @4, @5, @6 ],
-            @"kCTRegistrationRadioAccessTechnologyUTRAN": @[
-                @1, @2, @3, @4, @5, @6, @7, @8, @9, @10, @11
-            ]
-        };
-    });
-    return bands;
-}
-
-static NSDictionary *CCNMKnownOrphanHistoricalActiveBands(void) {
-    static NSDictionary *bands;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        NSMutableDictionary *active = [CCNMKnownOrphanHistoricalOriginalBands() mutableCopy];
-        active[CCNMNRKey] = @[ @78 ];
-        bands = [active copy];
-    });
-    return bands;
-}
-
-static NSDictionary *CCNMKnownOrphanHistoricalSupportedBands(void) {
-    static NSDictionary *bands;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        bands = @{
-            @"kCTRegistrationRadioAccessTechnologyCDMAHybrid": @[ @1, @2, @3, @12 ],
-            @"kCTRegistrationRadioAccessTechnologyGSM": @[ @1, @2, @7, @9 ],
-            @"kCTRegistrationRadioAccessTechnologyLTE": @[
-                @1, @2, @3, @4, @5, @7, @8, @12, @13, @17, @18, @19, @20,
-                @25, @26, @28, @30, @34, @38, @39, @40, @41, @42, @46, @48,
-                @66
-            ],
-            @"kCTRegistrationRadioAccessTechnologyNR": @[
-                @1, @2, @3, @5, @7, @8, @12, @20, @25, @28, @30, @38, @40,
-                @41, @48, @66, @77, @78, @79
-            ],
-            @"kCTRegistrationRadioAccessTechnologyTDSCDMA": @[],
-            @"kCTRegistrationRadioAccessTechnologyUTRAN": @[ @1, @2, @4, @5, @6, @8 ]
-        };
-    });
-    return bands;
-}
-
 static BOOL CCNMValidateBandDictionary(NSDictionary *bands, NSString **failure) {
     if (![bands isKindOfClass:[NSDictionary class]] ||
         ![[NSSet setWithArray:bands.allKeys] isEqualToSet:CCNMRequiredRATKeys()]) {
@@ -620,48 +548,6 @@ static BOOL CCNMValidateBandDictionary(NSDictionary *bands, NSString **failure) 
 
 static BOOL CCNMDictionariesEqual(NSDictionary *left, NSDictionary *right) {
     return left != nil && right != nil && [left isEqualToDictionary:right];
-}
-
-static BOOL CCNMKnownOrphanBandInfoMatches(NSDictionary *bandInfo,
-                                            NSDictionary *expectedActiveBands) {
-    return [bandInfo isKindOfClass:NSDictionary.class] &&
-        CCNMDictionariesEqual(bandInfo[@"activeBands"], expectedActiveBands) &&
-        CCNMDictionariesEqual(bandInfo[@"supportedBands"],
-            CCNMKnownOrphanHistoricalSupportedBands());
-}
-
-static BOOL CCNMKnownOrphanBaselineMatchesEvidence(NSDictionary *baseline) {
-    return [baseline isKindOfClass:NSDictionary.class] &&
-        [baseline[@"recoverySource"] isEqual:CCNMKnownOrphanRecoverySource] &&
-        [baseline[@"evidenceSHA256"] isEqual:CCNMKnownOrphanEvidenceSHA256] &&
-        [baseline[@"slotID"] isEqual:@1] &&
-        [CCNMCanonicalUUIDString(baseline[@"subscriptionUUID"])
-            isEqualToString:CCNMKnownOrphanSubscriptionUUID] &&
-        CCNMDictionariesEqual(baseline[@"activeBands"],
-            CCNMKnownOrphanHistoricalOriginalBands());
-}
-
-static BOOL CCNMStateHasVerifiedKnownOrphanRestore(NSDictionary *state) {
-    if (![state isKindOfClass:NSDictionary.class] ||
-        ![state[@"requestedMode"] isEqual:CCNMRequestedModeSystemDefault] ||
-        ![state[@"appliedPolicy"] isEqual:CCNMAppliedPolicyVerifiedSystemDefault] ||
-        ![state[@"recoveryState"] isEqual:CCNMRecoveryStateClean] ||
-        ![state[@"slotID"] isEqual:@1] ||
-        ![CCNMCanonicalUUIDString(state[@"subscriptionUUID"])
-            isEqualToString:CCNMKnownOrphanSubscriptionUUID] ||
-        [state[@"uncertain"] boolValue] ||
-        ![state[@"verifiedAt"] isKindOfClass:NSNumber.class] ||
-        ![state[@"restoredBaselineCreatedAt"] isKindOfClass:NSNumber.class] ||
-        !CCNMDictionariesEqual(state[@"verifiedActiveBands"],
-            CCNMKnownOrphanHistoricalOriginalBands())) {
-        return NO;
-    }
-    BOOL fixedProvenance = [state[@"recoverySource"] isEqual:CCNMKnownOrphanRecoverySource] &&
-        [state[@"evidenceSHA256"] isEqual:CCNMKnownOrphanEvidenceSHA256];
-    // Compatibility for the already-verified package state created before
-    // final clean-state provenance was persisted.
-    BOOL legacyVerifiedShape = !state[@"recoverySource"] && !state[@"evidenceSHA256"];
-    return fixedProvenance || legacyVerifiedShape;
 }
 
 static NSDictionary *CCNMDeepCopyDictionary(NSDictionary *dictionary, NSString **failure) {
@@ -997,19 +883,6 @@ static BOOL CCNMValidateRestorePayload(NSDictionary *live,
     return YES;
 }
 
-static NSDictionary *CCNMBuildRestorePayload(NSDictionary *live,
-                                              NSDictionary *baseline,
-                                              NSString **failure) {
-    NSDictionary *copy = CCNMDeepCopyDictionary(live, failure);
-    if (!copy || !CCNMValidateBandDictionary(baseline, failure)) {
-        return nil;
-    }
-    NSMutableDictionary *draft = [copy mutableCopy];
-    draft[CCNMNRKey] = [baseline[CCNMNRKey] copy];
-    NSDictionary *payload = CCNMDeepCopyDictionary(draft, failure);
-    return CCNMValidateRestorePayload(live, baseline, payload, failure) ? payload : nil;
-}
-
 static BOOL CCNMStringInDomain(id value, NSArray<NSString *> *domain) {
     return [value isKindOfClass:[NSString class]] && [domain containsObject:value];
 }
@@ -1069,6 +942,7 @@ static BOOL CCNMValidateStateRecord(NSDictionary *state, NSString **failure) {
         CCNMStringInDomain(state[@"recoveryState"], @[
             CCNMRecoveryStateClean, CCNMRecoveryStateEnablePending,
             CCNMRecoveryStateEnabledWithBaseline, CCNMRecoveryStateRestorePending,
+            CCNMRecoveryStateCarrierResetPending, CCNMRecoveryStateCarrierResetFailed,
             CCNMRecoveryStateRebootRequired, CCNMRecoveryStateRecoveryFailed
         ]) &&
         [state[@"uncertain"] isKindOfClass:[NSNumber class]] &&
@@ -1099,47 +973,6 @@ static BOOL CCNMValidateStateRecord(NSDictionary *state, NSString **failure) {
     }
     if (!valid && failure) {
         *failure = @"The durable n78 policy state record is malformed or foreign.";
-    }
-    return valid;
-}
-
-static NSDictionary *CCNMBuildRemovalGuardRecord(NSDictionary *summary, NSString **failure) {
-    NSString *bootSession = CCNMBootSessionIdentity();
-    NSString *nonce = NSUUID.UUID.UUIDString;
-    if (!bootSession || !nonce) {
-        if (failure) {
-            *failure = @"Boot identity and nonce are required for the removal guard.";
-        }
-        return nil;
-    }
-    return @{
-        @"schemaVersion": @1,
-        @"owner": CCNMPolicyOwner,
-        @"kind": @"removalGuard",
-        @"createdAt": @(CCNMUnixMilliseconds()),
-        @"bootSessionUUID": bootSession,
-        @"nonce": nonce,
-        @"operationGeneration": summary[@"operationGeneration"] ?: @0,
-        @"requestedMode": CCNMRequestedModeSystemDefault,
-        @"appliedPolicy": CCNMAppliedPolicyVerifiedSystemDefault,
-        @"recoveryState": CCNMRecoveryStateClean
-    };
-}
-
-static BOOL CCNMValidateRemovalGuardRecord(NSDictionary *guard, NSString **failure) {
-    BOOL valid = [guard isKindOfClass:NSDictionary.class] &&
-        [guard[@"schemaVersion"] isEqual:@1] &&
-        [guard[@"owner"] isEqual:CCNMPolicyOwner] &&
-        [guard[@"kind"] isEqual:@"removalGuard"] &&
-        [guard[@"createdAt"] isKindOfClass:NSNumber.class] && [guard[@"createdAt"] longLongValue] > 0 &&
-        CCNMCanonicalUUIDString(guard[@"bootSessionUUID"]) != nil &&
-        CCNMCanonicalUUIDString(guard[@"nonce"]) != nil &&
-        CCNMNSNumberIsInteger(guard[@"operationGeneration"]) && [guard[@"operationGeneration"] longLongValue] >= 0 &&
-        [guard[@"requestedMode"] isEqual:CCNMRequestedModeSystemDefault] &&
-        [guard[@"appliedPolicy"] isEqual:CCNMAppliedPolicyVerifiedSystemDefault] &&
-        [guard[@"recoveryState"] isEqual:CCNMRecoveryStateClean];
-    if (!valid && failure) {
-        *failure = @"The durable package-removal guard is malformed or foreign.";
     }
     return valid;
 }
@@ -1191,10 +1024,6 @@ static NSDictionary *CCNMBuildBaselineRecord(NSDictionary *active,
 
 static BOOL CCNMValidateBaselineRecord(NSDictionary *baseline, NSString **failure) {
     NSDictionary *bands = [baseline[@"activeBands"] isKindOfClass:[NSDictionary class]] ? baseline[@"activeBands"] : nil;
-    BOOL hasRecoverySource = baseline[@"recoverySource"] != nil;
-    BOOL hasEvidenceDigest = baseline[@"evidenceSHA256"] != nil;
-    BOOL provenanceValid = (!hasRecoverySource && !hasEvidenceDigest) ||
-        CCNMKnownOrphanBaselineMatchesEvidence(baseline);
     BOOL hasCapabilitySnapshot = baseline[@"deviceModel"] != nil ||
         baseline[@"systemVersion"] != nil || baseline[@"systemBuild"] != nil ||
         baseline[@"supportedBands"] != nil || baseline[@"modifiedBandKeys"] != nil;
@@ -1214,7 +1043,7 @@ static BOOL CCNMValidateBaselineRecord(NSDictionary *baseline, NSString **failur
         CCNMCanonicalUUIDString(baseline[@"bootSessionUUID"]) != nil &&
         CCNMNSNumberIsInteger(baseline[@"operationGeneration"]) && [baseline[@"operationGeneration"] unsignedIntegerValue] > 0 &&
         CCNMValidSlotID(baseline[@"slotID"]) &&
-        CCNMCanonicalUUIDString(baseline[@"subscriptionUUID"]) != nil && provenanceValid &&
+        CCNMCanonicalUUIDString(baseline[@"subscriptionUUID"]) != nil &&
         capabilitySnapshotValid && CCNMValidateBandDictionary(bands, failure);
     if (!valid && failure && !*failure) {
         *failure = @"The durable policy baseline is malformed, foreign, or has invalid capability evidence.";
@@ -1222,89 +1051,6 @@ static BOOL CCNMValidateBaselineRecord(NSDictionary *baseline, NSString **failur
     return valid;
 }
 
-// A restore replays exactly one array: CCNMBuildRestorePayload keeps the live
-// values for every RAT except NR, where it writes the saved array. So the saved
-// NR bands are the values that have to be declared by the modem about to receive
-// them. This is the capability requirement the device allowlist used to imply,
-// expressed against live evidence instead of a model name.
-static BOOL CCNMBaselineNRBandsFitCurrentCapability(NSArray *savedNR,
-                                                    NSArray *currentSupportedNR,
-                                                    NSString *unsupportedFailure,
-                                                    NSString **failure) {
-    if (![savedNR isKindOfClass:NSArray.class] || ![currentSupportedNR isKindOfClass:NSArray.class]) {
-        if (failure) {
-            *failure = @"The retained baseline NR capability evidence is unavailable on this system.";
-        }
-        return NO;
-    }
-    for (NSNumber *band in savedNR) {
-        if (![currentSupportedNR containsObject:band]) {
-            if (failure) {
-                *failure = unsupportedFailure;
-            }
-            return NO;
-        }
-    }
-    return YES;
-}
-
-static BOOL CCNMValidateBaselineCompatibility(NSDictionary *baseline,
-                                               NSDictionary *currentSupportedBands,
-                                               NSDictionary *identity,
-                                               NSString **failure) {
-    BOOL hasCapabilitySnapshot = baseline[@"deviceModel"] != nil ||
-        baseline[@"systemVersion"] != nil || baseline[@"systemBuild"] != nil ||
-        baseline[@"supportedBands"] != nil || baseline[@"modifiedBandKeys"] != nil;
-    // Keyed subscripting a non-dictionary raises, and this bundle loads into
-    // SpringBoard. CCNMValidateBaselineRecord runs first in the current callers,
-    // but this check must not depend on that ordering.
-    NSDictionary *savedActive = [baseline[@"activeBands"] isKindOfClass:NSDictionary.class]
-        ? baseline[@"activeBands"] : nil;
-    NSDictionary *currentSupported = [currentSupportedBands isKindOfClass:NSDictionary.class]
-        ? currentSupportedBands : nil;
-    if (!savedActive || !currentSupported ||
-        !CCNMValidateBandDictionary(savedActive, failure) ||
-        !CCNMValidateBandDictionary(currentSupported, failure)) {
-        if (failure && !*failure) {
-            *failure = @"The retained baseline or current capability evidence is unavailable.";
-        }
-        return NO;
-    }
-    // Do not require saved active NR to be a subset of supported NR. The modem's
-    // BandInfo contract permits an active list to contain values absent from its
-    // supported list, and the reviewed historical baseline includes exactly that
-    // shape with a verified restore read-back. The saved capability snapshot is
-    // the evidence that can be compared across the restore boundary.
-    if (!hasCapabilitySnapshot) {
-        // Written before capability evidence existed. Refusing it is not an
-        // option: a baseline is the only way back from an enable, so refusing one
-        // for lacking a field that did not exist when it was written would strand
-        // the device it was written to protect.
-        return YES;
-    }
-    // Same hardware. System version and build stay recorded evidence rather than
-    // a gate: an iOS update does not invalidate a rollback whose capability shape
-    // and owned-band evidence still fit, and refusing on build alone would strand
-    // every device that updates while the policy is enabled.
-    BOOL sameDevice = [baseline[@"deviceModel"] isEqual:identity[@"deviceModel"]];
-    NSDictionary *savedSupported = [baseline[@"supportedBands"] isKindOfClass:NSDictionary.class]
-        ? baseline[@"supportedBands"] : nil;
-    BOOL sameCapabilityShape = savedSupported &&
-        [[NSSet setWithArray:savedSupported.allKeys] isEqualToSet:
-            [NSSet setWithArray:currentSupported.allKeys]];
-    NSArray *ownedKeys = baseline[@"modifiedBandKeys"];
-    BOOL ownedFieldsValid = [ownedKeys isKindOfClass:NSArray.class] &&
-        ownedKeys.count == 1 && [ownedKeys.firstObject isEqual:CCNMNRKey];
-    if (!sameDevice || !sameCapabilityShape || !ownedFieldsValid) {
-        if (failure) {
-            *failure = @"The retained baseline belongs to a different device, capability shape, or owned-band set.";
-        }
-        return NO;
-    }
-    return CCNMBaselineNRBandsFitCurrentCapability(savedSupported[CCNMNRKey],
-        currentSupported[CCNMNRKey],
-        @"The retained baseline contains an owned band unsupported by the current system.", failure);
-}
 
 static NSDictionary *CCNMBuildIntentRecord(NSString *operation,
                                             NSUInteger generation,
@@ -1369,6 +1115,14 @@ static BOOL CCNMValidateIntentRecord(NSDictionary *intent,
     NSDictionary *active = [intent[@"preWriteActiveBands"] isKindOfClass:[NSDictionary class]] ? intent[@"preWriteActiveBands"] : nil;
     NSDictionary *supported = [intent[@"preWriteSupportedBands"] isKindOfClass:[NSDictionary class]] ? intent[@"preWriteSupportedBands"] : nil;
     NSDictionary *requested = [intent[@"requestedActiveBands"] isKindOfClass:[NSDictionary class]] ? intent[@"requestedActiveBands"] : nil;
+    // knownOrphanRecovery has no producer in this build. It stays in the domain
+    // because 1.5.0 shipped, and a 1.5.0 device that crashed or lost a setter
+    // outcome mid-replay has an intent record on disk naming it. Rejecting the
+    // name would classify our own former record as foreign, and the consequence
+    // is not cosmetic: an invalid record makes performCarrierReset refuse too, so
+    // the one escape hatch that could clear the record would be the thing the
+    // record disables. Read-side compatibility only -- see the operation domain
+    // in CCNMValidateInFlightRecord, which must stay identical.
     BOOL header = [intent isKindOfClass:[NSDictionary class]] &&
         [intent[@"schemaVersion"] isEqual:@1] &&
         [intent[@"owner"] isEqual:CCNMPolicyOwner] &&
@@ -1387,6 +1141,8 @@ static BOOL CCNMValidateIntentRecord(NSDictionary *intent,
     if (header && [operation isEqual:@"enable"]) {
         payload = CCNMValidateSelectedNRIntentPayload(active, supported, requested, failure);
     } else if (header) {
+        // Every other operation, retired knownOrphanRecovery included, wrote a
+        // restore-shaped payload: the baseline's activeBands resent unchanged.
         payload = CCNMValidateRestorePayload(active, baseline[@"activeBands"], requested, failure);
     }
     if ((!header || !payload) && failure && !*failure) {
@@ -1495,10 +1251,6 @@ static NSDictionary *CCNMSummaryFromState(NSDictionary *state,
         ? [NSDictionary dictionaryWithContentsOfFile:CCNMN78PolicyBaselinePath()] : nil;
     BOOL baselineValid = baselinePresent && CCNMValidateBaselineRecord(baselineRecord, NULL);
     BOOL transitionPresent = CCNMFileExists(CCNMN78PolicyIntentPath()) || CCNMFileExists(CCNMN78PolicyInFlightPath());
-    BOOL removalGuardPresent = CCNMFileExists(CCNMN78PolicyRemovalGuardPath());
-    NSDictionary *removalGuard = removalGuardPresent
-        ? [NSDictionary dictionaryWithContentsOfFile:CCNMN78PolicyRemovalGuardPath()] : nil;
-    BOOL removalGuardValid = removalGuardPresent && CCNMValidateRemovalGuardRecord(removalGuard, NULL);
     CCNMRecoveryState recovery = base[@"recoveryState"] ?: CCNMRecoveryStateRecoveryFailed;
     CCNMAppliedPolicy applied = base[@"appliedPolicy"] ?: CCNMAppliedPolicyUnknown;
     BOOL currentBootInFlight = NO;
@@ -1538,13 +1290,12 @@ static NSDictionary *CCNMSummaryFromState(NSDictionary *state,
         CCNMN78PolicySummaryErrorCodeKey: errorCode ?: base[@"errorCode"] ?: CCNMN78PolicyErrorNone,
         CCNMN78PolicySummaryErrorKey: error ?: base[@"error"] ?: @"",
         CCNMN78PolicySummaryRequiresRebootKey: @(requiresReboot),
-        CCNMN78PolicySummaryMayWriteKey: @((normalDefault || normalEnabled) && !requiresReboot && !removalGuardPresent),
-        CCNMN78PolicySummaryMayUninstallKey: @(normalDefault && (!removalGuardPresent || removalGuardValid)),
+        CCNMN78PolicySummaryMayWriteKey: @((normalDefault || normalEnabled) && !requiresReboot),
+        CCNMN78PolicySummaryMayUninstallKey: @(normalDefault),
         @"baselinePresent": @(baselinePresent),
         @"baselineValid": @(baselineValid),
         @"transitionPresent": @(transitionPresent),
-        @"removalGuardPresent": @(removalGuardPresent),
-        @"removalGuardValid": @(removalGuardValid),
+        @"legacyRemovalGuardPresent": @(CCNMFileExists(CCNMN78PolicyRemovalGuardPath())),
         @"operationGeneration": base[@"operationGeneration"] ?: @0,
         @"subscriptionUUID": base[@"subscriptionUUID"] ?: @"",
         @"uncertain": base[@"uncertain"] ?: @NO,
@@ -1553,8 +1304,7 @@ static NSDictionary *CCNMSummaryFromState(NSDictionary *state,
         @"intentPath": CCNMN78PolicyIntentPath(),
         @"inFlightPath": CCNMN78PolicyInFlightPath(),
         @"lockPath": CCNMN78PolicyLockPath(),
-        @"removalGuardPath": CCNMN78PolicyRemovalGuardPath(),
-        @"verifiedKnownOrphanRestore": @(CCNMStateHasVerifiedKnownOrphanRestore(base))
+        @"legacyRemovalGuardPath": CCNMN78PolicyRemovalGuardPath()
     } mutableCopy];
     if (appliedSelection) {
         summary[CCNMN78PolicySummaryTargetNRBandsKey] = appliedSelection;
@@ -1566,22 +1316,19 @@ static NSDictionary *CCNMSummaryFromState(NSDictionary *state,
 }
 
 static NSDictionary *CCNMReadPolicyStateInternal(void) {
-    BOOL stateExists = NO, baselineExists = NO, intentExists = NO, inFlightExists = NO, removalGuardExists = NO;
+    BOOL stateExists = NO, baselineExists = NO, intentExists = NO, inFlightExists = NO;
     NSDictionary *state = CCNMLoadRecord(CCNMN78PolicyStatePath(), &stateExists);
     NSDictionary *baseline = CCNMLoadRecord(CCNMN78PolicyBaselinePath(), &baselineExists);
     NSDictionary *intent = CCNMLoadRecord(CCNMN78PolicyIntentPath(), &intentExists);
     NSDictionary *inFlight = CCNMLoadRecord(CCNMN78PolicyInFlightPath(), &inFlightExists);
-    NSDictionary *removalGuard = CCNMLoadRecord(CCNMN78PolicyRemovalGuardPath(), &removalGuardExists);
 
-    if (!stateExists && !baselineExists && !intentExists && !inFlightExists &&
-        (!removalGuardExists || CCNMValidateRemovalGuardRecord(removalGuard, NULL))) {
+    if (!stateExists && !baselineExists && !intentExists && !inFlightExists) {
         return CCNMSummaryFromState(CCNMDefaultState(), YES, @"read", CCNMN78PolicyErrorNone, @"", nil);
     }
     if ((stateExists && !CCNMValidateStateRecord(state, NULL)) ||
         (baselineExists && !CCNMValidateBaselineRecord(baseline, NULL)) ||
         (intentExists && (!baseline || !CCNMValidateIntentRecord(intent, baseline, NULL))) ||
-        (inFlightExists && (!baseline || !CCNMValidateInFlightRecord(inFlight, baseline, intent, intentExists, NULL))) ||
-        (removalGuardExists && !CCNMValidateRemovalGuardRecord(removalGuard, NULL))) {
+        (inFlightExists && (!baseline || !CCNMValidateInFlightRecord(inFlight, baseline, intent, intentExists, NULL)))) {
         NSDictionary *synthetic = CCNMSyntheticRecoveryState(state, CCNMRecoveryStateRebootRequired,
             @"A durable policy record is malformed, foreign, or inconsistent.");
         return CCNMSummaryFromState(synthetic, NO, @"read", CCNMN78PolicyErrorInvalidRecords,
@@ -1616,9 +1363,20 @@ static NSDictionary *CCNMReadPolicyStateInternal(void) {
             synthetic[@"error"], nil);
     }
 
+    if ([state[@"recoveryState"] isEqual:CCNMRecoveryStateCarrierResetPending] ||
+        [state[@"recoveryState"] isEqual:CCNMRecoveryStateCarrierResetFailed]) {
+        // A carrier reset is the last step of a disable and owns no transition
+        // records, so it cannot be recognised by the branch above. Report it from
+        // the state record itself rather than letting it fall through to the
+        // enabled/clean classification below, which would misread it as settled.
+        return CCNMSummaryFromState(state, NO, @"read",
+            state[@"errorCode"] ?: CCNMN78PolicyErrorCarrierResetFailed,
+            state[@"error"], nil);
+    }
+
     BOOL enabled = [state[@"requestedMode"] isEqual:CCNMRequestedModeN78Preferred] &&
         [state[@"appliedPolicy"] isEqual:CCNMAppliedPolicyVerifiedN78Only] &&
-        [state[@"recoveryState"] isEqual:CCNMRecoveryStateEnabledWithBaseline] && baselineExists && !removalGuardExists &&
+        [state[@"recoveryState"] isEqual:CCNMRecoveryStateEnabledWithBaseline] && baselineExists &&
         [CCNMCanonicalUUIDString(state[@"subscriptionUUID"]) isEqualToString:CCNMCanonicalUUIDString(baseline[@"subscriptionUUID"])] &&
         [state[@"baselineCreatedAt"] isEqual:baseline[@"createdAt"]];
     BOOL systemDefault = [state[@"requestedMode"] isEqual:CCNMRequestedModeSystemDefault] &&
@@ -1754,30 +1512,25 @@ static BOOL CCNMValidateTargetIdentity(NSMutableDictionary *details, NSString **
     return YES;
 }
 
-// Gate for the known-orphan replay paths.
+// Gate for the one modem write this build performs: enable.
 //
-// These paths contain a reviewed historical BandInfo table, but they do not
-// trust the table merely because the current phone has n78. The caller must
-// subsequently prove that the current activeBands and supportedBands are an
-// exact dictionary match, that the subscription UUID is the reviewed target,
-// and that policy evidence is otherwise clean. This identity check only makes
-// sure the resulting evidence is attributable to a real device; the exact
-// capability comparison is the safety gate.
-static BOOL CCNMValidateHistoricalReplayTarget(NSMutableDictionary *details, NSString **failure) {
-    return CCNMValidateTargetIdentity(details, failure);
-}
-
-// Gate for the self-sourced write paths: enable, restore, and recover.
+// Every byte it writes originated on the device receiving it. Enable reads live
+// BandInfo and resends it with only the NR array narrowed, so the capability
+// checks are runtime checks: ABI validation, an unambiguous subscription,
+// complete fresh BandInfo, the selected bands present in both fresh active and
+// supported NR arrays, and durable baseline/read-back validation. No model or OS
+// allowlist is needed, and none is used.
 //
-// Enable reads live BandInfo and resends it with only the NR array narrowed;
-// restore and recover resend a baseline this device wrote about itself. The
-// capability checks are therefore runtime checks: ABI validation, an
-// unambiguous subscription, complete fresh BandInfo, n78 in both fresh active
-// and supported NR arrays, and durable baseline/read-back validation. No model
-// or OS allowlist is needed here.
+// Undoing an enable is no longer a write. Disable and recover both reload carrier
+// defaults, which discards the whole carrier configuration and so needs no record
+// of what was narrowed -- which is also why the second gate that used to live
+// here is gone. It guarded a historical-replay path carrying a reviewed BandInfo
+// table captured from one device, and that was the only caller that ever wrote
+// bands it had not read from the device in front of it.
 //
-// Enable and restore share this gate. The device that may create a baseline
-// must also be allowed to put that baseline back.
+// Kept as a named wrapper rather than folded into CCNMValidateTargetIdentity: the
+// name records the invariant that every write in this build is self-sourced, and
+// it is where a second gate would go if a path that is not ever returns.
 static BOOL CCNMValidateSelfSourcedWriteTarget(NSMutableDictionary *details, NSString **failure) {
     return CCNMValidateTargetIdentity(details, failure);
 }
@@ -1958,12 +1711,7 @@ typedef NS_ENUM(NSUInteger, CCNMTargetResolution) {
     // Confirms the target a durable record already names. Never chooses.
     CCNMTargetResolutionRecorded = 0,
     // Chooses a target. Legal only on a first enable, where nothing is recorded.
-    CCNMTargetResolutionFirstEnable = 1,
-    // Confirms a recorded target and additionally requires that the phone hold a
-    // single SIM. Used by the known-orphan replay, whose reviewed evidence was
-    // captured on a single-SIM reference device; replaying that evidence on a
-    // phone in an unreviewed SIM configuration is outside what was approved.
-    CCNMTargetResolutionRecordedSoleSIM = 2
+    CCNMTargetResolutionFirstEnable = 1
 };
 
 // Resolves the subscription a modem write may target.
@@ -1971,8 +1719,7 @@ typedef NS_ENUM(NSUInteger, CCNMTargetResolution) {
 // In CCNMTargetResolutionRecorded the caller already has a target and this only
 // confirms it is still present; nothing is chosen. A legacy record naming neither
 // an identity nor a slot still resolves only on a phone holding a single SIM,
-// which is the one case with no choice to make. CCNMTargetResolutionRecordedSoleSIM
-// behaves the same but also insists on that single-SIM layout.
+// which is the one case with no choice to make.
 //
 // In CCNMTargetResolutionFirstEnable the target is picked: the sole present line,
 // or on a dual-SIM device the line CoreTelephony itself reports as the data line.
@@ -2085,14 +1832,6 @@ static id<CCNMSubscriptionContext> CCNMSafeTargetContext(id<CCNMCoreTelephonyCli
     if (requiredUUID.length && !required) {
         if (failure) {
             *failure = @"The recorded target subscription identity is malformed.";
-        }
-        return nil;
-    }
-    if (resolution == CCNMTargetResolutionRecordedSoleSIM && presentCount != 1) {
-        if (failure) {
-            *failure = [NSString stringWithFormat:
-                @"This recovery is approved only for a phone holding one SIM, but %lu are "
-                 "present (%@).", (unsigned long)presentCount, observedLayout];
         }
         return nil;
     }
@@ -2246,134 +1985,6 @@ static NSDictionary *CCNMReadFreshBandInfo(id<CCNMCoreTelephonyClient> client,
         return nil;
     }
     return @{ @"activeBands": activeCopy, @"supportedBands": supportedCopy };
-}
-
-static BOOL CCNMKnownOrphanStateIsExactClean(NSDictionary *state, BOOL stateExists) {
-    if (!stateExists) {
-        return YES;
-    }
-    return CCNMValidateStateRecord(state, NULL) &&
-        [state[@"requestedMode"] isEqual:CCNMRequestedModeSystemDefault] &&
-        [state[@"appliedPolicy"] isEqual:CCNMAppliedPolicyVerifiedSystemDefault] &&
-        [state[@"recoveryState"] isEqual:CCNMRecoveryStateClean] &&
-        ![state[@"uncertain"] boolValue] && state[@"recoverySource"] == nil &&
-        state[@"evidenceSHA256"] == nil;
-}
-
-static BOOL CCNMValidateKnownOrphanedN78HistoricalPredicate(
-    id<CCNMCoreTelephonyClient> client,
-    NSMutableDictionary *details,
-    id<CCNMSubscriptionContext> *targetContext,
-    NSDictionary **freshBandInfo,
-    BOOL *observedValidBandInfo,
-    NSString **failure) {
-    if (observedValidBandInfo) {
-        *observedValidBandInfo = NO;
-    }
-    if (!CCNMValidateHistoricalReplayTarget(details, failure)) {
-        return NO;
-    }
-    id<CCNMSubscriptionContext> context = CCNMSafeTargetContext(
-        client, CCNMTargetResolutionRecordedSoleSIM, CCNMKnownOrphanSubscriptionUUID, @1,
-        details, failure);
-    if (!context) {
-        return NO;
-    }
-    NSDictionary *fresh = CCNMReadFreshBandInfo(client, context, failure);
-    if (!fresh) {
-        return NO;
-    }
-    if (observedValidBandInfo) {
-        *observedValidBandInfo = YES;
-    }
-    if (!CCNMKnownOrphanBandInfoMatches(
-        fresh, CCNMKnownOrphanHistoricalActiveBands())) {
-        if (failure) {
-            *failure = @"Live active or supported BandInfo does not exactly match the reviewed orphaned-n78 evidence.";
-        }
-        return NO;
-    }
-    if (targetContext) {
-        *targetContext = context;
-    }
-    if (freshBandInfo) {
-        *freshBandInfo = fresh;
-    }
-    if (details) {
-        details[@"historicalPredicateMatched"] = @YES;
-        details[@"recoverySource"] = CCNMKnownOrphanRecoverySource;
-        details[@"evidenceSHA256"] = CCNMKnownOrphanEvidenceSHA256;
-    }
-    return YES;
-}
-
-static NSDictionary *CCNMKnownOrphanEligibilityResult(BOOL eligible,
-                                                        BOOL conclusive,
-                                                        CCNMN78PolicyErrorCode errorCode,
-                                                        NSString *error,
-                                                        NSDictionary *details) {
-    NSMutableDictionary *result = [@{
-        CCNMN78PolicySummarySuccessKey: @(conclusive),
-        CCNMN78PolicySummaryOperationKey: @"knownOrphanEligibility",
-        @"eligible": @(eligible),
-        @"conclusive": @(conclusive),
-        @"recoverySource": CCNMKnownOrphanRecoverySource,
-        @"evidenceSHA256": CCNMKnownOrphanEvidenceSHA256,
-        CCNMN78PolicySummaryErrorCodeKey: errorCode ?: CCNMN78PolicyErrorNone,
-        CCNMN78PolicySummaryErrorKey: error ?: @""
-    } mutableCopy];
-    if (details) {
-        [result addEntriesFromDictionary:details];
-    }
-    return [result copy];
-}
-
-static NSDictionary *CCNMEvaluateKnownOrphanEligibilityWithHeldLock(BOOL allowValidRemovalGuard) {
-    NSMutableDictionary *details = [NSMutableDictionary dictionary];
-    NSString *failure = nil;
-    @synchronized([CCNMN78PolicyController class]) {
-        if (CCNMSetterUncertainLatch || CCNMSetterCallActive) {
-            return CCNMKnownOrphanEligibilityResult(NO, NO,
-                CCNMN78PolicyErrorSetterUncertain,
-                @"A setter is active or uncertain in this process.", details);
-        }
-    }
-
-    BOOL stateExists = NO, baselineExists = NO, intentExists = NO;
-    BOOL inFlightExists = NO, removalGuardExists = NO;
-    NSDictionary *state = CCNMLoadRecord(CCNMN78PolicyStatePath(), &stateExists);
-    CCNMLoadRecord(CCNMN78PolicyBaselinePath(), &baselineExists);
-    CCNMLoadRecord(CCNMN78PolicyIntentPath(), &intentExists);
-    CCNMLoadRecord(CCNMN78PolicyInFlightPath(), &inFlightExists);
-    NSDictionary *removalGuard = CCNMLoadRecord(
-        CCNMN78PolicyRemovalGuardPath(), &removalGuardExists);
-    BOOL removalGuardAllowed = removalGuardExists && allowValidRemovalGuard &&
-        CCNMValidateRemovalGuardRecord(removalGuard, &failure);
-    if (baselineExists || intentExists || inFlightExists ||
-        (removalGuardExists && !removalGuardAllowed) ||
-        !CCNMKnownOrphanStateIsExactClean(state, stateExists)) {
-        return CCNMKnownOrphanEligibilityResult(NO, YES,
-            removalGuardExists && !removalGuardAllowed
-                ? CCNMN78PolicyErrorInvalidRecords : CCNMN78PolicyErrorRecoveryRequired,
-            failure ?: @"Known-orphan recovery requires an absent or exact clean state and no conflicting records.",
-            details);
-    }
-    if (!CCNMValidateHistoricalReplayTarget(details, &failure)) {
-        return CCNMKnownOrphanEligibilityResult(NO, YES,
-            CCNMN78PolicyErrorUnsupportedTarget, failure, details);
-    }
-    id<CCNMCoreTelephonyClient> client = CCNMCreateClient(&failure);
-    if (!client) {
-        return CCNMKnownOrphanEligibilityResult(NO, NO,
-            CCNMN78PolicyErrorInvalidBandInfo, failure, details);
-    }
-    BOOL observedValidBandInfo = NO;
-    BOOL matched = CCNMValidateKnownOrphanedN78HistoricalPredicate(
-        client, details, NULL, NULL, &observedValidBandInfo, &failure);
-    return CCNMKnownOrphanEligibilityResult(matched,
-        matched || observedValidBandInfo,
-        matched ? CCNMN78PolicyErrorNone : CCNMN78PolicyErrorInvalidBandInfo,
-        matched ? @"" : failure, details);
 }
 
 static id<CCNMBandInfo> CCNMCreateBandPayload(NSDictionary *payload, NSString **failure) {
@@ -2705,86 +2316,167 @@ static BOOL CCNMFinishEnabledState(NSUInteger generation,
     return state && CCNMReplaceExpectedRecord(checkpoint, state, CCNMN78PolicyStatePath(), failure);
 }
 
-static NSDictionary *CCNMProvenanceForBaseline(NSDictionary *baseline) {
-    if (CCNMKnownOrphanBaselineMatchesEvidence(baseline)) {
-        return @{
-            @"recoverySource": CCNMKnownOrphanRecoverySource,
-            @"evidenceSHA256": CCNMKnownOrphanEvidenceSHA256
-        };
+static NSDictionary *CCNMObserveCarrierResetOutcome(NSArray<NSNumber *> *appliedSelection,
+                                                      NSString *subscriptionUUID,
+                                                      NSNumber *slotID) {
+    // After CommCenter is killed, CoreTelephony reads may fail temporarily. Poll
+    // until a valid BandInfo read succeeds or the deadline expires.
+    double started = CCNMMonotonicNow();
+    NSMutableDictionary *result = [@{
+        @"confirmed": @NO, @"sawValid": @NO, @"error": @"No valid BandInfo observation could be collected."
+    } mutableCopy];
+    BOOL hasSelection = [appliedSelection isKindOfClass:NSArray.class] && appliedSelection.count > 0;
+    for (NSUInteger attempt = 0; attempt < CCNMReadBackMaximumAttempts; attempt++) {
+        NSString *clientFailure = nil;
+        id<CCNMCoreTelephonyClient> client = CCNMCreateClient(&clientFailure);
+        if (!client) {
+            result[@"error"] = clientFailure ?: @"CoreTelephonyClient unavailable.";
+            continue;
+        }
+        NSString *targetFailure = nil;
+        id<CCNMSubscriptionContext> context = CCNMSafeTargetContext(
+            client, CCNMTargetResolutionRecorded, subscriptionUUID, slotID, nil, &targetFailure);
+        if (!context) {
+            result[@"contextError"] = targetFailure ?: @"Target subscription could not be resolved.";
+            usleep(CCNMReadBackPollMicroseconds);
+            continue;
+        }
+        NSString *readFailure = nil;
+        NSDictionary *fresh = CCNMReadFreshBandInfo(client, context, &readFailure);
+        if (!fresh) {
+            result[@"error"] = readFailure ?: @"BandInfo read failed.";
+            usleep(CCNMReadBackPollMicroseconds);
+            continue;
+        }
+        result[@"sawValid"] = @YES;
+        result[@"observedActiveBands"] = fresh[@"activeBands"];
+        result[@"observedSupportedBands"] = fresh[@"supportedBands"];
+        NSArray *liveNR = CCNMCanonicalNRSelection(
+            fresh[@"activeBands"][CCNMNRKey], NULL);
+        if (hasSelection) {
+            // The carrier reload succeeded if the live NR selection no longer
+            // matches the one we applied. A nil liveNR (no NR bands reported)
+            // also counts as cleared.
+            BOOL cleared = !liveNR || ![liveNR isEqualToArray:appliedSelection];
+            result[@"comparedAgainstSelection"] = appliedSelection;
+            result[@"clearedFromSelection"] = @(cleared);
+            if (cleared) {
+                result[@"confirmed"] = @YES;
+                result[@"error"] = @"";
+            } else {
+                result[@"error"] = @"The live NR selection still matches the applied selection.";
+            }
+        } else {
+            // No recorded selection, so we cannot prove the reset changed
+            // anything. A valid BandInfo read is the best evidence we have.
+            result[@"confirmed"] = @YES;
+            result[@"error"] = @"";
+            result[@"selectionEvidence"] = @"unavailable";
+        }
+        result[@"attemptsNeeded"] = @(attempt + 1);
+        double elapsed = CCNMMonotonicNow() - started;
+        result[@"observationElapsedSeconds"] = @(elapsed);
+        break;
     }
-    return @{};
+    double elapsed = CCNMMonotonicNow() - started;
+    result[@"observationElapsedSeconds"] = @(elapsed);
+    return result;
 }
 
-static BOOL CCNMFinishSystemDefaultState(NSUInteger generation,
+// Removes a record file at path when the file exists and the expected value
+// matches (or when no expected value is provided and the file exists). Returns
+// YES whether the file was present or not, so the caller can clean up optional
+// records without branching.
+static BOOL CCNMRemoveOptionalRecord(NSDictionary *expected,
+                                      NSString *path,
+                                      NSString **failure) {
+    if (!expected) {
+        // No expected value was provided; remove the file if it exists.
+        if (!CCNMFileExists(path)) {
+            return YES;
+        }
+        if (unlink(path.fileSystemRepresentation) != 0) {
+            if (failure) {
+                *failure = [NSString stringWithFormat:@"Could not remove optional record at %@: %s",
+                    path.lastPathComponent, strerror(errno)];
+            }
+            return NO;
+        }
+        if (!CCNMSyncParentDirectory(path, failure)) {
+            return NO;
+        }
+        if (CCNMFileExists(path)) {
+            if (failure) {
+                *failure = [NSString stringWithFormat:@"Optional record at %@ still exists after removal.",
+                    path.lastPathComponent];
+            }
+            return NO;
+        }
+        return YES;
+    }
+    return CCNMRemoveExpectedRecord(expected, path, failure);
+}
+
+static BOOL CCNMFinishCarrierResetState(NSUInteger generation,
                                          NSString *subscriptionUUID,
-                                         NSDictionary *expectedState,
+                                         NSDictionary *checkpoint,
                                          NSDictionary *baseline,
                                          NSDictionary *intent,
                                          NSDictionary *inFlight,
-                                         NSDictionary *verifiedBands,
+                                         NSDictionary *resetResult,
+                                         NSDictionary *observation,
                                          NSString **failure) {
-    NSNumber *verifiedAt = @(CCNMUnixMilliseconds());
+    // Sanitise the reset result: plist serialisation cannot handle NSNull.
     NSMutableDictionary *proof = [@{
-        @"baselineCreatedAt": baseline[@"createdAt"],
-        @"slotID": baseline[@"slotID"],
-        @"readBackVerified": @YES,
-        @"verifiedAt": verifiedAt,
-        @"verifiedActiveBands": verifiedBands
+        @"carrierResetVerified": @YES,
+        @"verifiedAt": @(CCNMUnixMilliseconds())
     } mutableCopy];
-    [proof addEntriesFromDictionary:CCNMProvenanceForBaseline(baseline)];
-    CCNMRequestedMode requested = expectedState[@"requestedMode"] ?: CCNMRequestedModeN78Preferred;
-    NSDictionary *checkpoint = CCNMBuildStateRecord(requested,
-        CCNMAppliedPolicyApplying, CCNMRecoveryStateRestorePending,
-        generation, subscriptionUUID, NO, CCNMN78PolicyErrorNone, @"", proof, failure);
-    BOOL checkpointSaved = checkpoint && (expectedState
-        ? CCNMReplaceExpectedRecord(expectedState, checkpoint, CCNMN78PolicyStatePath(), failure)
-        : CCNMCreateDurableRecord(checkpoint, CCNMN78PolicyStatePath(), failure));
-    if (!checkpointSaved) {
+    NSDictionary *reset = resetResult ?: @{};
+    for (NSString *key in @[
+        CCNMCarrierResetSuccessKey, CCNMCarrierResetOperationKey,
+        CCNMCarrierResetCommandKey, CCNMCarrierResetFirstAttemptedKey,
+        CCNMCarrierResetSecondAttemptedKey, CCNMCarrierResetFirstExitStatusKey,
+        CCNMCarrierResetSecondExitStatusKey, CCNMCarrierResetElapsedMillisecondsKey
+    ]) {
+        id value = reset[key];
+        if (value && ![value isKindOfClass:NSNull.class]) {
+            proof[key] = value;
+        }
+    }
+    if (observation[@"observedActiveBands"]) {
+        proof[@"observedActiveBands"] = observation[@"observedActiveBands"];
+    }
+    if (observation[@"comparedAgainstSelection"]) {
+        proof[@"resetFromNRBands"] = observation[@"comparedAgainstSelection"];
+    }
+    if (baseline) {
+        proof[@"baselineCreatedAt"] = baseline[@"createdAt"];
+        proof[@"slotID"] = baseline[@"slotID"];
+    }
+    // Retire records in order: inFlight, intent, baseline. Then flip the
+    // checkpoint to clean. The checkpoint persists throughout, so a crash
+    // between removals leaves carrierResetPending on disk, which blocks policy
+    // writes and is retryable.
+    if (inFlight && !CCNMRemoveOptionalRecord(inFlight, CCNMN78PolicyInFlightPath(), failure)) {
         return NO;
     }
-    if (inFlight && !CCNMRemoveExpectedRecord(inFlight, CCNMN78PolicyInFlightPath(), failure)) {
+    if (intent && !CCNMRemoveOptionalRecord(intent, CCNMN78PolicyIntentPath(), failure)) {
         return NO;
     }
-    if (intent && !CCNMRemoveExpectedRecord(intent, CCNMN78PolicyIntentPath(), failure)) {
+    if (baseline && !CCNMRemoveOptionalRecord(baseline, CCNMN78PolicyBaselinePath(), failure)) {
         return NO;
     }
-    if (!CCNMRemoveExpectedRecord(baseline, CCNMN78PolicyBaselinePath(), failure)) {
-        return NO;
+    // Opportunistically remove the legacy removal-guard file. It is no longer
+    // consulted, but keeping it on disk after a clean reset is untidy.
+    if (CCNMFileExists(CCNMN78PolicyRemovalGuardPath())) {
+        (void)unlink(CCNMN78PolicyRemovalGuardPath().fileSystemRepresentation);
+        (void)CCNMSyncParentDirectory(CCNMN78PolicyRemovalGuardPath(), NULL);
     }
-    NSMutableDictionary *finalProof = [@{
-        @"verifiedAt": verifiedAt,
-        @"verifiedActiveBands": verifiedBands,
-        @"restoredBaselineCreatedAt": baseline[@"createdAt"],
-        @"slotID": baseline[@"slotID"]
-    } mutableCopy];
-    [finalProof addEntriesFromDictionary:CCNMProvenanceForBaseline(baseline)];
     NSDictionary *state = CCNMBuildStateRecord(CCNMRequestedModeSystemDefault,
         CCNMAppliedPolicyVerifiedSystemDefault, CCNMRecoveryStateClean,
         generation, subscriptionUUID, NO, CCNMN78PolicyErrorNone, @"",
-        finalProof, failure);
+        proof, failure);
     return state && CCNMReplaceExpectedRecord(checkpoint, state, CCNMN78PolicyStatePath(), failure);
-}
-
-static BOOL CCNMPersistOrReplaceTransition(NSDictionary *oldRecord,
-                                           NSDictionary *newRecord,
-                                           NSString *path,
-                                           NSString **failure) {
-    return oldRecord
-        ? CCNMReplaceExpectedRecord(oldRecord, newRecord, path, failure)
-        : CCNMCreateDurableRecord(newRecord, path, failure);
-}
-
-static BOOL CCNMIsVerifiedRestoreCleanupCheckpoint(NSDictionary *state) {
-    NSDictionary *verifiedBands = [state[@"verifiedActiveBands"] isKindOfClass:NSDictionary.class]
-        ? state[@"verifiedActiveBands"] : nil;
-    return CCNMValidateStateRecord(state, NULL) &&
-        [state[@"appliedPolicy"] isEqual:CCNMAppliedPolicyApplying] &&
-        [state[@"recoveryState"] isEqual:CCNMRecoveryStateRestorePending] &&
-        [state[@"readBackVerified"] isEqual:@YES] &&
-        [state[@"verifiedAt"] isKindOfClass:NSNumber.class] && [state[@"verifiedAt"] longLongValue] > 0 &&
-        [state[@"baselineCreatedAt"] isKindOfClass:NSNumber.class] && [state[@"baselineCreatedAt"] longLongValue] > 0 &&
-        ![state[@"uncertain"] boolValue] &&
-        CCNMValidateBandDictionary(verifiedBands, NULL);
 }
 
 @interface CCNMN78PolicyController ()
@@ -2869,22 +2561,6 @@ static BOOL CCNMIsVerifiedRestoreCleanupCheckpoint(NSDictionary *state) {
     });
 }
 
-- (void)recoverKnownOrphanedN78WithCompletion:(CCNMN78PolicyCompletion)completion {
-    dispatch_async(self.operationQueue, ^{
-        @autoreleasepool {
-            NSDictionary *result = nil;
-            @try {
-                result = [self performKnownOrphanedN78Recovery];
-            } @catch (NSException *exception) {
-                result = CCNMErrorSummary(@"knownOrphanRecovery", CCNMN78PolicyErrorRecoveryRequired,
-                    [NSString stringWithFormat:@"Known-orphan recovery raised %@: %@",
-                        exception.name, exception.reason ?: @"(no reason)"], nil);
-            }
-            [self deliverCompletion:completion result:result];
-        }
-    });
-}
-
 - (NSDictionary *)performEnable {
     NSMutableDictionary *details = [@{ @"setterAttempted": @NO } mutableCopy];
     NSString *failure = nil;
@@ -2905,18 +2581,11 @@ static BOOL CCNMIsVerifiedRestoreCleanupCheckpoint(NSDictionary *state) {
                     @"A setter outcome is uncertain in this process; reboot before recovery.", details);
             }
         }
-        BOOL stateExists = NO, baselineExists = NO, intentExists = NO, inFlightExists = NO, removalGuardExists = NO;
+        BOOL stateExists = NO, baselineExists = NO, intentExists = NO, inFlightExists = NO;
         NSDictionary *state = CCNMLoadRecord(CCNMN78PolicyStatePath(), &stateExists);
         CCNMLoadRecord(CCNMN78PolicyBaselinePath(), &baselineExists);
         CCNMLoadRecord(CCNMN78PolicyIntentPath(), &intentExists);
         CCNMLoadRecord(CCNMN78PolicyInFlightPath(), &inFlightExists);
-        NSDictionary *removalGuard = CCNMLoadRecord(CCNMN78PolicyRemovalGuardPath(), &removalGuardExists);
-        if (removalGuardExists) {
-            CCNMN78PolicyErrorCode code = CCNMValidateRemovalGuardRecord(removalGuard, &failure)
-                ? CCNMN78PolicyErrorBusy : CCNMN78PolicyErrorInvalidRecords;
-            failure = failure ?: @"Package removal or upgrade is in progress; enabling is blocked.";
-            return CCNMErrorSummary(@"enable", code, failure, details);
-        }
         if ((stateExists && !CCNMValidateStateRecord(state, &failure)) || baselineExists || intentExists || inFlightExists) {
             failure = failure ?: @"Existing policy or transition evidence must be recovered before enabling.";
             return CCNMErrorSummary(@"enable", CCNMN78PolicyErrorInvalidRecords, failure, details);
@@ -3097,92 +2766,29 @@ static BOOL CCNMIsVerifiedRestoreCleanupCheckpoint(NSDictionary *state) {
 }
 
 - (NSDictionary *)performDisable {
-    return [self performRestoreOperation:@"disable" allowIncompleteEvidence:NO];
+    return [self performCarrierReset:@"disable" allowIncompleteEvidence:NO];
 }
 
 - (NSDictionary *)performRecovery {
-    return [self performRestoreOperation:@"recover" allowIncompleteEvidence:YES];
+    return [self performCarrierReset:@"recover" allowIncompleteEvidence:YES];
 }
 
-- (NSDictionary *)performKnownOrphanedN78Recovery {
-    NSMutableDictionary *details = [@{ @"setterAttempted": @NO } mutableCopy];
-    NSString *failure = nil;
-    int lockDescriptor = CCNMAcquirePolicyLock(&failure);
-    if (lockDescriptor < 0) {
-        return CCNMErrorSummary(@"knownOrphanRecovery", CCNMN78PolicyErrorBusy, failure, details);
-    }
-
-    @try {
-        NSDictionary *eligibility = CCNMEvaluateKnownOrphanEligibilityWithHeldLock(NO);
-        details[@"eligibility"] = eligibility;
-        if (![eligibility[@"eligible"] boolValue]) {
-            CCNMN78PolicyErrorCode code = eligibility[CCNMN78PolicySummaryErrorCodeKey]
-                ?: CCNMN78PolicyErrorRecoveryRequired;
-            return CCNMErrorSummary(@"knownOrphanRecovery", code,
-                eligibility[CCNMN78PolicySummaryErrorKey] ?: @"Known-orphan recovery is not eligible.", details);
-        }
-
-        BOOL stateExists = NO;
-        NSDictionary *state = CCNMLoadRecord(CCNMN78PolicyStatePath(), &stateExists);
-        NSUInteger generation = CCNMNextGeneration(state ?: CCNMDefaultState(), nil);
-        if (generation == 0 || !CCNMBootSessionIdentity()) {
-            return CCNMErrorSummary(@"knownOrphanRecovery", CCNMN78PolicyErrorRecoveryRequired,
-                @"A valid boot identity and operation generation are required.", details);
-        }
-
-        if (!CCNMValidateHistoricalReplayTarget(details, &failure)) {
-            return CCNMErrorSummary(@"knownOrphanRecovery", CCNMN78PolicyErrorUnsupportedTarget,
-                failure, details);
-        }
-        NSDictionary *builtBaseline = CCNMBuildBaselineRecord(
-            CCNMKnownOrphanHistoricalOriginalBands(), CCNMKnownOrphanHistoricalSupportedBands(),
-            @[ CCNMNRKey ], details, CCNMKnownOrphanSubscriptionUUID, @1, generation, &failure);
-        NSMutableDictionary *baselineDraft = [builtBaseline mutableCopy];
-        baselineDraft[@"recoverySource"] = CCNMKnownOrphanRecoverySource;
-        baselineDraft[@"evidenceSHA256"] = CCNMKnownOrphanEvidenceSHA256;
-        NSDictionary *baseline = [baselineDraft copy];
-        if (!builtBaseline || !CCNMValidateBaselineRecord(baseline, &failure) ||
-            !CCNMCreateDurableRecord(baseline, CCNMN78PolicyBaselinePath(), &failure)) {
-            return CCNMErrorSummary(@"knownOrphanRecovery", CCNMN78PolicyErrorPersistence,
-                failure ?: @"The reviewed historical baseline could not be persisted.", details);
-        }
-        details[@"baselineCreated"] = @YES;
-
-        NSNumber *verifiedAt = @(CCNMUnixMilliseconds());
-        NSDictionary *proof = @{
-            @"baselineCreatedAt": baseline[@"createdAt"],
-            @"readBackVerified": @YES,
-            @"verifiedAt": verifiedAt,
-            @"slotID": @1,
-            @"verifiedActiveBands": CCNMKnownOrphanHistoricalActiveBands(),
-            @"targetNRBands": @[ @78 ],
-            @"nonNRUnchanged": @YES,
-            @"recoverySource": CCNMKnownOrphanRecoverySource,
-            @"evidenceSHA256": CCNMKnownOrphanEvidenceSHA256
-        };
-        NSDictionary *adopted = CCNMBuildStateRecord(CCNMRequestedModeN78Preferred,
-            CCNMAppliedPolicyVerifiedN78Only, CCNMRecoveryStateEnabledWithBaseline,
-            generation, CCNMKnownOrphanSubscriptionUUID, NO,
-            CCNMN78PolicyErrorNone, @"", proof, &failure);
-        BOOL adoptedSaved = adopted && (stateExists
-            ? CCNMReplaceExpectedRecord(state, adopted, CCNMN78PolicyStatePath(), &failure)
-            : CCNMCreateDurableRecord(adopted, CCNMN78PolicyStatePath(), &failure));
-        if (!adoptedSaved) {
-            return CCNMErrorSummary(@"knownOrphanRecovery", CCNMN78PolicyErrorPersistence,
-                failure ?: @"The adopted stable n78 state could not be persisted.", details);
-        }
-        details[@"adoptedStableEnabledState"] = @YES;
-
-        return [self performRestoreOperation:@"knownOrphanRecovery"
-                    allowIncompleteEvidence:NO
-                         heldLockDescriptor:&lockDescriptor
-                requireKnownOrphanFinalGuard:YES];
-    } @finally {
-        CCNMReleasePolicyLock(lockDescriptor);
-    }
-}
-
-- (NSDictionary *)performRestoreOperation:(NSString *)operation allowIncompleteEvidence:(BOOL)allowIncomplete {
+// Returns the device to its carrier-managed band configuration.
+//
+// The recovery primitive is CommCenter reload, not a reverse setActiveBandInfo:
+// write. Two separate `killall -9 CommCenter` invocations are the observed
+// procedure on the target device, and the replacement process reloads the
+// carrier defaults itself, so this path issues no modem write at all. That is
+// what makes it usable as an escape hatch: it needs no baseline, no capability
+// comparison, and no trust in a stored payload.
+//
+// `allowIncompleteEvidence` separates the two callers. Disable is the toggle-off
+// of a settled enabled state and refuses anything else. Recover is the explicit
+// "reload carrier defaults" action and accepts any record shape that is ours,
+// including a clean state, because a modem can hold a narrowed band set that our
+// records do not describe.
+- (NSDictionary *)performCarrierReset:(NSString *)operation
+              allowIncompleteEvidence:(BOOL)allowIncomplete {
     NSMutableDictionary *details = [@{ @"setterAttempted": @NO } mutableCopy];
     NSString *failure = nil;
     int lockDescriptor = CCNMAcquirePolicyLock(&failure);
@@ -3190,372 +2796,171 @@ static BOOL CCNMIsVerifiedRestoreCleanupCheckpoint(NSDictionary *state) {
         return CCNMErrorSummary(operation, CCNMN78PolicyErrorBusy, failure, details);
     }
     @try {
-        return [self performRestoreOperation:operation
-                    allowIncompleteEvidence:allowIncomplete
-                         heldLockDescriptor:&lockDescriptor
-                requireKnownOrphanFinalGuard:NO];
-    } @finally {
-        CCNMReleasePolicyLock(lockDescriptor);
-    }
-}
-
-- (NSDictionary *)performRestoreOperation:(NSString *)operation
-                   allowIncompleteEvidence:(BOOL)allowIncomplete
-                        heldLockDescriptor:(int *)lockDescriptor
-               requireKnownOrphanFinalGuard:(BOOL)requireKnownOrphanFinalGuard {
-    NSMutableDictionary *details = [@{ @"setterAttempted": @NO } mutableCopy];
-    NSString *failure = nil;
-    if (!lockDescriptor || *lockDescriptor < 0) {
-        return CCNMErrorSummary(operation, CCNMN78PolicyErrorBusy,
-            @"Restore core requires an already-held policy lock.", details);
-    }
-
         @synchronized([CCNMN78PolicyController class]) {
             if (CCNMSetterUncertainLatch) {
                 return CCNMErrorSummary(operation, CCNMN78PolicyErrorSetterUncertain,
                     @"A setter outcome is uncertain in this process; reboot before recovery.", details);
             }
         }
-        BOOL stateExists = NO, baselineExists = NO, intentExists = NO, inFlightExists = NO, removalGuardExists = NO;
+
+        BOOL stateExists = NO, baselineExists = NO, intentExists = NO, inFlightExists = NO;
         NSDictionary *state = CCNMLoadRecord(CCNMN78PolicyStatePath(), &stateExists);
         NSDictionary *baseline = CCNMLoadRecord(CCNMN78PolicyBaselinePath(), &baselineExists);
-        NSDictionary *oldIntent = CCNMLoadRecord(CCNMN78PolicyIntentPath(), &intentExists);
-        NSDictionary *oldInFlight = CCNMLoadRecord(CCNMN78PolicyInFlightPath(), &inFlightExists);
-        NSDictionary *removalGuard = CCNMLoadRecord(CCNMN78PolicyRemovalGuardPath(), &removalGuardExists);
+        NSDictionary *intent = CCNMLoadRecord(CCNMN78PolicyIntentPath(), &intentExists);
+        NSDictionary *inFlight = CCNMLoadRecord(CCNMN78PolicyInFlightPath(), &inFlightExists);
         if ((stateExists && !CCNMValidateStateRecord(state, &failure)) ||
-            (removalGuardExists && !CCNMValidateRemovalGuardRecord(removalGuard, &failure)) ||
             (baselineExists && !CCNMValidateBaselineRecord(baseline, &failure)) ||
-            (intentExists && (!baseline || !CCNMValidateIntentRecord(oldIntent, baseline, &failure))) ||
-            (inFlightExists && (!baseline || !CCNMValidateInFlightRecord(oldInFlight, baseline, oldIntent, NO, &failure)))) {
+            (intentExists && (!baseline || !CCNMValidateIntentRecord(intent, baseline, &failure))) ||
+            (inFlightExists && (!baseline || !CCNMValidateInFlightRecord(inFlight, baseline, intent, NO, &failure)))) {
             return CCNMErrorSummary(operation, CCNMN78PolicyErrorInvalidRecords,
                 failure ?: @"Recovery evidence is malformed or foreign and was preserved.", details);
         }
         state = state ?: CCNMDefaultState();
-        BOOL knownEvidenceBaseline = baselineExists &&
-            CCNMKnownOrphanBaselineMatchesEvidence(baseline);
-        if (requireKnownOrphanFinalGuard && !knownEvidenceBaseline) {
-            return CCNMErrorSummary(operation, CCNMN78PolicyErrorInvalidRecords,
-                @"Known-orphan recovery requires the exact reviewed baseline provenance and payload.", details);
-        }
-        BOOL enforceKnownOrphanGuard = requireKnownOrphanFinalGuard || knownEvidenceBaseline;
 
-        if (!baselineExists) {
-            if (!intentExists && !inFlightExists &&
-                [state[@"requestedMode"] isEqual:CCNMRequestedModeSystemDefault] &&
-                [state[@"appliedPolicy"] isEqual:CCNMAppliedPolicyVerifiedSystemDefault] &&
-                [state[@"recoveryState"] isEqual:CCNMRecoveryStateClean]) {
-                return CCNMSummaryFromState(state, YES, operation, CCNMN78PolicyErrorNone, @"", details);
-            }
-            if (allowIncomplete && !intentExists && !inFlightExists &&
-                CCNMBootRelationForRecord(state) == CCNMBootRelationEarlier &&
-                CCNMIsVerifiedRestoreCleanupCheckpoint(state)) {
-                NSUInteger generation = CCNMNextGeneration(state, nil);
-                if (!CCNMValidateSelfSourcedWriteTarget(details, &failure)) {
-                    return CCNMErrorSummary(operation, CCNMN78PolicyErrorUnsupportedTarget, failure, details);
-                }
-                id<CCNMCoreTelephonyClient> client = CCNMCreateClient(&failure);
-                id context = client
-                    ? CCNMSafeTargetContext(client, CCNMTargetResolutionRecorded,
-                        state[@"subscriptionUUID"], state[@"slotID"], details, &failure) : nil;
-                NSDictionary *fresh = context ? CCNMReadFreshBandInfo(client, context, &failure) : nil;
-                if (!fresh || !CCNMDictionariesEqual(fresh[@"activeBands"], state[@"verifiedActiveBands"])) {
-                    failure = failure ?: @"Live BandInfo no longer matches the verified restore cleanup checkpoint.";
-                    return CCNMErrorSummary(operation, CCNMN78PolicyErrorInvalidBandInfo, failure, details);
-                }
-                // The slot comes from the subscription just revalidated above, not
-                // from the checkpoint: a state written before the slot field existed
-                // has no slot at all, and defaulting that to 1 would record a slot
-                // this device was never observed on. The UUID below is sourced the
-                // same way. CCNMSafeTargetContext publishes both once it returns a
-                // context, and a nil context cannot reach this point, but a nil in a
-                // dictionary literal would raise inside Preferences, so verify it
-                // and fail closed rather than depend on the invariant.
-                NSNumber *cleanupSlotID = [details[@"targetSlotID"] isKindOfClass:NSNumber.class]
-                    ? details[@"targetSlotID"] : nil;
-                if (!CCNMValidSlotID(cleanupSlotID)) {
-                    return CCNMErrorSummary(operation, CCNMN78PolicyErrorUnsafeSubscription,
-                        @"The revalidated subscription slot is unavailable.", details);
-                }
-                NSMutableDictionary *cleanupProof = [@{
-                    @"verifiedAt": state[@"verifiedAt"],
-                    @"verifiedActiveBands": state[@"verifiedActiveBands"],
-                    @"restoredBaselineCreatedAt": state[@"baselineCreatedAt"],
-                    @"slotID": cleanupSlotID
-                } mutableCopy];
-                if ([state[@"recoverySource"] isEqual:CCNMKnownOrphanRecoverySource] &&
-                    [state[@"evidenceSHA256"] isEqual:CCNMKnownOrphanEvidenceSHA256]) {
-                    cleanupProof[@"recoverySource"] = CCNMKnownOrphanRecoverySource;
-                    cleanupProof[@"evidenceSHA256"] = CCNMKnownOrphanEvidenceSHA256;
-                }
-                NSDictionary *clean = CCNMBuildStateRecord(CCNMRequestedModeSystemDefault,
-                    CCNMAppliedPolicyVerifiedSystemDefault, CCNMRecoveryStateClean,
-                    generation, details[@"targetSubscriptionUUID"], NO,
-                    CCNMN78PolicyErrorNone, @"", cleanupProof, &failure);
-                if (!clean || !CCNMPersistState(clean, &failure)) {
-                    return CCNMErrorSummary(operation, CCNMN78PolicyErrorPersistence, failure, details);
-                }
-                return CCNMSummaryFromState(clean, YES, operation, CCNMN78PolicyErrorNone, @"", details);
-            }
-            return CCNMErrorSummary(operation, CCNMN78PolicyErrorInvalidRecords,
-                @"A required policy baseline is missing; no modem write was issued.", details);
-        }
-
-        BOOL stableEnabled = stateExists && !intentExists && !inFlightExists &&
+        BOOL settledEnabled = stateExists && !intentExists && !inFlightExists && baselineExists &&
             [state[@"requestedMode"] isEqual:CCNMRequestedModeN78Preferred] &&
             [state[@"appliedPolicy"] isEqual:CCNMAppliedPolicyVerifiedN78Only] &&
             [state[@"recoveryState"] isEqual:CCNMRecoveryStateEnabledWithBaseline] &&
             [state[@"baselineCreatedAt"] isEqual:baseline[@"createdAt"]] &&
-            [CCNMCanonicalUUIDString(state[@"subscriptionUUID"]) isEqualToString:CCNMCanonicalUUIDString(baseline[@"subscriptionUUID"])] &&
+            [CCNMCanonicalUUIDString(state[@"subscriptionUUID"])
+                isEqualToString:CCNMCanonicalUUIDString(baseline[@"subscriptionUUID"])] &&
             ![state[@"uncertain"] boolValue];
-        if (!allowIncomplete && !stableEnabled) {
-            return CCNMErrorSummary(operation, CCNMN78PolicyErrorRecoveryRequired,
-                @"Disable requires a verified enabled state with its exact retained baseline and no transition records.", details);
-        }
-        if (allowIncomplete && !stableEnabled) {
+        if (!allowIncomplete) {
+            BOOL settledSystemDefault = !baselineExists && !intentExists && !inFlightExists &&
+                [state[@"requestedMode"] isEqual:CCNMRequestedModeSystemDefault] &&
+                [state[@"appliedPolicy"] isEqual:CCNMAppliedPolicyVerifiedSystemDefault] &&
+                [state[@"recoveryState"] isEqual:CCNMRecoveryStateClean];
+            if (settledSystemDefault) {
+                // Nothing was ever narrowed by this package, so there is nothing
+                // for the toggle to undo. Reloading carrier defaults here would be
+                // a side effect the toggle did not ask for; the explicit reload
+                // action is the way to do that deliberately.
+                details[@"resetNotNeeded"] = @YES;
+                return CCNMSummaryFromState(state, YES, operation, CCNMN78PolicyErrorNone, @"", details);
+            }
+            if (!settledEnabled) {
+                return CCNMErrorSummary(operation, CCNMN78PolicyErrorRecoveryRequired,
+                    @"Disable requires a verified enabled state with its exact retained baseline and no transition records.",
+                    details);
+            }
+        } else if (!settledEnabled) {
+            // A transition record from this boot means an earlier setter call may
+            // still be outstanding, and a reset cannot make that safe. Carrier-reset
+            // states are deliberately exempt: they own no modem write, and the reset
+            // is idempotent, so the correct answer to a failed or unconfirmed reset
+            // is another attempt in this boot rather than a reboot.
+            BOOL resetStateOwnsNoModemWrite =
+                [state[@"recoveryState"] isEqual:CCNMRecoveryStateCarrierResetPending] ||
+                [state[@"recoveryState"] isEqual:CCNMRecoveryStateCarrierResetFailed];
             BOOL inFlightMayBeCurrent = inFlightExists &&
-                CCNMBootRelationForRecord(oldInFlight) != CCNMBootRelationEarlier;
+                CCNMBootRelationForRecord(inFlight) != CCNMBootRelationEarlier;
             BOOL intentMayBeCurrent = intentExists &&
-                CCNMBootRelationForRecord(oldIntent) != CCNMBootRelationEarlier;
-            BOOL pendingStateMayBeCurrent = stateExists &&
+                CCNMBootRelationForRecord(intent) != CCNMBootRelationEarlier;
+            BOOL pendingStateMayBeCurrent = stateExists && !resetStateOwnsNoModemWrite &&
                 (![state[@"recoveryState"] isEqual:CCNMRecoveryStateEnabledWithBaseline] ||
                  [state[@"uncertain"] boolValue]) &&
                 CCNMBootRelationForRecord(state) != CCNMBootRelationEarlier;
-            BOOL baselineOnlyMayBeCurrent = !intentExists && !inFlightExists &&
+            BOOL baselineOnlyMayBeCurrent = baselineExists && !intentExists && !inFlightExists &&
                 CCNMBootRelationForRecord(baseline) != CCNMBootRelationEarlier;
-            if (inFlightMayBeCurrent || intentMayBeCurrent || pendingStateMayBeCurrent || baselineOnlyMayBeCurrent) {
+            if (inFlightMayBeCurrent || intentMayBeCurrent || pendingStateMayBeCurrent ||
+                baselineOnlyMayBeCurrent) {
                 CCNMMarkRecovery(state[@"requestedMode"] ?: CCNMRequestedModeSystemDefault,
                     CCNMAppliedPolicyRecoveryRequired, CCNMRecoveryStateRebootRequired,
-                    [state[@"operationGeneration"] unsignedIntegerValue], baseline[@"subscriptionUUID"],
+                    [state[@"operationGeneration"] unsignedIntegerValue],
+                    baseline[@"subscriptionUUID"] ?: state[@"subscriptionUUID"],
                     CCNMN78PolicyErrorRecoveryRequired,
                     @"Incomplete or uncertain transition evidence belongs to this boot; reboot before recovery.",
                     baseline, YES);
                 return CCNMErrorSummary(operation, CCNMN78PolicyErrorRecoveryRequired,
-                    @"Incomplete or uncertain transition evidence belongs to this boot; reboot before recovery.", details);
+                    @"Incomplete or uncertain transition evidence belongs to this boot; reboot before recovery.",
+                    details);
             }
         }
 
-        NSUInteger generation = CCNMNextGeneration(state, oldIntent);
-        NSString *subscriptionUUID = CCNMCanonicalUUIDString(baseline[@"subscriptionUUID"]);
+        NSUInteger generation = CCNMNextGeneration(state, intent);
         if (generation == 0 || !CCNMBootSessionIdentity()) {
             return CCNMErrorSummary(operation, CCNMN78PolicyErrorRecoveryRequired,
                 @"A valid boot identity and new operation generation are required.", details);
         }
-        if (!CCNMValidateSelfSourcedWriteTarget(details, &failure)) {
-            return CCNMErrorSummary(operation, CCNMN78PolicyErrorUnsupportedTarget, failure, details);
+        // The recorded target, when there is one. A reset needs no subscription to
+        // run; this only names what the post-reset observation should read back.
+        NSString *subscriptionUUID = CCNMCanonicalUUIDString(baseline[@"subscriptionUUID"])
+            ?: CCNMCanonicalUUIDString(state[@"subscriptionUUID"]);
+        NSNumber *slotID = CCNMValidSlotID(baseline[@"slotID"]) ? baseline[@"slotID"]
+            : (CCNMValidSlotID(state[@"slotID"]) ? state[@"slotID"] : nil);
+        NSArray<NSNumber *> *appliedSelection = settledEnabled
+            ? CCNMCanonicalNRSelection(state[@"targetNRBands"], NULL) : nil;
+
+        NSMutableDictionary *pendingExtra = [@{
+            @"carrierResetCommand": @"killall -9 CommCenter"
+        } mutableCopy];
+        if (baselineExists) {
+            pendingExtra[@"baselineCreatedAt"] = baseline[@"createdAt"];
         }
-        id<CCNMCoreTelephonyClient> client = CCNMCreateClient(&failure);
-        id<CCNMSubscriptionContext> context = client
-            ? CCNMSafeTargetContext(client, CCNMTargetResolutionRecorded,
-                subscriptionUUID, baseline[@"slotID"], details, &failure) : nil;
-        if (!context) {
-            CCNMMarkRecovery(state[@"requestedMode"] ?: CCNMRequestedModeN78Preferred,
-                CCNMAppliedPolicyRecoveryRequired, CCNMRecoveryStateRebootRequired,
-                generation, subscriptionUUID, CCNMN78PolicyErrorUUIDDrift,
-                failure, baseline, YES);
-            return CCNMErrorSummary(operation, CCNMN78PolicyErrorUUIDDrift, failure, details);
+        if (slotID) {
+            pendingExtra[@"slotID"] = slotID;
         }
-        NSDictionary *fresh = CCNMReadFreshBandInfo(client, context, &failure);
-        if (!fresh) {
-            CCNMMarkRecovery(state[@"requestedMode"] ?: CCNMRequestedModeN78Preferred,
-                CCNMAppliedPolicyRecoveryRequired, CCNMRecoveryStateRebootRequired,
-                generation, subscriptionUUID, CCNMN78PolicyErrorInvalidBandInfo,
-                failure, baseline, YES);
-            return CCNMErrorSummary(operation, CCNMN78PolicyErrorInvalidBandInfo, failure, details);
+        if (appliedSelection) {
+            pendingExtra[@"resetFromNRBands"] = appliedSelection;
         }
-        if (!CCNMValidateBaselineCompatibility(baseline, fresh[@"supportedBands"], details, &failure)) {
-            CCNMMarkRecovery(state[@"requestedMode"] ?: CCNMRequestedModeN78Preferred,
-                CCNMAppliedPolicyRecoveryRequired, CCNMRecoveryStateRebootRequired,
-                generation, subscriptionUUID, CCNMN78PolicyErrorBaselineIncompatible,
-                failure, baseline, YES);
-            return CCNMErrorSummary(operation, CCNMN78PolicyErrorBaselineIncompatible, failure, details);
-        }
-        if (enforceKnownOrphanGuard &&
-            !CCNMKnownOrphanBandInfoMatches(fresh, CCNMKnownOrphanHistoricalActiveBands()) &&
-            !CCNMKnownOrphanBandInfoMatches(fresh, CCNMKnownOrphanHistoricalOriginalBands())) {
-            failure = @"Live BandInfo no longer matches either reviewed known-device recovery checkpoint.";
-            CCNMMarkRecovery(state[@"requestedMode"] ?: CCNMRequestedModeN78Preferred,
-                CCNMAppliedPolicyRecoveryRequired, CCNMRecoveryStateRebootRequired,
-                generation, subscriptionUUID, CCNMN78PolicyErrorInvalidBandInfo,
-                failure, baseline, YES);
-            return CCNMErrorSummary(operation, CCNMN78PolicyErrorInvalidBandInfo, failure, details);
-        }
-        NSDictionary *payload = CCNMBuildRestorePayload(fresh[@"activeBands"], baseline[@"activeBands"], &failure);
-        if (!payload) {
-            CCNMMarkRecovery(state[@"requestedMode"] ?: CCNMRequestedModeN78Preferred,
-                CCNMAppliedPolicyRecoveryRequired, CCNMRecoveryStateRebootRequired,
-                generation, subscriptionUUID, CCNMN78PolicyErrorInvalidBandInfo,
-                failure, baseline, YES);
-            return CCNMErrorSummary(operation, CCNMN78PolicyErrorInvalidBandInfo, failure, details);
+        NSDictionary *pending = CCNMBuildStateRecord(CCNMRequestedModeSystemDefault,
+            CCNMAppliedPolicyApplying, CCNMRecoveryStateCarrierResetPending,
+            generation, subscriptionUUID, NO, CCNMN78PolicyErrorNone, @"", pendingExtra, &failure);
+        BOOL pendingSaved = pending && (stateExists
+            ? CCNMReplaceExpectedRecord(state, pending, CCNMN78PolicyStatePath(), &failure)
+            : CCNMCreateDurableRecord(pending, CCNMN78PolicyStatePath(), &failure));
+        if (!pendingSaved) {
+            return CCNMErrorSummary(operation, CCNMN78PolicyErrorPersistence,
+                failure ?: @"The carrier-reset checkpoint could not be persisted.", details);
         }
 
-        if (CCNMDictionariesEqual(payload, fresh[@"activeBands"])) {
-            details[@"writeNotNeeded"] = @YES;
-            NSDictionary *expectedState = stateExists ? state : nil;
-            if (!CCNMRecordsRemainExact(expectedState, baseline, oldIntent, oldInFlight, &failure)) {
-                return CCNMErrorSummary(operation, CCNMN78PolicyErrorInvalidRecords,
-                    failure ?: @"Durable policy evidence changed during no-write recovery and was preserved.", details);
+        failure = nil;
+        NSDictionary *reset = CCNMResetCarrierConfiguration(&failure);
+        details[@"carrierReset"] = reset;
+        if (![reset[CCNMCarrierResetSuccessKey] boolValue]) {
+            NSString *message = failure ?: reset[CCNMCarrierResetErrorKey];
+            if (!message.length) {
+                message = @"The carrier defaults reload did not complete both invocations.";
             }
-            if (enforceKnownOrphanGuard) {
-                context = CCNMSafeTargetContext(client, CCNMTargetResolutionRecorded,
-                    subscriptionUUID, baseline[@"slotID"], details, &failure);
-                NSDictionary *lastNoWriteGuard = context
-                    ? CCNMReadFreshBandInfo(client, context, &failure) : nil;
-                if (!CCNMKnownOrphanBandInfoMatches(
-                    lastNoWriteGuard, CCNMKnownOrphanHistoricalOriginalBands())) {
-                    return CCNMErrorSummary(operation, CCNMN78PolicyErrorInvalidBandInfo,
-                        failure ?: @"The final known-device no-write recovery guard changed.", details);
-                }
+            // No modem write was issued and nothing is outstanding, so this is a
+            // plain retryable failure rather than a reboot. Every durable record is
+            // left in place for that retry.
+            CCNMMarkRecovery(CCNMRequestedModeSystemDefault,
+                CCNMAppliedPolicyRecoveryRequired, CCNMRecoveryStateCarrierResetFailed,
+                generation, subscriptionUUID, CCNMN78PolicyErrorCarrierResetFailed,
+                message, baseline, NO);
+            return CCNMErrorSummary(operation, CCNMN78PolicyErrorCarrierResetFailed,
+                message, details);
+        }
+
+        NSDictionary *observation = CCNMObserveCarrierResetOutcome(appliedSelection,
+            subscriptionUUID, slotID);
+        details[@"carrierResetObservation"] = observation;
+        if (![observation[@"confirmed"] boolValue]) {
+            NSString *message = observation[@"error"];
+            if (!message.length) {
+                message = @"The carrier defaults reload ran but could not be confirmed; run it again.";
             }
-            if (!CCNMFinishSystemDefaultState(generation, subscriptionUUID, expectedState,
-                baseline, oldIntent, oldInFlight, fresh[@"activeBands"], &failure)) {
-                return CCNMErrorSummary(operation, CCNMN78PolicyErrorPersistence, failure, details);
-            }
-            NSDictionary *clean = [NSDictionary dictionaryWithContentsOfFile:CCNMN78PolicyStatePath()];
-            return CCNMSummaryFromState(clean, YES, operation, CCNMN78PolicyErrorNone, @"", details);
+            // Deliberately not reported as clean. The reload may well have worked,
+            // but the only honest durable answer is that it is unconfirmed, and the
+            // records that describe what to reset stay on disk.
+            return CCNMErrorSummary(operation, CCNMN78PolicyErrorRecoveryRequired,
+                message, details);
         }
 
-        id<CCNMBandInfo> payloadInfo = CCNMCreateBandPayload(payload, &failure);
-        if (!payloadInfo) {
-            return CCNMErrorSummary(operation, CCNMN78PolicyErrorInvalidBandInfo, failure, details);
-        }
-        NSDictionary *intent = CCNMBuildIntentRecord(operation, generation, baseline, fresh, payload,
-            state, oldIntent, oldInFlight, &failure);
-        if (!intent || !CCNMPersistOrReplaceTransition(oldIntent, intent,
-            CCNMN78PolicyIntentPath(), &failure)) {
-            CCNMMarkRecovery(state[@"requestedMode"] ?: CCNMRequestedModeN78Preferred,
-                CCNMAppliedPolicyRecoveryRequired, CCNMRecoveryStateRecoveryFailed,
-                generation, subscriptionUUID, CCNMN78PolicyErrorPersistence,
-                failure, baseline, NO);
-            return CCNMErrorSummary(operation, CCNMN78PolicyErrorPersistence, failure, details);
-        }
-        NSDictionary *pending = CCNMBuildStateRecord(state[@"requestedMode"] ?: CCNMRequestedModeN78Preferred,
-            CCNMAppliedPolicyApplying, CCNMRecoveryStateRestorePending,
-            generation, subscriptionUUID, NO, CCNMN78PolicyErrorNone, @"",
-            @{ @"baselineCreatedAt": baseline[@"createdAt"], @"slotID": baseline[@"slotID"] }, &failure);
-        if (!pending || !CCNMPersistState(pending, &failure)) {
-            CCNMMarkRecovery(state[@"requestedMode"] ?: CCNMRequestedModeN78Preferred,
-                CCNMAppliedPolicyRecoveryRequired, CCNMRecoveryStateRecoveryFailed,
-                generation, subscriptionUUID, CCNMN78PolicyErrorPersistence,
-                failure, baseline, NO);
-            return CCNMErrorSummary(operation, CCNMN78PolicyErrorPersistence, failure, details);
-        }
-        NSDictionary *inFlight = CCNMBuildInFlightRecord(operation, generation, baseline, intent, &failure);
-        if (!inFlight || !CCNMPersistOrReplaceTransition(oldInFlight, inFlight,
-            CCNMN78PolicyInFlightPath(), &failure)) {
-            CCNMMarkRecovery(state[@"requestedMode"] ?: CCNMRequestedModeN78Preferred,
-                CCNMAppliedPolicyRecoveryRequired, CCNMRecoveryStateRebootRequired,
-                generation, subscriptionUUID, CCNMN78PolicyErrorPersistence,
-                failure, baseline, YES);
-            return CCNMErrorSummary(operation, CCNMN78PolicyErrorPersistence, failure, details);
-        }
-
-        BOOL recordsExact = CCNMRecordsRemainExact(pending, baseline, intent, inFlight, &failure);
-        if (!recordsExact) {
-            return CCNMErrorSummary(operation, CCNMN78PolicyErrorInvalidRecords,
-                failure ?: @"Durable policy evidence changed before the restore setter and was preserved.", details);
-        }
-
-        NSDictionary *lastGuard = nil;
-        BOOL bandsExact = NO;
-        if (enforceKnownOrphanGuard) {
-            context = nil;
-            bandsExact = CCNMValidateKnownOrphanedN78HistoricalPredicate(
-                client, details, &context, &lastGuard, NULL, &failure);
-        } else {
-            context = CCNMSafeTargetContext(client, CCNMTargetResolutionRecorded,
-                subscriptionUUID, baseline[@"slotID"], details, &failure);
-            lastGuard = context ? CCNMReadFreshBandInfo(client, context, &failure) : nil;
-            bandsExact = lastGuard &&
-                CCNMDictionariesEqual(fresh[@"activeBands"], lastGuard[@"activeBands"]) &&
-                CCNMDictionariesEqual(fresh[@"supportedBands"], lastGuard[@"supportedBands"]);
-        }
-        if (!bandsExact) {
-            failure = failure ?: @"The final restore target or BandInfo guard changed.";
-            CCNMMarkRecovery(state[@"requestedMode"] ?: CCNMRequestedModeN78Preferred,
-                CCNMAppliedPolicyRecoveryRequired, CCNMRecoveryStateRebootRequired,
-                generation, subscriptionUUID, CCNMN78PolicyErrorInvalidBandInfo,
-                failure, baseline, YES);
-            return CCNMErrorSummary(operation, CCNMN78PolicyErrorInvalidBandInfo, failure, details);
-        }
-
-        CCNMSetterOutcome outcome = CCNMCallSetter(client, context, payloadInfo, generation,
-            lockDescriptor, details, &failure);
-        if (outcome == CCNMSetterOutcomeUncertain) {
-            CCNMMarkRecovery(state[@"requestedMode"] ?: CCNMRequestedModeN78Preferred,
-                CCNMAppliedPolicyRecoveryRequired, CCNMRecoveryStateRebootRequired,
-                generation, subscriptionUUID, CCNMN78PolicyErrorSetterUncertain,
-                failure, baseline, YES);
-            return CCNMErrorSummary(operation, CCNMN78PolicyErrorSetterUncertain, failure, details);
-        }
-        if (outcome == CCNMSetterOutcomeFailed) {
-            CCNMMarkRecovery(state[@"requestedMode"] ?: CCNMRequestedModeN78Preferred,
-                CCNMAppliedPolicyRecoveryRequired, CCNMRecoveryStateRecoveryFailed,
-                generation, subscriptionUUID, CCNMN78PolicyErrorSetterFailed,
-                failure, baseline, NO);
-            return CCNMErrorSummary(operation, CCNMN78PolicyErrorSetterFailed, failure, details);
-        }
-
-        NSDictionary *readBack = CCNMWaitForReadBack(client, subscriptionUUID, baseline[@"slotID"], payload);
-        details[@"readBack"] = readBack;
-        if (![readBack[@"matched"] boolValue]) {
-            BOOL uncertain = ![readBack[@"sawValid"] boolValue] ||
-                [readBack[@"sawInvalid"] boolValue] || [readBack[@"identityUncertain"] boolValue] ||
-                [readBack[@"deadlineExceeded"] boolValue];
-            CCNMAppliedPolicy applied = uncertain ? CCNMAppliedPolicyRecoveryRequired : CCNMAppliedPolicyDiverged;
-            CCNMRecoveryState recovery = uncertain ? CCNMRecoveryStateRebootRequired : CCNMRecoveryStateRecoveryFailed;
-            CCNMN78PolicyErrorCode code = uncertain ? CCNMN78PolicyErrorSetterUncertain : CCNMN78PolicyErrorReadBackMismatch;
-            failure = readBack[@"error"];
-            if (!failure.length) {
-                failure = uncertain ? @"No trustworthy complete restore read-back was obtained."
-                    : @"Complete restore read-back did not equal the exact restore payload.";
-            }
-            CCNMMarkRecovery(state[@"requestedMode"] ?: CCNMRequestedModeN78Preferred,
-                applied, recovery, generation, subscriptionUUID, code,
-                failure, baseline, uncertain);
-            return CCNMErrorSummary(operation, code, failure, details);
-        }
-
-        if (!CCNMRecordsRemainExact(pending, baseline, intent, inFlight, &failure)) {
-            return CCNMErrorSummary(operation, CCNMN78PolicyErrorInvalidRecords,
-                failure ?: @"Durable policy evidence changed after verified restore read-back and was preserved.", details);
-        }
-        if (!CCNMFinishSystemDefaultState(generation, subscriptionUUID, pending,
-            baseline, intent, inFlight, readBack[@"lastActiveBands"], &failure)) {
+        if (!CCNMFinishCarrierResetState(generation, subscriptionUUID, pending,
+            baselineExists ? baseline : nil, intentExists ? intent : nil,
+            inFlightExists ? inFlight : nil, reset, observation, &failure)) {
             return CCNMErrorSummary(operation, CCNMN78PolicyErrorPersistence, failure, details);
         }
         NSDictionary *clean = [NSDictionary dictionaryWithContentsOfFile:CCNMN78PolicyStatePath()];
         return CCNMSummaryFromState(clean, YES, operation, CCNMN78PolicyErrorNone, @"", details);
+    } @finally {
+        CCNMReleasePolicyLock(lockDescriptor);
+    }
 }
 
 @end
-
-NSDictionary<NSString *, id> *CCNMReadKnownOrphanedN78RecoveryEligibility(void) {
-    NSString *failure = nil;
-    int lockDescriptor = CCNMAcquirePolicyLock(&failure);
-    if (lockDescriptor < 0) {
-        return CCNMKnownOrphanEligibilityResult(NO, NO,
-            CCNMN78PolicyErrorBusy, failure, nil);
-    }
-    @try {
-        return CCNMEvaluateKnownOrphanEligibilityWithHeldLock(NO);
-    } @finally {
-        CCNMReleasePolicyLock(lockDescriptor);
-    }
-}
-
-NSDictionary<NSString *, id> *CCNMReadKnownOrphanedN78RemovalSafety(void) {
-    NSString *failure = nil;
-    int lockDescriptor = CCNMAcquirePolicyLock(&failure);
-    if (lockDescriptor < 0) {
-        return CCNMKnownOrphanEligibilityResult(NO, NO,
-            CCNMN78PolicyErrorBusy, failure, nil);
-    }
-    @try {
-        return CCNMEvaluateKnownOrphanEligibilityWithHeldLock(YES);
-    } @finally {
-        CCNMReleasePolicyLock(lockDescriptor);
-    }
-}
 
 NSDictionary<NSString *, id> *CCNMReadN78PolicyState(void) {
     return [[CCNMN78PolicyController sharedController] readState];
@@ -3564,91 +2969,6 @@ NSDictionary<NSString *, id> *CCNMReadN78PolicyState(void) {
 BOOL CCNMN78PolicyHasOutstandingSetter(void) {
     @synchronized([CCNMN78PolicyController class]) {
         return CCNMSetterCallActive || CCNMSetterRetainedPolicyLockDescriptor >= 0;
-    }
-}
-
-static NSDictionary *CCNMRemovalGuardOperationSummary(NSDictionary *summary, NSString *operation) {
-    NSMutableDictionary *result = [summary mutableCopy] ?: [NSMutableDictionary dictionary];
-    result[CCNMN78PolicySummaryOperationKey] = operation ?: @"removalGuard";
-    return [result copy];
-}
-
-NSDictionary<NSString *, id> *CCNMArmN78PolicyRemovalGuard(void) {
-    NSString *failure = nil;
-    int lockDescriptor = CCNMAcquirePolicyLock(&failure);
-    if (lockDescriptor < 0) {
-        return CCNMErrorSummary(@"armRemovalGuard", CCNMN78PolicyErrorBusy, failure, nil);
-    }
-    @try {
-        BOOL guardExists = NO;
-        NSDictionary *guard = CCNMLoadRecord(CCNMN78PolicyRemovalGuardPath(), &guardExists);
-        if (guardExists && !CCNMValidateRemovalGuardRecord(guard, &failure)) {
-            return CCNMErrorSummary(@"armRemovalGuard", CCNMN78PolicyErrorInvalidRecords,
-                failure, nil);
-        }
-        NSDictionary *summary = CCNMReadPolicyStateInternal();
-        BOOL clean = [summary[CCNMN78PolicySummaryMayUninstallKey] boolValue] &&
-            ![summary[@"baselinePresent"] boolValue] && ![summary[@"transitionPresent"] boolValue];
-        if (!clean) {
-            return CCNMErrorSummary(@"armRemovalGuard", CCNMN78PolicyErrorRecoveryRequired,
-                @"The package-removal guard can be armed only after verified policy restoration.", nil);
-        }
-        if (!guardExists) {
-            NSDictionary *newGuard = CCNMBuildRemovalGuardRecord(summary, &failure);
-            if (!newGuard || !CCNMCreateDurableRecord(newGuard, CCNMN78PolicyRemovalGuardPath(), &failure)) {
-                return CCNMErrorSummary(@"armRemovalGuard", CCNMN78PolicyErrorPersistence,
-                    failure, nil);
-            }
-        }
-        NSDictionary *verified = CCNMReadPolicyStateInternal();
-        if (![verified[@"removalGuardPresent"] boolValue] || ![verified[@"removalGuardValid"] boolValue] ||
-            ![verified[CCNMN78PolicySummaryMayUninstallKey] boolValue]) {
-            return CCNMErrorSummary(@"armRemovalGuard", CCNMN78PolicyErrorPersistence,
-                @"The package-removal guard could not be verified after persistence.", nil);
-        }
-        CCNMPostPolicyDidChange();
-        return CCNMRemovalGuardOperationSummary(verified, @"armRemovalGuard");
-    } @finally {
-        CCNMReleasePolicyLock(lockDescriptor);
-    }
-}
-
-NSDictionary<NSString *, id> *CCNMClearN78PolicyRemovalGuardIfSafe(void) {
-    NSString *failure = nil;
-    int lockDescriptor = CCNMAcquirePolicyLock(&failure);
-    if (lockDescriptor < 0) {
-        return CCNMErrorSummary(@"clearRemovalGuard", CCNMN78PolicyErrorBusy, failure, nil);
-    }
-    @try {
-        BOOL guardExists = NO;
-        NSDictionary *guard = CCNMLoadRecord(CCNMN78PolicyRemovalGuardPath(), &guardExists);
-        if (!guardExists) {
-            return CCNMRemovalGuardOperationSummary(CCNMReadPolicyStateInternal(), @"clearRemovalGuard");
-        }
-        if (!CCNMValidateRemovalGuardRecord(guard, &failure)) {
-            return CCNMErrorSummary(@"clearRemovalGuard", CCNMN78PolicyErrorInvalidRecords,
-                failure, nil);
-        }
-        NSDictionary *summary = CCNMReadPolicyStateInternal();
-        BOOL clean = [summary[CCNMN78PolicySummaryMayUninstallKey] boolValue] &&
-            ![summary[@"baselinePresent"] boolValue] && ![summary[@"transitionPresent"] boolValue];
-        if (!clean) {
-            return CCNMErrorSummary(@"clearRemovalGuard", CCNMN78PolicyErrorRecoveryRequired,
-                @"The package-removal guard cannot be cleared while policy evidence requires recovery.", nil);
-        }
-        if (!CCNMRemoveExpectedRecord(guard, CCNMN78PolicyRemovalGuardPath(), &failure)) {
-            return CCNMErrorSummary(@"clearRemovalGuard", CCNMN78PolicyErrorPersistence,
-                failure, nil);
-        }
-        NSDictionary *verified = CCNMReadPolicyStateInternal();
-        if ([verified[@"removalGuardPresent"] boolValue]) {
-            return CCNMErrorSummary(@"clearRemovalGuard", CCNMN78PolicyErrorPersistence,
-                @"The package-removal guard still exists after verified retirement.", nil);
-        }
-        CCNMPostPolicyDidChange();
-        return CCNMRemovalGuardOperationSummary(verified, @"clearRemovalGuard");
-    } @finally {
-        CCNMReleasePolicyLock(lockDescriptor);
     }
 }
 
@@ -3664,9 +2984,4 @@ void CCNMDisableN78Preference(CCNMN78PolicyCompletion completion) {
 
 void CCNMRecoverN78Preference(CCNMN78PolicyCompletion completion) {
     [[CCNMN78PolicyController sharedController] recoverWithCompletion:completion];
-}
-
-void CCNMRecoverKnownOrphanedN78WithCompletion(CCNMN78PolicyCompletion completion) {
-    [[CCNMN78PolicyController sharedController]
-        recoverKnownOrphanedN78WithCompletion:completion];
 }

@@ -14,9 +14,23 @@ ENGLISH = PREFS / "Resources/en.lproj/NetworkManagerPrefs.strings"
 CHINESE = PREFS / "Resources/zh-Hans.lproj/NetworkManagerPrefs.strings"
 CELLS = PREFS / "CCNMPreferencesCells.m"
 CONTROLLER = PREFS / "CCNMRootListController.m"
+CONTROL = ROOT / "control"
 
 ORIGINAL_REPO = "https://github.com/NoisyFlake/NetworkManager"
 MAINTAINED_REPO = "https://github.com/doimty/NetworkManagerReborn"
+
+
+def control_version() -> str:
+    """The shipped version, from the file dpkg reads.
+
+    Read rather than hardcoded so the About row cannot silently disagree with the
+    package it is inside. That mismatch is invisible on the device -- the row just
+    shows a number, and nothing cross-checks it.
+    """
+    for line in CONTROL.read_text(encoding="utf-8").splitlines():
+        if line.startswith("Version:"):
+            return line.split(":", 1)[1].strip()
+    raise AssertionError(f"no Version field in {CONTROL}")
 
 
 def strings_table(path: Path) -> dict[str, str]:
@@ -95,9 +109,14 @@ class FormalSettingsUITests(unittest.TestCase):
             "dataLine",
             "freshness",
             "recoveryState",
-            "restoreOriginalBands",
+            # The recovery action used to be "restore original bands", replaying the
+            # saved baseline into the modem. It is a carrier defaults reload now:
+            # the same button, a mechanism that needs no saved record to undo an
+            # enable, so it also works when the baseline is missing or foreign.
+            "resetCarrierDefaults",
         ):
             self.assertEqual(identifiers.count(identifier), 1)
+        self.assertNotIn("restoreOriginalBands", identifiers)
         self.assertIn("rebuildRecoverySection", self.controller)
         self.assertIn("removeObjectsInArray:self.recoverySpecifiers", self.controller)
         loader_start = self.controller.index("loadSpecifiersFromPlistName:")
@@ -167,7 +186,7 @@ class FormalSettingsUITests(unittest.TestCase):
     def test_version_and_credits_are_formal(self):
         version_rows = [item for item in self.items if item.get("id") == "version"]
         self.assertEqual(len(version_rows), 1)
-        self.assertEqual(version_rows[0].get("value"), "1.5.0")
+        self.assertEqual(version_rows[0].get("value"), control_version())
         self.assertIn("NoisyFlake", self.english["ABOUT_CREDITS_FOOTER"])
         self.assertIn("Nixuge", self.english["ABOUT_CREDITS_FOOTER"])
         self.assertIn("doimty", self.english["ABOUT_CREDITS_FOOTER"])

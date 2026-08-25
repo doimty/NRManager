@@ -7,6 +7,7 @@ domain comes from, and why the written array must be ascending.
 """
 
 from pathlib import Path
+import json
 import re
 import unittest
 
@@ -15,6 +16,11 @@ ROOT = Path(__file__).resolve().parents[1]
 CONTROLLER = ROOT / "networkmanagerprefs/CCNMN78PolicyController.m"
 READER = ROOT / "networkmanagerprefs/CCNMN78PolicyReader.m"
 DAEMON = ROOT / "maintenance-daemon/main.m"
+# BandInfo captured from a real modem. It used to be compiled into the controller
+# as a pair of constants, for a replay path that has since been retired; the
+# fixture is the same evidence and outlives the path, because what it says about
+# the shape of a real band list is what the domain model is checked against.
+REFERENCE_EVIDENCE = ROOT / "tests/fixtures/known_orphaned_n78_evidence.json"
 
 NR_KEY = "kCTRegistrationRadioAccessTechnologyNR"
 LTE_KEY = "kCTRegistrationRadioAccessTechnologyLTE"
@@ -106,24 +112,12 @@ def maintenance_gate_allows(target, active_nr, supported_nr):
     return set(canonical).issubset(supported_nr)
 
 
-# --- reference-device evidence parsed from the shipped constants --------------------
+# --- reference-device evidence -----------------------------------------------------
 
 
-def _historical_nr(function_name):
-    source = CONTROLLER.read_text()
-    start = source.index(function_name)
-    key = source.index(f'@"{NR_KEY}"', start)
-    open_bracket = source.index("@[", key)
-    depth = 0
-    for index in range(open_bracket, len(source)):
-        if source[index] == "[":
-            depth += 1
-        elif source[index] == "]":
-            depth -= 1
-            if depth == 0:
-                blob = source[open_bracket:index + 1]
-                return [int(value) for value in re.findall(r"@(\d+)", blob)]
-    raise AssertionError(f"unterminated NR array in {function_name}")
+def _reference_nr(section):
+    evidence = json.loads(REFERENCE_EVIDENCE.read_text())
+    return evidence[section][NR_KEY]
 
 
 class SelectionCanonicalisationTests(unittest.TestCase):
@@ -155,8 +149,8 @@ class SelectableDomainTests(unittest.TestCase):
         self.assertEqual(selectable_domain(ORIGINAL_BANDS, SUPPORTED_BANDS), [1, 41, 78, 79])
 
     def test_reference_device_evidence_narrows_forty_six_active_bands_to_nineteen(self):
-        active = _historical_nr("CCNMKnownOrphanHistoricalOriginalBands")
-        supported = _historical_nr("CCNMKnownOrphanHistoricalSupportedBands")
+        active = _reference_nr("originalActiveBands")
+        supported = _reference_nr("supportedBandsAtSelection")
         self.assertEqual(len(active), 46)
         self.assertEqual(len(supported), 19)
         domain = selectable_domain({NR_KEY: active}, {NR_KEY: supported})
@@ -252,14 +246,19 @@ class SelectionSourceContractTests(unittest.TestCase):
             for forbidden in ("containsObject:@78", "isEqualToArray:@[ @78 ]", "? @[ @78 ] :"):
                 self.assertAbsent(forbidden, source, name)
 
-    def test_the_enable_proof_records_the_applied_selection(self):
-        self.assertEqual(self.controller.count('@"targetNRBands": @[ @78 ]'), 1,
-                         "only the reviewed known-orphan replay may record a literal [78]")
+    def test_no_shipped_path_records_a_literal_seventy_eight_target(self):
+        # There was one legal exception: the reviewed known-orphan replay recorded
+        # `@"targetNRBands": @[ @78 ]` because its target came from a reviewed
+        # table rather than from a user selection. That path is gone, so the
+        # exception is too, and every recorded target now traces to what the user
+        # chose and the modem confirmed.
+        self.assertEqual(self.controller.count('@"targetNRBands": @[ @78 ]'), 0)
         self.assertPresent('@"targetNRBands": selection', self.controller, "controller")
 
-    def test_the_known_orphan_replay_stays_pinned_to_its_reviewed_evidence(self):
-        self.assertPresent("active[CCNMNRKey] = @[ @78 ];", self.controller, "controller")
-        self.assertPresent("CCNMKnownOrphanHistoricalActiveBands", self.controller, "controller")
+    def test_no_shipped_path_writes_a_literal_seventy_eight_nr_array(self):
+        for name, source in (("controller", self.controller), ("reader", self.reader)):
+            self.assertAbsent("active[CCNMNRKey] = @[ @78 ];", source, name)
+            self.assertAbsent("CCNMKnownOrphanHistorical", source, name)
 
     def test_the_set_of_policy_operations_is_closed(self):
         """An in-place edit path cannot be added without touching this assertion.

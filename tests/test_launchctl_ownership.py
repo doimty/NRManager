@@ -32,6 +32,11 @@ The behaviour of the shell's launchctl handling is exercised for real in
 tests/test_maintainer_shell_scripts.py, which renders the templates and runs
 them. This file covers the ownership boundary itself, which is a property of
 which source names what.
+
+One compiled guard is left, postinst's. prerm no longer has one at all: its guard
+existed to decide whether removal was safe, and the carrier reset answered that
+question by removing it -- the reset needs no record to know what to undo, so
+there is nothing left to consult before allowing removal.
 """
 
 import pathlib
@@ -43,13 +48,13 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 MAINTAINER_SOURCE = ROOT / "package-actions" / "CCNMMaintainerEnvironment.m"
 MAINTAINER_HEADER = ROOT / "package-actions" / "CCNMMaintainerEnvironment.h"
 POSTINST_SOURCE = ROOT / "package-actions" / "postinst.m"
-PRERM_SOURCE = ROOT / "package-actions" / "prerm.m"
+RETIRED_PRERM_SOURCE = ROOT / "package-actions" / "prerm.m"
 ACTIONS_MAKEFILE = ROOT / "package-actions" / "Makefile"
 LAUNCHCTL_INCLUDE = ROOT / "package-actions" / "launchctl.sh.inc"
 POSTINST_TEMPLATE = ROOT / "package-actions" / "postinst.sh.in"
 PRERM_TEMPLATE = ROOT / "package-actions" / "prerm.sh.in"
 
-COMPILED_SOURCES = (MAINTAINER_SOURCE, POSTINST_SOURCE, PRERM_SOURCE)
+COMPILED_SOURCES = (MAINTAINER_SOURCE, POSTINST_SOURCE)
 
 
 def code_only(text):
@@ -205,10 +210,9 @@ class SentinelHandoffTests(unittest.TestCase):
         self.assertEqual(len(stdout_writes), 1, stdout_writes)
         self.assertIn("CCNMMaintenanceLaunchdVerifiedSentinel", stdout_writes[0])
         self.assertIn("fflush(stdout)", source)
-        # The removal guard has no verdict to hand back at all: prerm boots the
-        # job out unconditionally once the policy check is clean.
-        self.assertNotIn("CCNMMaintenanceLaunchdVerifiedSentinel",
-                         code_only(PRERM_SOURCE.read_text()))
+        # prerm has no compiled guard to hand a verdict back from: removal is
+        # unconditional now, so there is nothing for one to decide.
+        self.assertFalse(RETIRED_PRERM_SOURCE.exists())
         # The shared file defines the sentinel, which is the point of it being
         # shared, but it must not print anything itself: a library writing to the
         # channel the shell reads as a verdict could emit one without the
@@ -253,15 +257,20 @@ class SentinelHandoffTests(unittest.TestCase):
         self.assertIn("return CCNMInstallAllowed", source[verify:])
 
     def test_prerm_leaves_stopping_the_daemon_to_the_shell(self):
-        # Same exec restriction, and the ordering matters in the other direction
-        # too: on a blocked removal the daemon must keep running, because the
-        # package stays installed.
-        source = PRERM_SOURCE.read_text()
-        code = code_only(source)
-        self.assertNotIn("Launchd", code)
+        # Same exec restriction, and prerm answered it by dropping the compiled
+        # guard entirely rather than keeping one that reports and lets the shell
+        # act. Deleted, not unreferenced, and out of the build too.
+        self.assertFalse(RETIRED_PRERM_SOURCE.exists())
+        self.assertNotIn("prerm.m", ACTIONS_MAKEFILE.read_text())
+        # The ordering that mattered is now between the reset and the bootout,
+        # in the other direction from the guard's: the modem has to be handed back
+        # to the carrier while the package is still whole, and only then may the
+        # daemon be stopped. A daemon stopped first would be one less reader of
+        # the state the reset is about to invalidate, but it would also mean a
+        # failed reset leaves nothing running to notice.
         prerm_shell = PRERM_TEMPLATE.read_text()
-        block = prerm_shell.index('if [ "$status" -ne 0 ]; then')
-        self.assertLess(block, prerm_shell.index("launchd_bootout"))
+        self.assertLess(prerm_shell.index("carrier_reset_defaults"),
+                        prerm_shell.index("launchd_bootout"))
 
 
 class ShellOwnsLaunchctlTests(unittest.TestCase):

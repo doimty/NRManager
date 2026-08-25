@@ -2,11 +2,13 @@
 # Generated from package-actions/prerm.sh.in by
 # scripts/patch-maintenance-launchd.py. Do not edit the installed copy.
 #
-# The removal gate is fail-closed: a forced NR band configuration must not be
-# left behind with no installed way to restore it. A guard that cannot be started
-# is therefore not an implicit approval, because an unverified modem state is
-# exactly the case the gate exists for. The manual override is named in every
-# blocking message so a broken guard can never make the package unremovable.
+# Removal now reloads carrier defaults before dpkg unlinks any file. The old
+# removal guard tracked whether the package still had a band configuration to
+# restore before uninstalling; that is gone, because the recovery primitive is
+# now a carrier reset (killall -9 CommCenter) that needs no record to know what
+# to undo. The reset runs first, and policy records are discarded only if the
+# reset succeeds. An unconfirmed reset never blocks removal: the records are
+# left in place so a reinstall can finish the job, and the user is warned.
 #
 # Shell rather than a compiled maintainer script for the same reason as postinst:
 # on roothide a compiled maintainer script observably runs without the bootstrap
@@ -15,23 +17,17 @@
 
 SCHEME_PREFIX='@PREFIX@'
 NEEDS_JBROOT='@NEEDS_JBROOT@'
-# What must literally appear inside the launchd plist, decided at package time.
-# Empty on roothide because launchctl prepends the jailbreak root itself; /var/jb
-# on rootless because nothing there rewrites anything. See postinst.sh.in for the
-# launchctl behaviour this rests on.
 LAUNCHD_PREFIX='@LAUNCHD_PREFIX@'
 
-GUARD_RELATIVE='/usr/libexec/networkmanager-removal-guard'
-OVERRIDE_RELATIVE='/var/lib/dpkg/info/me.nixuge.networkmanager.prerm'
-# Rendered from the same constant the plist carries, so this script and the plist
-# cannot disagree about which job to boot out.
 LAUNCHD_LABEL='@LAUNCHD_LABEL@'
+LAUNCHD_TARGET="system/${LAUNCHD_LABEL}"
 
 # jbroot's output is an external input. An implausible but non-empty value must
-# not become PREFIX_FALLBACK: a bogus prefix that happens to hold a stale copy of
-# the guard would let a wrong binary answer a question this gate is fail-closed
-# about. Rejecting it leaves PREFIX_FALLBACK empty, which blocks unless the bare
-# path resolves — the correct conservative outcome.
+# not become PREFIX_FALLBACK: a bogus prefix is where the killall candidates and
+# the policy record paths would be looked for, and a wrong root there means the
+# reset runs against nothing while reporting success. Rejecting it leaves
+# PREFIX_FALLBACK empty, so only the bare candidates are tried -- which is the
+# correct conservative outcome, and the shape the reporting device actually has.
 validate_jbroot() {
     case "$1" in
         '')
@@ -89,163 +85,165 @@ describe_prefix() {
     fi
 }
 
-candidate_list() {
-    describe_prefix "$PREFIX_PRIMARY"
-    if [ -n "$PREFIX_FALLBACK" ]; then
-        printf ' and %s' "$PREFIX_FALLBACK"
-    fi
-}
-
-# Not called in a command substitution: that would run in a subshell and lose
-# RESOLVED_PREFIX, so the override path printed on failure would be wrong.
-RESOLVED_PATH=''
-RESOLVED_PREFIX=''
-resolve() {
-    _relative="$1"
-    RESOLVED_PATH=''
-    RESOLVED_PREFIX=''
-    if [ -e "${PREFIX_PRIMARY}${_relative}" ]; then
-        RESOLVED_PREFIX="$PREFIX_PRIMARY"
-    elif [ -n "$PREFIX_FALLBACK" ] && [ -e "${PREFIX_FALLBACK}${_relative}" ]; then
-        RESOLVED_PREFIX="$PREFIX_FALLBACK"
-    else
-        return 1
-    fi
-    RESOLVED_PATH="${RESOLVED_PREFIX}${_relative}"
-    return 0
-}
-
-# Where the override actually lives. dpkg's own info directory is inside the
-# jailbreak root, so the bare path is only correct for a redirected shell. The
-# user reading this message is already blocked, so name the path that exists
-# rather than the one that happens to be shortest.
-#
-# Does its own -e tests instead of calling resolve(): this is used inside a
-# command substitution, where resolve()'s global assignments would be lost.
-override_hint() {
-    if [ -e "${PREFIX_PRIMARY}${OVERRIDE_RELATIVE}" ]; then
-        printf '%s' "${PREFIX_PRIMARY}${OVERRIDE_RELATIVE}"
-    elif [ -n "$PREFIX_FALLBACK" ] &&
-         [ -e "${PREFIX_FALLBACK}${OVERRIDE_RELATIVE}" ]; then
-        printf '%s' "${PREFIX_FALLBACK}${OVERRIDE_RELATIVE}"
-    elif [ -n "$PREFIX_FALLBACK" ]; then
-        printf '%s or %s' \
-            "${PREFIX_PRIMARY}${OVERRIDE_RELATIVE}" \
-            "${PREFIX_FALLBACK}${OVERRIDE_RELATIVE}"
-    else
-        printf '%s' "${PREFIX_PRIMARY}${OVERRIDE_RELATIVE}"
-    fi
-}
-
 warn() {
     printf 'NetworkManagerReborn: warning — %s\n' "$1" >&2
 }
 
-@LAUNCHCTL_SUPPORT@
-LAUNCHD_TARGET="system/${LAUNCHD_LABEL}"
-
-block() {
-    printf 'NetworkManagerReborn: removal blocked; %s\n' "$1" >&2
-    printf '  Reinstall the package to restore the guard, or delete %s and retry to override.\n' \
-        "$(override_hint)" >&2
-    exit 73
+note() {
+    printf 'NetworkManagerReborn: %s\n' "$1" >&2
 }
 
-if ! resolve "$GUARD_RELATIVE"; then
-    block "the removal guard was not found under $(candidate_list), so the live band configuration cannot be proven clean. jbroot: ${JBROOT_STATUS}."
+# The resolved root is worth one line in the dpkg log either way. Both things
+# removal does -- finding killall and deleting policy records -- are looked for
+# under it, so a failed resolution changes what happened and has to be visible
+# next to the warnings it causes.
+if [ -n "$NEEDS_JBROOT" ] && [ -z "$JBROOT_PREFIX" ]; then
+    warn "the jailbreak root ${JBROOT_STATUS}, so only bare paths were tried. a carrier defaults reload and any policy record cleanup were limited to what resolves without it."
 fi
 
-guard="$RESOLVED_PATH"
+@LAUNCHCTL_SUPPORT@
+@CARRIER_RESET_SUPPORT@
 
-# Hand both prefixes over rather than letting the guard re-derive them: it is
-# invoked through a bare path, so its own executable path carries no .jbroot-
-# component and there is nothing to derive from.
+# dpkg calls prerm for four different things, and only one of them always means
+# the package is going away:
 #
-# NETWORKMANAGER_INSTALL_PREFIX is what the guard prepends to open a file, and it
-# must be the real jailbreak root -- not the prefix this script resolved for
-# itself. Exporting the latter was a real bug with its worst consequence right
-# here. This shell is path-redirected, so its `/` already is the jailbreak root and
-# RESOLVED_PREFIX is legitimately empty; the guard is not redirected, so the same
-# bare path lands on the real root, every policy record reads as absent, and
-# "absent" is indistinguishable from "no band configuration was ever applied".
-# That is exactly the conclusion this gate exists to refuse to reach by accident:
-# it would authorize removal while a forced band configuration is still live, with
-# the Settings UI that could restore it going away in the same transaction.
+#   remove          the package is being retired
+#   upgrade         a successor is about to be unpacked over it
+#   failed-upgrade  an upgrade aborted; runs from the incoming package
+#   deconfigure     this package stays unpacked, to be reconfigured
 #
-# An empty prefix is a statement about this shell, not about the filesystem, and it
-# must not cross a process boundary. So it is left unset when the jailbreak root is
-# unknown, and the guard fails closed on an unresolved prefix.
+# Reloading carrier defaults on a plain upgrade would be a silent, repeating
+# regression: the successor reads the same policy records and ships the same
+# Settings UI, so a reset there would undo the user's configuration on every
+# update while the records still claimed it was applied. That mismatch is worse
+# than doing nothing, because the UI and the daemon would both report enabled
+# against a modem that had been reset.
 #
-# NETWORKMANAGER_LAUNCHD_PREFIX is a different question -- what must literally
-# appear inside the plist -- and it is legitimately empty on roothide, so it is
-# always exported. Empty and unset are distinct answers to the guard.
-# Whether the prefix was handed over is stated either way. This is the
-# fail-closed direction, so an unset install prefix is about to turn into a
-# blocked removal, and the reason has to be in the dpkg log next to the block
-# message rather than inferable only from the guard's own wording.
-if [ -n "$NEEDS_JBROOT" ]; then
-    if [ -n "$JBROOT_PREFIX" ]; then
-        NETWORKMANAGER_INSTALL_PREFIX="$JBROOT_PREFIX"
-        export NETWORKMANAGER_INSTALL_PREFIX
-    else
-        warn "the jailbreak root ${JBROOT_STATUS}, so the guard was given no install prefix and will fail closed rather than read the wrong root."
-    fi
-else
-    NETWORKMANAGER_INSTALL_PREFIX="$SCHEME_PREFIX"
-    export NETWORKMANAGER_INSTALL_PREFIX
-fi
-NETWORKMANAGER_LAUNCHD_PREFIX="$LAUNCHD_PREFIX"
-export NETWORKMANAGER_LAUNCHD_PREFIX
+# `upgrade` is also how dpkg spells a downgrade, and that case is not benign.
+# Versions below @CARRIER_RESET_FLOOR@ predate the reload entirely, so handing a
+# narrowed modem to one leaves the user with no in-package way to undo it. Those
+# are treated as a retirement: reset, and discard the records, which that version
+# does not understand either.
+#
+# The comparison is delegated to dpkg rather than reimplemented. dpkg uses the
+# same action for upgrade and downgrade, so this must be an ordering question and
+# not a string test, and the process asking it is already running inside dpkg.
+CARRIER_RESET_FLOOR='@CARRIER_RESET_FLOOR@'
+ACTION="${1:-}"
+INCOMING_VERSION="${2:-}"
+RETIRING=''
+RETIRE_REASON=''
 
-# stdin is closed so a maintainer-script child cannot sit on dpkg's descriptors.
-# stdout and stderr are deliberately left attached: this guard's verdict text is
-# the whole point of running it and belongs in the dpkg log.
-"$guard" "$@" </dev/null
-status=$?
-
-# 126 and 127 are the shell's own "found but not executable" and "not found"
-# codes. They are the shapes an exec refusal takes here, and they are not a
-# verdict from the guard, so they must not be reported as one.
-if [ "$status" -eq 126 ] || [ "$status" -eq 127 ]; then
-    block "the removal guard at ${guard} could not be started (exit ${status}), so the live band configuration cannot be proven clean."
-fi
-
-# A nonzero verdict stops here with the guard's own code, and the daemon is left
-# running. Stopping it would be a side effect on a path that just refused to
-# proceed: the package stays installed, the user is told to recover in Settings,
-# and automatic serving-state monitoring should still be working while they do.
-if [ "$status" -ne 0 ]; then
-    exit "$status"
-fi
-
-# Removal is going ahead, so stop the daemon before dpkg unlinks its binary. This
-# is the last point at which the job can be booted out by a script that is still
-# installed.
+# Resolved once, up front, because everything below that runs a child process
+# needs it: the version comparison, the carrier reset, and the launchctl bootout
+# all go through launchctl_run, and launchctl_run refuses to run unbounded.
 #
-# Deliberately not a blocking condition. dpkg removes the plist along with the
-# package, so a job that cannot be booted out now also cannot come back after a
-# reboot; the only live risk is a still-running instance, which is why each
-# failure is still reported.
-#
-# Running the guard first is safe in the other direction too: the guard reads the
-# durable policy records, while the daemon only writes its own status and record
-# files and never touches the modem, so a live daemon cannot change the verdict or
-# interfere with the restore the guard may have just performed.
+# Hoisted here after getting it wrong. It used to be resolved inside the reset
+# block, which is after the version comparison, so every comparison returned 125
+# for want of a delay command -- read as "below the floor" -- and every ordinary
+# upgrade reloaded carrier defaults. Exactly the silent repeating regression the
+# comment above says must not happen, produced by the code meant to prevent it.
 if ! resolve_delay_command; then
-    # Nothing can be bounded without a delay command, and an unbounded launchctl
-    # call is what hung an install. Removal continues: dpkg unlinks the plist with
-    # the package, so a job left running now cannot return after a reboot.
-    warn "no usable sleep command was found, so launchctl could not be run under a deadline and a running maintenance owner was left alone. It stops at the next reboot, and the launchd job is removed with the package."
+    warn "no usable delay command was found, so no child process could be bounded. nothing that needs one was run: the modem may still be narrowed, and a running maintenance owner was left alone."
+fi
+
+case "$ACTION" in
+    remove)
+        RETIRING=1
+        RETIRE_REASON='the package is being removed'
+        ;;
+    upgrade)
+        if [ -z "$INCOMING_VERSION" ]; then
+            # No version to compare. Fail toward an un-narrowed modem: a reset
+            # the user did not need is undone with one tap, while a downgrade
+            # that skipped it leaves no in-package way back.
+            RETIRING=1
+            RETIRE_REASON='dpkg named no incoming version, so the successor could not be shown to support the carrier defaults reload'
+        elif [ -z "$LAUNCHCTL_DELAY" ]; then
+            # Same fail-open direction, different cause: the comparison is a
+            # child process and an unbounded one is not an option in a maintainer
+            # script. Reported separately from a missing dpkg so the dpkg log
+            # says which of the two it was.
+            RETIRING=1
+            RETIRE_REASON="the incoming version could not be compared against ${CARRIER_RESET_FLOOR} under a deadline"
+        elif ! resolve_dpkg_command; then
+            RETIRING=1
+            RETIRE_REASON="no usable dpkg was found${DPKG_REPORT:+ (${DPKG_REPORT})}, so the incoming version could not be compared against ${CARRIER_RESET_FLOOR}"
+        elif version_is_at_least "$INCOMING_VERSION" "$CARRIER_RESET_FLOOR"; then
+            note "version ${INCOMING_VERSION} supports the carrier defaults reload, so this upgrade left the band configuration and its records alone."
+        else
+            RETIRING=1
+            RETIRE_REASON="version ${INCOMING_VERSION} predates the carrier defaults reload, or the comparison did not answer, so it could not be relied on to undo a narrowed modem"
+        fi
+        ;;
+    *)
+        note "action '${ACTION:-none}' keeps this package installed, so carrier defaults were left alone."
+        ;;
+esac
+
+if [ -n "$RETIRING" ]; then
+    note "reloading carrier defaults: ${RETIRE_REASON}."
+fi
+
+# Run the carrier defaults reload before removal. This is the only place a
+# forced NR band configuration is undone outside the package itself, and it
+# runs even when the daemon cannot be booted out: a reset that completes but
+# cannot be verified is still better than leaving the modem narrowed.
+#
+# A failure here does not block removal. The user is warned, and the policy
+# records stay on disk so a reinstall can retry the reset.
+reset_succeeded=0
+if [ -z "$RETIRING" ]; then
+    :
+elif [ -z "$LAUNCHCTL_DELAY" ]; then
+    warn "the carrier defaults reload could not be bounded and was skipped. removal continues, and the modem may still be narrowed."
+elif ! resolve_carrier_killall; then
+    warn "no usable killall was found${CARRIER_KILLALL_REPORT:+ (${CARRIER_KILLALL_REPORT})}, so the carrier defaults reload could not be run. removal continues, and the modem may still be narrowed."
+elif carrier_reset_defaults; then
+    reset_succeeded=1
+    note "carrier defaults reloaded."
+else
+    warn "the carrier defaults reload could not complete both invocations, so the modem may still be narrowed. removal continues, and the policy records were left in place so a reinstall can retry."
+fi
+
+# Records are discarded only after a confirmed reset. On an unconfirmed one they
+# are the only remaining evidence that the modem was left narrowed, and a
+# reinstall needs that to know there is something to undo.
+if [ "$reset_succeeded" -eq 1 ] && ! discard_policy_records; then
+    warn "carrier defaults were reloaded but some policy records could not be removed, so a reinstall may report a stale transition."
+fi
+
+# The band selection is user preference data, not policy evidence. It is not in
+# the policy record set and deliberately outlives the off state, because a
+# selection can be edited while the feature is disabled. Removal is the one
+# moment it has no owner left, and dpkg will not do it: the file lives under
+# /var/mobile/Library/Preferences and was never part of the package payload.
+#
+# Leaving it behind is worse than untidy. A stored band the current SIM no longer
+# offers makes the toggle refuse, and nothing in Settings names the stored value,
+# so the one remedy every user reaches for -- remove and reinstall -- would
+# silently inherit the same selection and fail the same way.
+#
+# Only on `remove`, and deliberately not on the downgrade path: a downgrade keeps
+# a package installed, and the version it lands on does not read this file at
+# all, so the selection is still the user's to keep. Independent of whether the
+# reset worked, because preference data cannot leave the modem in a worse state.
+if [ "$ACTION" = remove ] && ! discard_band_selection; then
+    warn "the stored NR band selection could not be discarded, so a later reinstall will inherit it."
+fi
+
+# Stop the daemon before dpkg unlinks its binary. Deliberately not a blocking
+# condition: dpkg removes the plist along with the package, so a job that
+# cannot be booted out now also cannot come back after a reboot.
+if [ -z "$LAUNCHCTL_DELAY" ]; then
+    :  # already warned once, up front
 elif resolve_launchctl; then
     launchd_bootout
     bootout_status=$?
     if [ "$bootout_status" -eq 1 ]; then
-        warn "the maintenance owner could not be stopped and may keep running until the next reboot. Removal continues, and the launchd job is removed with the package, so it will not return."
+        warn "the maintenance owner could not be stopped and may keep running until the next reboot. removal continues, and the launchd job is removed with the package, so it will not return."
     elif [ "$bootout_status" -eq 2 ]; then
-        # Distinguished from the above, because the two say different things. This
-        # one means launchd did not answer within the deadline, so whether the job
-        # is still loaded is unknown rather than known-bad.
-        warn "launchd did not answer within ${LAUNCHCTL_DEADLINE_SECONDS}s, so the maintenance owner may keep running until the next reboot. Removal continues, and the launchd job is removed with the package, so it will not return."
+        warn "launchd did not answer within ${LAUNCHCTL_DEADLINE_SECONDS}s, so the maintenance owner may keep running until the next reboot. removal continues, and the launchd job is removed with the package, so it will not return."
     fi
 else
     warn "launchctl could not be run${LAUNCHCTL_REPORT:+ (tried ${LAUNCHCTL_REPORT})}, so a running maintenance owner was left alone. It stops at the next reboot, and the launchd job is removed with the package."

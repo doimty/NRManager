@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Host-side tests for formal 1.5.0 release packaging and CI policy."""
+"""Host-side tests for formal release packaging and CI policy.
+
+The version is read from ``verify_release_source.RELEASE_VERSION`` rather than
+written here as a literal. Two independent literals for one release number is how
+the control file and the verifier drift apart, and the verifier is the thing CI
+actually runs against a built package.
+"""
 
 from __future__ import annotations
 
@@ -26,11 +32,11 @@ import verify_release_source  # noqa: E402
 
 
 class ReleaseMetadataTests(unittest.TestCase):
-    def test_control_is_neutral_1_5_0_metadata(self) -> None:
+    def test_control_is_neutral_release_metadata(self) -> None:
         fields = verify_release_source.read_control(REPO / "control")
         self.assertEqual(fields["package"], "me.nixuge.networkmanager")
         self.assertEqual(fields["name"], "NetworkManagerReborn")
-        self.assertEqual(fields["version"], "1.5.0")
+        self.assertEqual(fields["version"], verify_release_source.RELEASE_VERSION)
         self.assertEqual(fields["architecture"], "iphoneos-arm64")
         self.assertNotRegex(fields["name"], re.compile("roothide", re.IGNORECASE))
         self.assertNotRegex(fields["description"], re.compile("roothide", re.IGNORECASE))
@@ -267,10 +273,12 @@ Load command 1
             "GUARD=\"/usr/libexec/networkmanager-install-guard\"\n"
             "\"$GUARD\" \"$@\"\n"
         )
+        # prerm delegates to nothing. Its privileged work is a carrier reset and a
+        # record cleanup, both of which the shell does itself.
         removal = (
             "#!/bin/sh\n"
-            "GUARD=\"/usr/libexec/networkmanager-removal-guard\"\n"
-            "\"$GUARD\" \"$@\"\n"
+            "killall -9 CommCenter\n"
+            "exit 0\n"
         )
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -283,6 +291,24 @@ Load command 1
             evidence = verify_release_package.verify_maintainer_scripts(root, failures)
             self.assertEqual(evidence["status"], "passed", failures)
             self.assertEqual(failures, [])
+
+            # A prerm that reaches for the retired removal guard is rejected. That
+            # binary blocked removal until the user restored bands in Settings, so
+            # shipping it beside a prerm that never blocks would put a fail-closed
+            # gate back on an unconditionally non-blocking path.
+            (root / "prerm").write_text(
+                "#!/bin/sh\n"
+                "GUARD=\"/usr/libexec/networkmanager-removal-guard\"\n"
+                "\"$GUARD\" \"$@\"\n"
+            )
+            (root / "prerm").chmod(0o755)
+            failures = []
+            verify_release_package.verify_maintainer_scripts(root, failures)
+            self.assertTrue(
+                any("retired networkmanager-removal-guard" in failure
+                    for failure in failures), failures)
+            (root / "prerm").write_text(removal)
+            (root / "prerm").chmod(0o755)
 
             (root / "postinst").write_bytes(b"\xca\xfe\xba\xbe" + b"\0" * 32)
             (root / "postinst").chmod(0o755)
@@ -304,9 +330,7 @@ Load command 1
             (root / "postinst").write_text(
                 "#!/bin/sh\nPREFIX='@PREFIX@'\nnetworkmanager-install-guard\n"
             )
-            (root / "prerm").write_text(
-                "#!/bin/sh\nnetworkmanager-removal-guard \"$@\"\n"
-            )
+            (root / "prerm").write_text("#!/bin/sh\nexit 0\n")
             for name in ("postinst", "prerm"):
                 (root / name).chmod(0o755)
             failures: list = []
@@ -316,6 +340,8 @@ Load command 1
             )
 
     def test_a_script_that_does_not_delegate_is_rejected(self) -> None:
+        # postinst only. prerm delegating to nothing is now the correct shape, so
+        # it is the one script this rule must not apply to.
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "postinst").write_text("#!/bin/sh\nexit 0\n")
@@ -327,12 +353,20 @@ Load command 1
             self.assertTrue(
                 any("does not delegate" in failure for failure in failures), failures
             )
+            self.assertEqual(
+                [failure for failure in failures if "prerm" in failure], [])
 
     def test_the_guards_and_the_launchd_plist_are_required_payload(self) -> None:
         required = verify_release_package.REQUIRED_PAYLOAD_FILES
         self.assertIn("usr/libexec/networkmanager-install-guard", required)
-        self.assertIn("usr/libexec/networkmanager-removal-guard", required)
         self.assertIn("usr/libexec/networkmanager-maintenance", required)
+        # The removal guard is required to be *absent*, not merely unlisted: it is
+        # a fail-closed gate on a path that no longer has anything to refuse.
+        self.assertNotIn("usr/libexec/networkmanager-removal-guard", required)
+        self.assertIn(
+            "networkmanager-removal-guard",
+            verify_release_package.FORBIDDEN_LEGACY_PAYLOAD_BASENAMES,
+        )
         self.assertIn(
             "Library/LaunchDaemons/me.nixuge.networkmanager.maintenance.plist", required
         )
@@ -341,22 +375,21 @@ Load command 1
             "usr/libexec/networkmanager-install-guard",
             verify_release_package.BINARY_PAYLOAD_FILES,
         )
-        # The daemon joins the guards: none of the three may link libroothide,
-        # because none of them runs with a bootstrap or a .jbroot beside it.
+        # The daemon joins the install guard: neither may link libroothide,
+        # because neither runs with a bootstrap or a .jbroot beside it.
         self.assertEqual(
             verify_release_package.UNLINKED_ROOTHIDE_TOOLS,
-            ("networkmanager-install-guard", "networkmanager-removal-guard",
-             "networkmanager-maintenance"),
+            ("networkmanager-install-guard", "networkmanager-maintenance"),
         )
         # Same membership, different question, and the lists must stay separate.
         # LC_DYLD_INFO_ONLY is pinned for the two injected bundles, where a
-        # floating-Xcode chained-fixups build once crashed on device. The three
-        # standalone tools are exec'd rather than injected; the two guards ship
-        # chained fixups and both ran on the reporting iOS 15.1.1 device.
+        # floating-Xcode chained-fixups build once crashed on device. These two are
+        # exec'd rather than injected, and chained fixups are known to run in that
+        # position on the reporting iOS 15.1.1 device: both guards shipped them
+        # then, and it is their output that redesigned this release.
         self.assertEqual(
             verify_release_package.CHAINED_FIXUPS_ALLOWED_TOOLS,
-            ("networkmanager-install-guard", "networkmanager-removal-guard",
-             "networkmanager-maintenance"),
+            ("networkmanager-install-guard", "networkmanager-maintenance"),
         )
         self.assertIsNot(
             verify_release_package.CHAINED_FIXUPS_ALLOWED_TOOLS,

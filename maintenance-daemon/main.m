@@ -27,7 +27,6 @@ static BOOL CCNMPolicySummaryIsStableEnabled(NSDictionary *summary) {
         [summary[CCNMN78PolicySummaryRecoveryStateKey] isEqual:CCNMRecoveryStateEnabledWithBaseline] &&
         [summary[@"baselinePresent"] boolValue] && [summary[@"baselineValid"] boolValue] &&
         ![summary[@"transitionPresent"] boolValue] &&
-        ![summary[@"removalGuardPresent"] boolValue] &&
         ![summary[@"uncertain"] boolValue];
 }
 

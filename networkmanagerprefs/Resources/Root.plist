@@ -178,29 +178,6 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>KNOWN_ORPHAN_RECOVERY_FOOTER</string>
-			<key>id</key>
-			<string>knownOrphanRecoveryGroup</string>
-			<key>label</key>
-			<string>GROUP_KNOWN_ORPHAN_RECOVERY</string>
-		</dict>
-		<dict>
-			<key>action</key>
-			<string>confirmKnownOrphanedN78Recovery:</string>
-			<key>cell</key>
-			<string>PSButtonCell</string>
-			<key>enabled</key>
-			<false/>
-			<key>id</key>
-			<string>recoverKnownOrphanedN78</string>
-			<key>label</key>
-			<string>RECOVER_KNOWN_ORPHANED_N78</string>
-		</dict>
-
-		<dict>
-			<key>cell</key>
-			<string>PSGroupCell</string>
-			<key>footerText</key>
 			<string>RECOVERY_FOOTER</string>
 			<key>id</key>
 			<string>recoveryGroup</string>
@@ -237,15 +214,15 @@
 		</dict>
 		<dict>
 			<key>action</key>
-			<string>restoreOriginalBandConfiguration:</string>
+			<string>reloadCarrierDefaults:</string>
 			<key>cell</key>
 			<string>PSButtonCell</string>
 			<key>enabled</key>
 			<false/>
 			<key>id</key>
-			<string>restoreOriginalBands</string>
+			<string>resetCarrierDefaults</string>
 			<key>label</key>
-			<string>RESTORE_ORIGINAL_BANDS</string>
+			<string>RESET_CARRIER_DEFAULTS</string>
 		</dict>
 
 		<dict>
@@ -308,7 +285,7 @@
 			<key>label</key>
 			<string>VERSION</string>
 			<key>value</key>
-			<string>1.5.0</string>
+			<string>1.6.0</string>
 		</dict>
 	</array>
 	<key>title</key>

@@ -65,15 +65,10 @@ FOUNDATION_EXPORT BOOL CCNMValidateNRBandSelectionAgainstDomain(
     NSString *_Nullable *_Nullable failure);
 
 FOUNDATION_EXPORT NSDictionary<NSString *, id> *CCNMReadN78PolicyState(void);
-FOUNDATION_EXPORT NSDictionary<NSString *, id> *CCNMReadKnownOrphanedN78RecoveryEligibility(void);
-FOUNDATION_EXPORT NSDictionary<NSString *, id> *CCNMReadKnownOrphanedN78RemovalSafety(void);
-FOUNDATION_EXPORT NSDictionary<NSString *, id> *CCNMArmN78PolicyRemovalGuard(void);
-FOUNDATION_EXPORT NSDictionary<NSString *, id> *CCNMClearN78PolicyRemovalGuardIfSafe(void);
 FOUNDATION_EXPORT BOOL CCNMN78PolicyHasOutstandingSetter(void);
 FOUNDATION_EXPORT void CCNMEnableN78Preference(CCNMN78PolicyCompletion _Nullable completion);
 FOUNDATION_EXPORT void CCNMDisableN78Preference(CCNMN78PolicyCompletion _Nullable completion);
 FOUNDATION_EXPORT void CCNMRecoverN78Preference(CCNMN78PolicyCompletion _Nullable completion);
-FOUNDATION_EXPORT void CCNMRecoverKnownOrphanedN78WithCompletion(CCNMN78PolicyCompletion _Nullable completion);
 
 @interface CCNMN78PolicyController : NSObject
 
@@ -82,7 +77,6 @@ FOUNDATION_EXPORT void CCNMRecoverKnownOrphanedN78WithCompletion(CCNMN78PolicyCo
 - (void)enableWithCompletion:(CCNMN78PolicyCompletion _Nullable)completion;
 - (void)disableWithCompletion:(CCNMN78PolicyCompletion _Nullable)completion;
 - (void)recoverWithCompletion:(CCNMN78PolicyCompletion _Nullable)completion;
-- (void)recoverKnownOrphanedN78WithCompletion:(CCNMN78PolicyCompletion _Nullable)completion;
 
 @end
 
