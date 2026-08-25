@@ -16,6 +16,14 @@ CELLS = PREFS / "CCNMPreferencesCells.m"
 CONTROLLER = PREFS / "CCNMRootListController.m"
 CONTROL = ROOT / "control"
 
+# Every UPPER_SNAKE literal in the bundle's own sources, plus every such value in
+# Root.plist. This is deliberately wider than the localized-string call sites: a
+# key can reach the table through a lookup dictionary (recoveryStateLocalizationKey)
+# or through a plist row, and matching only CCNMPreferencesLocalizedString call
+# sites reports those as unused.
+KEY_LITERAL = re.compile(r'@"([A-Z][A-Z0-9_]{3,})"')
+BARE_KEY = re.compile(r"[A-Z0-9_]+")
+
 ORIGINAL_REPO = "https://github.com/NoisyFlake/NetworkManager"
 MAINTAINED_REPO = "https://github.com/doimty/NetworkManagerReborn"
 
@@ -45,6 +53,25 @@ def strings_table(path: Path) -> dict[str, str]:
     if len(pairs) != len(nonempty):
         raise AssertionError(f"unparsed localization line in {path}")
     return table
+
+
+def referenced_localization_keys() -> set[str]:
+    keys = set()
+    for source in sorted(PREFS.glob("*.m")) + sorted(PREFS.glob("*.h")):
+        keys |= set(KEY_LITERAL.findall(source.read_text(encoding="utf-8")))
+
+    def walk(node):
+        if isinstance(node, dict):
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+        elif isinstance(node, str) and BARE_KEY.fullmatch(node):
+            keys.add(node)
+
+    walk(plistlib.loads(ROOT_PLIST.read_bytes()))
+    return keys
 
 
 class FormalSettingsUITests(unittest.TestCase):
@@ -190,6 +217,29 @@ class FormalSettingsUITests(unittest.TestCase):
         self.assertIn("NoisyFlake", self.english["ABOUT_CREDITS_FOOTER"])
         self.assertIn("Nixuge", self.english["ABOUT_CREDITS_FOOTER"])
         self.assertIn("doimty", self.english["ABOUT_CREDITS_FOOTER"])
+
+    def test_the_string_tables_and_the_bundle_reference_the_same_keys(self):
+        """Both directions, because each failure mode ships something broken.
+
+        A referenced-but-undefined key renders as the raw key on the device: the
+        n78 alert showed a literal RESET_CARRIER_DEFAULTS button after the
+        recovery action was renamed. A defined-but-unreferenced key is the other
+        half of the same rename -- the retired RESTORE_ORIGINAL_BANDS and
+        KNOWN_ORPHAN_* text stayed behind and still described replaying a saved
+        baseline, which this package no longer does.
+        """
+        referenced = referenced_localization_keys()
+        for table, name in ((self.english, "en"), (self.chinese, "zh-Hans")):
+            missing = sorted(referenced - set(table))
+            self.assertEqual(
+                missing, [], f"{name} is missing keys the bundle asks for: {missing}"
+            )
+        unreferenced = sorted(set(self.english) - referenced)
+        self.assertEqual(
+            unreferenced,
+            [],
+            f"these keys are defined but nothing reads them: {unreferenced}",
+        )
 
 
 if __name__ == "__main__":

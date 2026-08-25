@@ -502,8 +502,8 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
     }
 
     UIAlertController *alert = [UIAlertController
-        alertControllerWithTitle:CCNMPreferencesLocalizedString(@"RESTORE_ALERT_TITLE")
-        message:CCNMPreferencesLocalizedString(@"RESTORE_ALERT_MESSAGE")
+        alertControllerWithTitle:CCNMPreferencesLocalizedString(@"CARRIER_RESET_ALERT_TITLE")
+        message:CCNMPreferencesLocalizedString(@"CARRIER_RESET_ALERT_MESSAGE")
         preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction
         actionWithTitle:CCNMPreferencesLocalizedString(@"BUTTON_CANCEL")
@@ -512,7 +512,7 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
 
     __weak typeof(self) weakSelf = self;
     [alert addAction:[UIAlertAction
-        actionWithTitle:CCNMPreferencesLocalizedString(@"BUTTON_RESTORE")
+        actionWithTitle:CCNMPreferencesLocalizedString(@"BUTTON_CARRIER_RESET")
         style:UIAlertActionStyleDestructive
         handler:^(UIAlertAction *action) {
             (void)action;

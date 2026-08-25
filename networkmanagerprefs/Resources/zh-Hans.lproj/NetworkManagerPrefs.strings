@@ -65,41 +65,33 @@
 "SERVING_NR_N78_FORMAT" = "NR n78 · %@";
 "SERVING_NR_OTHER_FORMAT" = "NR %@";
 "SERVING_LTE_FORMAT" = "LTE %@（n78 当前未驻留）";
-"SERVING_OTHER_FORMAT" = "%@";
 "SERVING_OTHER" = "其他驻网制式";
 "SERVING_UNKNOWN_STALE" = "未知（数据已过期）";
 "SERVING_UNKNOWN_RESTART_SETTINGS" = "未知（再次操作基带前请重启“设置”）";
 "DATA_LINE_FORMAT" = "线路 %@";
 "DATA_LINE_SLOT_1" = "SIM 1";
 "DATA_LINE_SLOT_2" = "SIM 2";
-"FRESHNESS_JUST_NOW" = "刚刚";
 "FRESHNESS_REFRESHING" = "正在刷新…";
 "FRESHNESS_UPDATED_FORMAT" = "更新于 %@";
 "FRESHNESS_STALE_FORMAT" = "已过期 · %@";
 
-"GROUP_KNOWN_ORPHAN_RECOVERY" = "一次性设备恢复";
-"KNOWN_ORPHAN_RECOVERY_FOOTER" = "仅当此设备与已审阅的 n78 孤儿状态完全一致时显示。该操作只恢复内置的固定历史配置，不能导入其他快照。";
-"RECOVER_KNOWN_ORPHANED_N78" = "恢复已审阅的原始 NR 频段";
-"KNOWN_ORPHAN_RECOVERY_ALERT_TITLE" = "恢复此设备已审阅的 NR 配置？";
-"KNOWN_ORPHAN_RECOVERY_ALERT_MESSAGE" = "此一次性操作将采用软件包内已审阅的历史基线，通过受保护的策略事务恢复，并验证完整 BandInfo 读回。";
-"BUTTON_RECOVER_KNOWN_ORPHAN" = "恢复并验证";
-
 "GROUP_RECOVERY" = "恢复与维护";
-"RECOVERY_FOOTER" = "仅在已验证的策略记录需要处理时显示恢复控制。";
+"RECOVERY_FOOTER" = "只要存在已验证的策略记录就会显示，包括正常的已启用状态。重载运营商默认设置就是撤销启用的方式。";
 "ROW_RECOVERY_STATE" = "恢复状态";
 "ROW_MAINTENANCE" = "必要操作";
 "RECOVERY_STATE_CLEAN" = "无需恢复";
 "RECOVERY_STATE_ENABLE_PENDING" = "启用操作尚未完成";
 "RECOVERY_STATE_ENABLED_WITH_BASELINE" = "已保留原始配置";
-"RECOVERY_STATE_RESTORE_PENDING" = "恢复操作尚未完成";
+"RECOVERY_STATE_CARRIER_RESET_PENDING" = "运营商设置重载尚未完成";
+"RECOVERY_STATE_CARRIER_RESET_FAILED" = "运营商设置重载未确认";
 "RECOVERY_STATE_REBOOT_REQUIRED" = "需要重启";
 "RECOVERY_STATE_FAILED" = "恢复失败";
 "RECOVERY_REBOOT_REQUIRED_DETAIL" = "基带设置结果不确定。再次更改前必须重启设备。";
-"RESTORE_ORIGINAL_BANDS" = "恢复原始频段配置";
-"RESTORE_ALERT_TITLE" = "恢复原始频段配置？";
-"RESTORE_ALERT_MESSAGE" = "将恢复并验证已保存的原始 NR 配置；LTE 与其他当前非 NR 频段保持不变。";
+"RESET_CARRIER_DEFAULTS" = "重载运营商默认设置";
+"CARRIER_RESET_ALERT_TITLE" = "重载运营商默认设置？";
+"CARRIER_RESET_ALERT_MESSAGE" = "将重启蜂窝服务，让基带重新加载运营商自带的频段配置，n78 偏好随之撤销。期间会断网几秒。";
 "BUTTON_CANCEL" = "取消";
-"BUTTON_RESTORE" = "恢复";
+"BUTTON_CARRIER_RESET" = "重载";
 
 "GROUP_ABOUT" = "关于";
 "ABOUT_CREDITS_FOOTER" = "原项目由 NoisyFlake 开发，Nixuge 续作，现由 doimty 维护。";
@@ -122,6 +114,7 @@
 "POLICY_ERROR_N78_UNAVAILABLE" = "当前启用与支持的 NR 频段列表未同时包含 n78。";
 "POLICY_ERROR_REBOOT_REQUIRED" = "基带设置结果不确定。再次更改前必须重启设备。";
 "POLICY_ERROR_RECOVERY_REQUIRED" = "再次更改前，必须先处理已保存的策略恢复记录。";
+"POLICY_ERROR_CARRIER_RESET_FAILED" = "未能确认运营商设置重载结果。请在“恢复与维护”中重试。";
 "POLICY_ERROR_GENERIC" = "策略未能完成更改或验证。重试前请先查看恢复状态。";
 "POLICY_ERROR_DIAGNOSTIC_FORMAT" = "%@\n\n错误代码：%@\n详细信息：%@";
 "POLICY_ERROR_MEASURED_DEVICE_FORMAT" = "本机实测：%@ / iOS %@（%@）";

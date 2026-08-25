@@ -65,41 +65,33 @@
 "SERVING_NR_N78_FORMAT" = "NR n78 · %@";
 "SERVING_NR_OTHER_FORMAT" = "NR %@";
 "SERVING_LTE_FORMAT" = "LTE %@ (n78 is not currently serving)";
-"SERVING_OTHER_FORMAT" = "%@";
 "SERVING_OTHER" = "Other serving network";
 "SERVING_UNKNOWN_STALE" = "Unknown (data is stale)";
 "SERVING_UNKNOWN_RESTART_SETTINGS" = "Unknown (restart Settings before another modem operation)";
 "DATA_LINE_FORMAT" = "Line %@";
 "DATA_LINE_SLOT_1" = "SIM 1";
 "DATA_LINE_SLOT_2" = "SIM 2";
-"FRESHNESS_JUST_NOW" = "Just now";
 "FRESHNESS_REFRESHING" = "Refreshing…";
 "FRESHNESS_UPDATED_FORMAT" = "Updated %@";
 "FRESHNESS_STALE_FORMAT" = "Stale · %@";
 
-"GROUP_KNOWN_ORPHAN_RECOVERY" = "One-Time Device Recovery";
-"KNOWN_ORPHAN_RECOVERY_FOOTER" = "Shown only when this device exactly matches the reviewed orphaned-n78 state. It restores the fixed historical configuration and cannot import another snapshot.";
-"RECOVER_KNOWN_ORPHANED_N78" = "Restore reviewed original NR bands";
-"KNOWN_ORPHAN_RECOVERY_ALERT_TITLE" = "Restore this device's reviewed NR configuration?";
-"KNOWN_ORPHAN_RECOVERY_ALERT_MESSAGE" = "This one-time action will adopt the package-reviewed historical baseline, restore it through the guarded policy transaction, and verify the complete BandInfo read-back.";
-"BUTTON_RECOVER_KNOWN_ORPHAN" = "Restore and Verify";
-
 "GROUP_RECOVERY" = "Recovery & Maintenance";
-"RECOVERY_FOOTER" = "Recovery controls appear only when a validated policy record requires attention.";
+"RECOVERY_FOOTER" = "Shown whenever a validated policy record exists, including a normal enabled state. Reloading carrier defaults is how an enable is undone.";
 "ROW_RECOVERY_STATE" = "Recovery state";
 "ROW_MAINTENANCE" = "Required action";
 "RECOVERY_STATE_CLEAN" = "No recovery required";
 "RECOVERY_STATE_ENABLE_PENDING" = "Enable is pending";
 "RECOVERY_STATE_ENABLED_WITH_BASELINE" = "Original configuration is retained";
-"RECOVERY_STATE_RESTORE_PENDING" = "Restore is pending";
+"RECOVERY_STATE_CARRIER_RESET_PENDING" = "Carrier reload is pending";
+"RECOVERY_STATE_CARRIER_RESET_FAILED" = "Carrier reload was not confirmed";
 "RECOVERY_STATE_REBOOT_REQUIRED" = "Restart required";
 "RECOVERY_STATE_FAILED" = "Recovery failed";
 "RECOVERY_REBOOT_REQUIRED_DETAIL" = "The modem setter result is uncertain. Restart the device before making another change.";
-"RESTORE_ORIGINAL_BANDS" = "Restore original band configuration";
-"RESTORE_ALERT_TITLE" = "Restore original band configuration?";
-"RESTORE_ALERT_MESSAGE" = "The saved original NR configuration will be restored and verified. LTE and other current non-NR bands will remain unchanged.";
+"RESET_CARRIER_DEFAULTS" = "Reload carrier defaults";
+"CARRIER_RESET_ALERT_TITLE" = "Reload carrier defaults?";
+"CARRIER_RESET_ALERT_MESSAGE" = "Cellular service is restarted so the modem reloads the carrier's own band configuration, which undoes the n78 preference. Service drops for a few seconds.";
 "BUTTON_CANCEL" = "Cancel";
-"BUTTON_RESTORE" = "Restore";
+"BUTTON_CARRIER_RESET" = "Reload";
 
 "GROUP_ABOUT" = "About";
 "ABOUT_CREDITS_FOOTER" = "Original project by NoisyFlake, continued by Nixuge, and maintained by doimty.";
@@ -122,6 +114,7 @@
 "POLICY_ERROR_N78_UNAVAILABLE" = "Band n78 is not present in both the active and supported NR band lists.";
 "POLICY_ERROR_REBOOT_REQUIRED" = "The modem setter result is uncertain. Restart the device before making another change.";
 "POLICY_ERROR_RECOVERY_REQUIRED" = "Saved policy evidence must be recovered before another change.";
+"POLICY_ERROR_CARRIER_RESET_FAILED" = "The carrier reload could not be confirmed. Try it again from Recovery & Maintenance.";
 "POLICY_ERROR_GENERIC" = "The policy could not be changed or verified. Review the recovery state before retrying.";
 "POLICY_ERROR_DIAGNOSTIC_FORMAT" = "%@\n\nError code: %@\nDetails: %@";
 "POLICY_ERROR_MEASURED_DEVICE_FORMAT" = "This device: %@ / iOS %@ (%@)";
