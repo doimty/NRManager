@@ -92,19 +92,23 @@ MAINTAINER_SCRIPTS = ("postinst", "prerm")
 # hand-maintained copies in two maintainer scripts is how the halves drift apart,
 # and this logic is the part that had to move out of the compiled guards.
 LAUNCHCTL_INCLUDE = "launchctl.sh.inc"
-CARRIER_RESET_INCLUDE = "carrier-reset.sh.inc"
+# The shell's copy of the durable policy record paths, and the presence check and
+# cleanup built on them. Only prerm needs it.
+POLICY_RECORD_INCLUDE = "policy-records.sh.inc"
 
-# The first version whose prerm reloads carrier defaults on removal.
+# There is deliberately no carrier-reset include and no version floor any more.
 #
-# prerm uses it to tell an upgrade from a downgrade, because dpkg spells both
-# `upgrade` and hands the incoming version as the second argument. Handing a
-# narrowed modem to a version that predates the reload leaves the user with no
-# in-package way to undo it, so those are treated as a retirement.
+# 1.6.0 rendered a `killall -9 CommCenter` adapter into prerm and used a dpkg
+# version comparison against a floor to decide when to run it. The premise was
+# that killing CommCenter makes the modem reload carrier defaults; the target
+# device disproved it, and the false success authorised deleting the baseline that
+# holds the only copy of the user's original band configuration. Both the adapter
+# and the floor that gated it are gone, along with the dpkg child process and the
+# fail-open branch that once reset on every ordinary upgrade.
 #
-# Deliberately not read from `control`. It is the floor, not the current version:
-# once 1.6.1 ships, the floor must stay at 1.6.0 or every 1.6.1 -> 1.6.0
-# downgrade would reset a modem the target version can undo perfectly well.
-CARRIER_RESET_FLOOR = "1.6.0"
+# Do not reintroduce either. Undoing a narrowed modem needs a reverse
+# setActiveBandInfo: write against CoreTelephony, which only the Settings bundle
+# can perform, so a maintainer script has no mechanism to offer.
 
 # Placeholders each rendered script must contain, so a template that stops using
 # one is caught at package time rather than by a silently skipped substitution.
@@ -120,11 +124,11 @@ REQUIRED_PLACEHOLDERS = {
     # Only postinst loads the job, so only postinst needs the plist it loads.
     # prerm boots the job out, which needs the label alone.
     "postinst": COMMON_PLACEHOLDERS + ("@LAUNCHD_PLIST@",),
-    # Only prerm reloads carrier defaults. Installing does not undo a band
-    # configuration, so postinst has no business carrying a killall adapter --
-    # and a reset there would fight the policy the user just installed.
-    "prerm": COMMON_PLACEHOLDERS + ("@CARRIER_RESET_SUPPORT@",
-                                    "@CARRIER_RESET_FLOOR@"),
+    # Only prerm inspects and discards policy records. Installing does not retire
+    # a band configuration, so postinst has no business carrying the paths -- and
+    # deleting a baseline there would destroy the way back from the policy the
+    # user just installed.
+    "prerm": COMMON_PLACEHOLDERS + ("@POLICY_RECORD_SUPPORT@",),
 }
 # Retired, and still scanned for. @BASELINE@ was how postinst decided whether to
 # kickstart the job. The kickstart is gone, so neither script carries the token
@@ -132,7 +136,11 @@ REQUIRED_PLACEHOLDERS = {
 # check: a reintroduced @BASELINE@ would now ship as a literal inside a path.
 # The value itself still exists as a constant here, because the plist's KeepAlive
 # PathState names it and that is what starts the job now.
-RETIRED_PLACEHOLDERS = ("@BASELINE@",)
+#
+# @CARRIER_RESET_SUPPORT@ and @CARRIER_RESET_FLOOR@ join it for a different
+# reason: 1.6.0 substituted both, and a template that still carries one must fail
+# packaging rather than ship the token as literal shell.
+RETIRED_PLACEHOLDERS = ("@BASELINE@", "@CARRIER_RESET_SUPPORT@", "@CARRIER_RESET_FLOOR@")
 # Every placeholder either script may carry, used for the post-render residue
 # check. Built from the same tables so a new placeholder cannot be added to one
 # without the check learning about it.
@@ -196,7 +204,7 @@ def render_maintainer_scripts(staging: Path, source: Path, scheme: str) -> list:
     launchd_prefix = plist_prefix(scheme)
     needs_jbroot = "" if scheme == "rootless" else "1"
     launchctl_support = (source / LAUNCHCTL_INCLUDE).read_text().rstrip("\n")
-    carrier_reset_support = (source / CARRIER_RESET_INCLUDE).read_text().rstrip("\n")
+    policy_record_support = (source / POLICY_RECORD_INCLUDE).read_text().rstrip("\n")
     written = []
     for name in MAINTAINER_SCRIPTS:
         template = source / f"{name}.sh.in"
@@ -217,14 +225,13 @@ def render_maintainer_scripts(staging: Path, source: Path, scheme: str) -> list:
         text = text.replace("@LAUNCHD_LABEL@", LABEL)
         text = text.replace("@LAUNCHD_PLIST@",
                             launchd_prefix + "/" + PLIST_RELATIVE.as_posix())
-        text = text.replace("@CARRIER_RESET_FLOOR@", CARRIER_RESET_FLOOR)
         # Substituted last, so their own text is never scanned for placeholders
         # they do not carry and cannot accidentally supply one. Both are
         # unconditional replaces: the token is absent from the script that does
         # not want the block, so the substitution is a no-op there rather than a
         # second place that has to know which script gets which include.
         text = text.replace("@LAUNCHCTL_SUPPORT@", launchctl_support)
-        text = text.replace("@CARRIER_RESET_SUPPORT@", carrier_reset_support)
+        text = text.replace("@POLICY_RECORD_SUPPORT@", policy_record_support)
         # Nothing unresolved may ship. These scripts run as root during dpkg, and
         # a skipped substitution would leave a literal @TOKEN@ in a path or a
         # launchctl target, where it would be a silent no-op at best.

@@ -76,22 +76,22 @@
 "FRESHNESS_STALE_FORMAT" = "已过期 · %@";
 
 "GROUP_RECOVERY" = "恢复与维护";
-"RECOVERY_FOOTER" = "只要存在已验证的策略记录就会显示，包括正常的已启用状态。重载运营商默认设置就是撤销启用的方式。";
+"RECOVERY_FOOTER" = "只要存在已验证的策略记录就会显示，包括正常的已启用状态。恢复已保存的配置就是撤销启用的方式，它依赖本插件在应用你的选择之前保存下来的原始频段配置。";
 "ROW_RECOVERY_STATE" = "恢复状态";
 "ROW_MAINTENANCE" = "必要操作";
 "RECOVERY_STATE_CLEAN" = "无需恢复";
 "RECOVERY_STATE_ENABLE_PENDING" = "启用操作尚未完成";
 "RECOVERY_STATE_ENABLED_WITH_BASELINE" = "已保留原始配置";
-"RECOVERY_STATE_CARRIER_RESET_PENDING" = "运营商设置重载尚未完成";
-"RECOVERY_STATE_CARRIER_RESET_FAILED" = "运营商设置重载未确认";
+"RECOVERY_STATE_CARRIER_RESET_PENDING" = "早前的运营商设置重载尚未完成";
+"RECOVERY_STATE_CARRIER_RESET_FAILED" = "早前的运营商设置重载未确认";
 "RECOVERY_STATE_REBOOT_REQUIRED" = "需要重启";
 "RECOVERY_STATE_FAILED" = "恢复失败";
 "RECOVERY_REBOOT_REQUIRED_DETAIL" = "基带设置结果不确定。再次更改前必须重启设备。";
-"RESET_CARRIER_DEFAULTS" = "重载运营商默认设置";
-"CARRIER_RESET_ALERT_TITLE" = "重载运营商默认设置？";
-"CARRIER_RESET_ALERT_MESSAGE" = "将重启蜂窝服务，让基带重新加载运营商自带的频段配置，n78 偏好随之撤销。期间会断网几秒。";
+"RESTORE_SAVED_CONFIGURATION" = "恢复已保存的配置";
+"RESTORE_ALERT_TITLE" = "恢复已保存的配置？";
+"RESTORE_ALERT_MESSAGE" = "会把应用 n78 偏好之前保存的频段配置写回基带，从而撤销该偏好。写入后会回读基带来验证结果。";
 "BUTTON_CANCEL" = "取消";
-"BUTTON_CARRIER_RESET" = "重载";
+"BUTTON_RESTORE" = "恢复";
 
 "GROUP_ABOUT" = "关于";
 "ABOUT_CREDITS_FOOTER" = "原项目由 NoisyFlake 开发，Nixuge 续作，现由 doimty 维护。";
@@ -114,7 +114,7 @@
 "POLICY_ERROR_N78_UNAVAILABLE" = "当前启用与支持的 NR 频段列表未同时包含 n78。";
 "POLICY_ERROR_REBOOT_REQUIRED" = "基带设置结果不确定。再次更改前必须重启设备。";
 "POLICY_ERROR_RECOVERY_REQUIRED" = "再次更改前，必须先处理已保存的策略恢复记录。";
-"POLICY_ERROR_CARRIER_RESET_FAILED" = "未能确认运营商设置重载结果。请在“恢复与维护”中重试。";
+"POLICY_ERROR_CARRIER_RESET_FAILED" = "早前的运营商设置重载未能确认。请在“恢复与维护”中恢复已保存的配置。";
 "POLICY_ERROR_GENERIC" = "策略未能完成更改或验证。重试前请先查看恢复状态。";
 "POLICY_ERROR_DIAGNOSTIC_FORMAT" = "%@\n\n错误代码：%@\n详细信息：%@";
 "POLICY_ERROR_MEASURED_DEVICE_FORMAT" = "本机实测：%@ / iOS %@（%@）";

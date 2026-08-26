@@ -14,7 +14,7 @@ static NSString * const CCNMRefreshSpecifierID = @"refreshServingStatus";
 static NSString * const CCNMRecoveryGroupSpecifierID = @"recoveryGroup";
 static NSString * const CCNMRecoveryStateSpecifierID = @"recoveryState";
 static NSString * const CCNMRebootRequirementSpecifierID = @"rebootRequirement";
-static NSString * const CCNMResetCarrierSpecifierID = @"resetCarrierDefaults";
+static NSString * const CCNMRestoreConfigurationSpecifierID = @"restoreSavedConfiguration";
 static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
 
 @interface CCNMRootListController ()
@@ -45,7 +45,7 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
 - (id)readN78PreferenceValue:(PSSpecifier *)specifier;
 - (void)setN78PreferenceValue:(id)value specifier:(PSSpecifier *)specifier;
 - (void)refreshServingStatus:(PSSpecifier *)specifier;
-- (void)reloadCarrierDefaults:(PSSpecifier *)specifier;
+- (void)restoreSavedConfiguration:(PSSpecifier *)specifier;
 - (void)openRepository:(PSSpecifier *)specifier;
 - (void)showLinkOpenFailure;
 - (void)rebuildRecoverySection;
@@ -102,7 +102,7 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
     self.refreshServingStatusHandler = ^{
         [weakSelf beginServingRefresh];
     };
-    self.resetCarrierConfigurationHandler = ^{
+    self.restoreSavedConfigurationHandler = ^{
         [weakSelf beginPolicyRecovery];
     };
 }
@@ -434,7 +434,7 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
         CCNMRecoveryGroupSpecifierID,
         CCNMRecoveryStateSpecifierID,
         CCNMRebootRequirementSpecifierID,
-        CCNMResetCarrierSpecifierID,
+        CCNMRestoreConfigurationSpecifierID,
     ]];
     NSMutableArray<PSSpecifier *> *result = [NSMutableArray array];
 
@@ -494,16 +494,23 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
     }
 }
 
-- (void)reloadCarrierDefaults:(PSSpecifier *)specifier {
+// Writes the saved pre-enable band configuration back to the modem.
+//
+// 1.6.0 spelled this "reload carrier defaults" and implemented it by killing
+// CommCenter twice. The target device showed the bands stay narrowed, so the
+// action is a reverse setActiveBandInfo: write again, which is why it is gated on
+// a recoverable baseline: without the saved configuration there is nothing to
+// write back, and this bundle will not invent one.
+- (void)restoreSavedConfiguration:(PSSpecifier *)specifier {
     (void)specifier;
     if (!self.hasRecoverableBaseline || self.requiresReboot || self.policyOperationInProgress ||
-        self.servingRefreshInProgress || !self.resetCarrierConfigurationHandler) {
+        self.servingRefreshInProgress || !self.restoreSavedConfigurationHandler) {
         return;
     }
 
     UIAlertController *alert = [UIAlertController
-        alertControllerWithTitle:CCNMPreferencesLocalizedString(@"CARRIER_RESET_ALERT_TITLE")
-        message:CCNMPreferencesLocalizedString(@"CARRIER_RESET_ALERT_MESSAGE")
+        alertControllerWithTitle:CCNMPreferencesLocalizedString(@"RESTORE_ALERT_TITLE")
+        message:CCNMPreferencesLocalizedString(@"RESTORE_ALERT_MESSAGE")
         preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction
         actionWithTitle:CCNMPreferencesLocalizedString(@"BUTTON_CANCEL")
@@ -512,11 +519,11 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
 
     __weak typeof(self) weakSelf = self;
     [alert addAction:[UIAlertAction
-        actionWithTitle:CCNMPreferencesLocalizedString(@"BUTTON_CARRIER_RESET")
+        actionWithTitle:CCNMPreferencesLocalizedString(@"BUTTON_RESTORE")
         style:UIAlertActionStyleDestructive
         handler:^(UIAlertAction *action) {
             (void)action;
-            CCNMSettingsActionHandler handler = weakSelf.resetCarrierConfigurationHandler;
+            CCNMSettingsActionHandler handler = weakSelf.restoreSavedConfigurationHandler;
             if (handler) {
                 handler();
             }
@@ -625,7 +632,7 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
         PSSpecifier *group = [self recoverySpecifierForID:CCNMRecoveryGroupSpecifierID];
         PSSpecifier *state = [self recoverySpecifierForID:CCNMRecoveryStateSpecifierID];
         PSSpecifier *reboot = [self recoverySpecifierForID:CCNMRebootRequirementSpecifierID];
-        PSSpecifier *restore = [self recoverySpecifierForID:CCNMResetCarrierSpecifierID];
+        PSSpecifier *restore = [self recoverySpecifierForID:CCNMRestoreConfigurationSpecifierID];
 
         if (group) {
             [visibleMaintenanceSpecifiers addObject:group];
@@ -637,7 +644,7 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
             [visibleMaintenanceSpecifiers addObject:reboot];
         }
         if (self.hasRecoverableBaseline && restore) {
-            BOOL restoreEnabled = self.resetCarrierConfigurationHandler != nil &&
+            BOOL restoreEnabled = self.restoreSavedConfigurationHandler != nil &&
                 !self.requiresReboot && !self.policyOperationInProgress && !self.servingRefreshInProgress;
             [restore setProperty:@(restoreEnabled) forKey:PSEnabledKey];
             [visibleMaintenanceSpecifiers addObject:restore];

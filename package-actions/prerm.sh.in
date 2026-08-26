@@ -2,13 +2,23 @@
 # Generated from package-actions/prerm.sh.in by
 # scripts/patch-maintenance-launchd.py. Do not edit the installed copy.
 #
-# Removal now reloads carrier defaults before dpkg unlinks any file. The old
-# removal guard tracked whether the package still had a band configuration to
-# restore before uninstalling; that is gone, because the recovery primitive is
-# now a carrier reset (killall -9 CommCenter) that needs no record to know what
-# to undo. The reset runs first, and policy records are discarded only if the
-# reset succeeds. An unconfirmed reset never blocks removal: the records are
-# left in place so a reinstall can finish the job, and the user is warned.
+# Removal cannot undo a narrowed band configuration, and this script's job is to
+# not make that worse.
+#
+# 1.6.0 shipped a removal that ran `killall -9 CommCenter` twice and treated two
+# zero exit codes as a restored modem. The target device disproved the premise:
+# the bands stay narrowed. Worse, that success claim then authorised deleting the
+# policy records -- including the baseline, which holds the only copy of the
+# user's pre-enable band configuration. So the one path that could not restore
+# was also the one path that destroyed the means of restoring.
+#
+# Both halves are gone. Nothing here signals CommCenter, and the baseline is
+# never deleted while it still describes something to undo. Undoing a narrowed
+# modem needs a reverse setActiveBandInfo: write against CoreTelephony, which
+# lives in the Settings bundle; a dpkg maintainer script is not a place to
+# attempt that. The honest sequence is to disable in Settings first, and if the
+# package is already gone, to reinstall it and disable -- which only works
+# because the records below survive.
 #
 # Shell rather than a compiled maintainer script for the same reason as postinst:
 # on roothide a compiled maintainer script observably runs without the bootstrap
@@ -23,11 +33,11 @@ LAUNCHD_LABEL='@LAUNCHD_LABEL@'
 LAUNCHD_TARGET="system/${LAUNCHD_LABEL}"
 
 # jbroot's output is an external input. An implausible but non-empty value must
-# not become PREFIX_FALLBACK: a bogus prefix is where the killall candidates and
-# the policy record paths would be looked for, and a wrong root there means the
-# reset runs against nothing while reporting success. Rejecting it leaves
-# PREFIX_FALLBACK empty, so only the bare candidates are tried -- which is the
-# correct conservative outcome, and the shape the reporting device actually has.
+# not become PREFIX_FALLBACK: a bogus prefix is where the policy records would be
+# looked for, and a wrong root there means this script reports "nothing to undo"
+# about a directory that was never the real one. Rejecting it leaves
+# PREFIX_FALLBACK empty, so only the bare paths are tried -- which is the correct
+# conservative outcome, and the shape the reporting device actually has.
 validate_jbroot() {
     case "$1" in
         '')
@@ -93,16 +103,16 @@ note() {
     printf 'NetworkManagerReborn: %s\n' "$1" >&2
 }
 
-# The resolved root is worth one line in the dpkg log either way. Both things
-# removal does -- finding killall and deleting policy records -- are looked for
-# under it, so a failed resolution changes what happened and has to be visible
-# next to the warnings it causes.
+# The resolved root is worth one line in the dpkg log either way. Everything this
+# script decides -- whether a baseline is still on disk, and which records it may
+# discard -- is looked for under it, so a failed resolution changes what happened
+# and has to be visible next to the warnings it causes.
 if [ -n "$NEEDS_JBROOT" ] && [ -z "$JBROOT_PREFIX" ]; then
-    warn "the jailbreak root ${JBROOT_STATUS}, so only bare paths were tried. a carrier defaults reload and any policy record cleanup were limited to what resolves without it."
+    warn "the jailbreak root ${JBROOT_STATUS}, so only bare paths were tried. any policy record inspection and cleanup were limited to what resolves without it."
 fi
 
 @LAUNCHCTL_SUPPORT@
-@CARRIER_RESET_SUPPORT@
+@POLICY_RECORD_SUPPORT@
 
 # dpkg calls prerm for four different things, and only one of them always means
 # the package is going away:
@@ -112,105 +122,55 @@ fi
 #   failed-upgrade  an upgrade aborted; runs from the incoming package
 #   deconfigure     this package stays unpacked, to be reconfigured
 #
-# Reloading carrier defaults on a plain upgrade would be a silent, repeating
-# regression: the successor reads the same policy records and ships the same
-# Settings UI, so a reset there would undo the user's configuration on every
-# update while the records still claimed it was applied. That mismatch is worse
-# than doing nothing, because the UI and the daemon would both report enabled
-# against a modem that had been reset.
+# Only `remove` is acted on. The other three keep a package installed that reads
+# these records and ships the Settings UI that owns them, so there is nothing to
+# tidy and nothing to warn about.
 #
-# `upgrade` is also how dpkg spells a downgrade, and that case is not benign.
-# Versions below @CARRIER_RESET_FLOOR@ predate the reload entirely, so handing a
-# narrowed modem to one leaves the user with no in-package way to undo it. Those
-# are treated as a retirement: reset, and discard the records, which that version
-# does not understand either.
-#
-# The comparison is delegated to dpkg rather than reimplemented. dpkg uses the
-# same action for upgrade and downgrade, so this must be an ordering question and
-# not a string test, and the process asking it is already running inside dpkg.
-CARRIER_RESET_FLOOR='@CARRIER_RESET_FLOOR@'
+# There is deliberately no version comparison any more. 1.6.0 compared the
+# incoming version against a floor to decide whether the successor could undo a
+# narrowed modem, and reset when it could not. Both sides of that were wrong: the
+# reset did not undo anything, and no version needs protecting from records it can
+# simply ignore. Removing the comparison also removes a dpkg child process, a
+# delay-command dependency, and the fail-open branch that once reset on every
+# ordinary upgrade because the delay command had not been resolved yet.
 ACTION="${1:-}"
-INCOMING_VERSION="${2:-}"
-RETIRING=''
-RETIRE_REASON=''
 
-# Resolved once, up front, because everything below that runs a child process
-# needs it: the version comparison, the carrier reset, and the launchctl bootout
-# all go through launchctl_run, and launchctl_run refuses to run unbounded.
+# Resolved up front because the launchctl bootout at the end of this script is a
+# child process, and launchctl_run refuses to run one unbounded.
 #
-# Hoisted here after getting it wrong. It used to be resolved inside the reset
-# block, which is after the version comparison, so every comparison returned 125
-# for want of a delay command -- read as "below the floor" -- and every ordinary
-# upgrade reloaded carrier defaults. Exactly the silent repeating regression the
-# comment above says must not happen, produced by the code meant to prevent it.
+# Nothing above it needs a child process any more. 1.6.0 also ran a dpkg version
+# comparison and two killall invocations through here, and resolving the delay
+# command too late made every comparison report "below the floor" and reset the
+# modem on every ordinary upgrade. With those gone, a missing delay command costs
+# only the bootout.
 if ! resolve_delay_command; then
-    warn "no usable delay command was found, so no child process could be bounded. nothing that needs one was run: the modem may still be narrowed, and a running maintenance owner was left alone."
+    warn "no usable delay command was found, so no child process could be bounded. a running maintenance owner was left alone. It stops at the next reboot."
 fi
 
-case "$ACTION" in
-    remove)
-        RETIRING=1
-        RETIRE_REASON='the package is being removed'
-        ;;
-    upgrade)
-        if [ -z "$INCOMING_VERSION" ]; then
-            # No version to compare. Fail toward an un-narrowed modem: a reset
-            # the user did not need is undone with one tap, while a downgrade
-            # that skipped it leaves no in-package way back.
-            RETIRING=1
-            RETIRE_REASON='dpkg named no incoming version, so the successor could not be shown to support the carrier defaults reload'
-        elif [ -z "$LAUNCHCTL_DELAY" ]; then
-            # Same fail-open direction, different cause: the comparison is a
-            # child process and an unbounded one is not an option in a maintainer
-            # script. Reported separately from a missing dpkg so the dpkg log
-            # says which of the two it was.
-            RETIRING=1
-            RETIRE_REASON="the incoming version could not be compared against ${CARRIER_RESET_FLOOR} under a deadline"
-        elif ! resolve_dpkg_command; then
-            RETIRING=1
-            RETIRE_REASON="no usable dpkg was found${DPKG_REPORT:+ (${DPKG_REPORT})}, so the incoming version could not be compared against ${CARRIER_RESET_FLOOR}"
-        elif version_is_at_least "$INCOMING_VERSION" "$CARRIER_RESET_FLOOR"; then
-            note "version ${INCOMING_VERSION} supports the carrier defaults reload, so this upgrade left the band configuration and its records alone."
-        else
-            RETIRING=1
-            RETIRE_REASON="version ${INCOMING_VERSION} predates the carrier defaults reload, or the comparison did not answer, so it could not be relied on to undo a narrowed modem"
-        fi
-        ;;
-    *)
-        note "action '${ACTION:-none}' keeps this package installed, so carrier defaults were left alone."
-        ;;
-esac
-
-if [ -n "$RETIRING" ]; then
-    note "reloading carrier defaults: ${RETIRE_REASON}."
+# A baseline on disk is the load-bearing fact: it means an enable is still in
+# effect, and it holds the only copy of the configuration that predates it.
+BASELINE_PRESENT=''
+if policy_baseline_present; then
+    BASELINE_PRESENT=1
 fi
 
-# Run the carrier defaults reload before removal. This is the only place a
-# forced NR band configuration is undone outside the package itself, and it
-# runs even when the daemon cannot be booted out: a reset that completes but
-# cannot be verified is still better than leaving the modem narrowed.
-#
-# A failure here does not block removal. The user is warned, and the policy
-# records stay on disk so a reinstall can retry the reset.
-reset_succeeded=0
-if [ -z "$RETIRING" ]; then
-    :
-elif [ -z "$LAUNCHCTL_DELAY" ]; then
-    warn "the carrier defaults reload could not be bounded and was skipped. removal continues, and the modem may still be narrowed."
-elif ! resolve_carrier_killall; then
-    warn "no usable killall was found${CARRIER_KILLALL_REPORT:+ (${CARRIER_KILLALL_REPORT})}, so the carrier defaults reload could not be run. removal continues, and the modem may still be narrowed."
-elif carrier_reset_defaults; then
-    reset_succeeded=1
-    note "carrier defaults reloaded."
+if [ "$ACTION" != remove ]; then
+    note "action '${ACTION:-none}' keeps this package installed, so its policy records were left alone."
+elif [ -n "$BASELINE_PRESENT" ]; then
+    # The one message that matters. It is a warning rather than a note because the
+    # user is losing the only tool that can undo this, and it names the way back.
+    warn "the NR band configuration is still narrowed and removal CANNOT undo it. Removing this package does not restore the carrier's band configuration; only turning the preference off in Settings does, because that needs a modem write this script cannot perform. The saved original configuration is being kept on disk, so reinstalling and turning the preference off still works."
 else
-    warn "the carrier defaults reload could not complete both invocations, so the modem may still be narrowed. removal continues, and the policy records were left in place so a reinstall can retry."
+    note "no band configuration was in effect, so there was nothing to undo."
 fi
 
-# Records are discarded only after a confirmed reset. On an unconfirmed one they
-# are the only remaining evidence that the modem was left narrowed, and a
-# reinstall needs that to know there is something to undo.
-if [ "$reset_succeeded" -eq 1 ] && ! discard_policy_records; then
-    warn "carrier defaults were reloaded but some policy records could not be removed, so a reinstall may report a stale transition."
+# Records are discarded only when there is provably nothing left to undo, which
+# means no baseline. Anything else and they stay: they are the only remaining
+# description of what was changed and how to change it back, and a reinstall needs
+# them. Deleting them on the strength of a signal that a process was killed is
+# what 1.6.0 did, and it destroyed exactly this evidence.
+if [ "$ACTION" = remove ] && [ -z "$BASELINE_PRESENT" ] && ! discard_policy_records; then
+    warn "some policy records could not be removed, so a later reinstall may report a stale transition."
 fi
 
 # The band selection is user preference data, not policy evidence. It is not in
@@ -224,10 +184,10 @@ fi
 # so the one remedy every user reaches for -- remove and reinstall -- would
 # silently inherit the same selection and fail the same way.
 #
-# Only on `remove`, and deliberately not on the downgrade path: a downgrade keeps
-# a package installed, and the version it lands on does not read this file at
-# all, so the selection is still the user's to keep. Independent of whether the
-# reset worked, because preference data cannot leave the modem in a worse state.
+# Only on `remove`, and deliberately not on an upgrade or downgrade: those keep a
+# package installed, and the version it lands on either reads this file or ignores
+# it, so the selection is still the user's to keep. Independent of the baseline,
+# because preference data cannot leave the modem in a worse state.
 if [ "$ACTION" = remove ] && ! discard_band_selection; then
     warn "the stored NR band selection could not be discarded, so a later reinstall will inherit it."
 fi

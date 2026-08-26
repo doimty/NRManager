@@ -12,7 +12,7 @@ typedef void (^CCNMSettingsActionHandler)(void);
 // controls remain unavailable and this controller only renders placeholders.
 @property (nonatomic, copy, nullable) CCNMSettingsPreferenceRequestHandler n78PreferenceRequestHandler;
 @property (nonatomic, copy, nullable) CCNMSettingsActionHandler refreshServingStatusHandler;
-@property (nonatomic, copy, nullable) CCNMSettingsActionHandler resetCarrierConfigurationHandler;
+@property (nonatomic, copy, nullable) CCNMSettingsActionHandler restoreSavedConfigurationHandler;
 
 - (void)updateN78PreferenceEnabled:(BOOL)enabled controlAvailable:(BOOL)available;
 - (void)updateTransitionStateWithLocalizationKey:(NSString *)localizationKey;

@@ -179,6 +179,25 @@ class WritePathSubscriptionSlotSourceTests(unittest.TestCase):
         start = source.index(marker)
         return source[start:source.index("\n}\n", start) + 3]
 
+    @classmethod
+    def method(cls, source, signature):
+        """A method body, skipping any forward declaration of the same signature.
+
+        `performRestoreOperation:` is declared in the private class extension
+        before it is defined, and that declaration ends in a semicolon with no
+        body. Slicing from the first match returns whatever method follows the
+        extension instead, which parses fine and asserts nothing.
+        """
+        position = 0
+        while True:
+            start = source.index(signature, position)
+            rest = source[start:]
+            brace = rest.find("{")
+            semicolon = rest.find(";")
+            if brace != -1 and (semicolon == -1 or brace < semicolon):
+                return rest[: rest.index("\n}\n") + 3]
+            position = start + len(signature)
+
     @staticmethod
     def calls_to(source, marker):
         """Every call to marker, rejoined across line wraps, declarations aside."""
@@ -233,11 +252,11 @@ class WritePathSubscriptionSlotSourceTests(unittest.TestCase):
     def test_the_sole_sim_resolution_mode_is_gone_with_its_only_caller(self):
         # A third resolution mode existed for the known-orphan replay, which
         # carried BandInfo reviewed on a single-SIM reference device and so had to
-        # refuse a phone holding two. The replay is gone -- a carrier reset undoes
-        # a narrowed modem without knowing what it was narrowed from -- and a
-        # stricter mode with no caller is a trap: the next path that wants "be
-        # careful here" would reach for it without the reviewed evidence that made
-        # the strictness meaningful.
+        # refuse a phone holding two. The replay is gone -- the restore replays
+        # only a baseline this device wrote about itself, which cannot be evidence
+        # from someone else's phone -- and a stricter mode with no caller is a
+        # trap: the next path that wants "be careful here" would reach for it
+        # without the reviewed evidence that made the strictness meaningful.
         for token in ("CCNMTargetResolutionRecordedSoleSIM",
                       "CCNMKnownOrphan",
                       "approved only for a phone holding one SIM"):
@@ -263,24 +282,30 @@ class WritePathSubscriptionSlotSourceTests(unittest.TestCase):
                 self.assertNotIn('slotID"] ?: @1', source)
                 self.assertNotIn('slotID"] ?: @(1)', source)
 
-    def test_carrier_reset_records_only_a_slot_it_could_validate(self):
-        # The reset replaced a restore that replayed a baseline, and it inherited
-        # this obligation from it: the slot it writes into the pending checkpoint
-        # names what the post-reset observation should read back, so a wrong value
-        # would have the reset confirm itself against the wrong line.
+    def test_the_resumable_cleanup_records_only_a_slot_it_could_validate(self):
+        # The branch that finishes a restore whose read-back already matched. Its
+        # baseline is gone by definition -- retiring it is the step that proves the
+        # read-back matched -- so the slot cannot come from there, and the state
+        # record it is resuming may predate the slot field entirely.
         #
-        # It needs no subscription to run, which is the whole point of it, so an
-        # absent slot is not a failure -- it is omitted from the record rather than
-        # defaulted, because a record claiming slot 1 on a phone never observed
-        # there is worse than a record that claims nothing.
-        start = self.controller.index("- (NSDictionary *)performCarrierReset:")
-        body = self.controller[start:self.controller.index("\n}\n", start)]
-        self.assertIn("NSNumber *slotID = CCNMValidSlotID(baseline[@\"slotID\"]) ? baseline[@\"slotID\"]",
+        # So the slot comes from the subscription the branch just revalidated, and
+        # an absent one is a refusal rather than a default: a record claiming slot
+        # 1 on a phone never observed there is worse than no record, because every
+        # later revalidation would bind to it.
+        body = self.method(self.controller, "- (NSDictionary *)performRestoreOperation:")
+        self.assertIn('NSNumber *cleanupSlotID = [details[@"targetSlotID"] isKindOfClass:NSNumber.class]',
                       body)
-        self.assertIn("CCNMValidSlotID(state[@\"slotID\"]) ? state[@\"slotID\"] : nil", body)
-        self.assertIn("if (slotID) {", body)
-        self.assertIn('pendingExtra[@"slotID"] = slotID;', body)
+        self.assertIn("if (!CCNMValidSlotID(cleanupSlotID)) {", body)
+        self.assertIn("CCNMN78PolicyErrorUnsafeSubscription", body)
+        self.assertIn('@"slotID": cleanupSlotID', body)
         self.assertNotIn('@"slotID": @1', body)
+        # `targetSlotID` is published by the revalidation, so the read has to come
+        # after it. Reading it earlier would pick up whatever a previous call left.
+        self.assertLess(body.index("CCNMSafeTargetContext("), body.index("cleanupSlotID"))
+        # The writing path in the same method has a baseline, and takes the slot
+        # from it: CCNMValidateBaselineRecord has already refused a baseline whose
+        # slot is absent or invalid, so there is nothing left to default.
+        self.assertIn('@"slotID": baseline[@"slotID"]', body)
 
     def test_refusal_names_the_observed_layout_not_just_the_rule(self):
         # The device screenshot that started this work said only "exactly one

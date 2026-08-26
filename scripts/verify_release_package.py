@@ -127,11 +127,10 @@ INSTALL_GUARD_RELATIVE = "usr/libexec/networkmanager-install-guard"
 # Retired, and asserted absent rather than simply unlisted. The removal guard
 # existed to decide whether the package still held a band configuration that had
 # to be restored before it could be removed, and to block removal until the user
-# did that in Settings. The carrier reset needs no such record -- it discards the
-# whole carrier configuration, so it undoes a narrowed modem without knowing what
-# was narrowed -- so removal has nothing left to refuse. Shipping the old binary
-# alongside the new prerm would put a fail-closed gate back on a path that is now
-# unconditionally non-blocking.
+# did that in Settings. Removal is unconditionally non-blocking now: it cannot
+# restore anything, so it says so, keeps the records that let the Settings route
+# still work after the package is gone, and lets dpkg finish. Shipping the old
+# binary alongside the new prerm would put a fail-closed gate back on that path.
 RETIRED_REMOVAL_GUARD_RELATIVE = "usr/libexec/networkmanager-removal-guard"
 MAINTENANCE_HELPER_RELATIVE = "usr/libexec/" + MAINTENANCE_HELPER_NAME
 REQUIRED_PAYLOAD_FILES = {
@@ -559,10 +558,10 @@ def verify_maintainer_scripts(control_root: Path, failures: List[str]) -> Dict[s
                 failures.append(
                     "maintainer script %s still contains the %s placeholder" % (name, placeholder)
                 )
-        # Only postinst delegates to a compiled guard. prerm's privileged work
-        # is a carrier reset and a record cleanup, both of which the shell does
-        # itself, so requiring a delegation there would demand the retired
-        # removal guard be shipped again.
+        # Only postinst delegates to a compiled guard. prerm's work is reading the
+        # policy records and deleting them when nothing is left to undo, which the
+        # shell does itself, so requiring a delegation there would demand the
+        # retired removal guard be shipped again.
         if name == "postinst":
             guard = INSTALL_GUARD_RELATIVE.rsplit("/", 1)[-1]
             if guard not in text:

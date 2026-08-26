@@ -1,6 +1,28 @@
 # Carrier configuration reset rebuild
 
-Status: implementation in progress on `feature/nr-band-selection-1.6.0`, baseline `0baf98a`.
+Status: **superseded and disproven.** Kept as the record of a wrong turn, because
+the reasoning below is exactly what the device refuted and the refutation is the
+load-bearing fact for 1.6.1.
+
+What happened: this plan was implemented and shipped as 1.6.0. On the target
+device the bands stayed narrowed after the two invocations, so the locked device
+fact stated below is false. Worse, the plan's success criterion was the kill's
+exit status, and 1.6.0 used that false success to authorise deleting the policy
+records -- including the baseline, the only copy of the pre-enable band
+configuration. The one path that could not restore was also the one that destroyed
+the means of restoring.
+
+1.6.1 retires the whole mechanism and revives the reverse `setActiveBandInfo:`
+write this plan called unnecessary. Two rules come directly out of the failure:
+
+- Success is a modem read-back. Never a process exit status.
+- The baseline is retired only after that read-back matched.
+
+The original text follows unchanged.
+
+---
+
+Original status: implementation in progress on `feature/nr-band-selection-1.6.0`, baseline `0baf98a`.
 
 ## Locked device fact
 

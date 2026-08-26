@@ -1,5 +1,16 @@
 # NR band selection (1.6.0) — implementation plan
 
+> **1.6.1 note.** The selection feature described here is unchanged and still
+> current. What changed after this plan was written is the *undo* path: 1.6.0 also
+> shipped a `killall -9 CommCenter` "carrier defaults reload" in place of the
+> reverse `setActiveBandInfo:` write, and the target device disproved it -- the
+> bands stayed narrowed. Because that path read a process exit status as proof of
+> success, it then deleted the baseline, which is the only copy of the pre-enable
+> configuration. 1.6.1 retires the reload, revives the reverse write, and gates
+> baseline retirement on a modem read-back. See `docs/carrier-reset-recovery-plan.md`
+> for the disproven plan and the two rules that came out of it. Nothing in the
+> selection design below depends on which undo mechanism is in place.
+
 Status: **all work items landed; pinned cloud build passed, hardware verification pending.** Commits `5472aaa` (payload, records, summary, daemon, decision module) and `efc0669` (removal cleanup) implement work items 1–11, 16 and 17; commit `54ce741` plus the evidence-only follow-up `e233deb` implement items 12–15, which makes the feature reachable by a user for the first time — before it, `CCNMWriteSelectedNRBands` had no caller in the shipped bundle and every install read the default `@[ @78 ]`. Item 13 landed in a materially different form than planned, described at the item. Release run `32688526055` built and verified both lanes from the final source SHA; nothing here is device-verified. See "Implementation status".
 
 Supersedes nothing in 1.5.0; 1.5.0 remains the shipping line. Its dual-SIM write path is confirmed working on the reporting device; three of the four retest steps are still unreported. See "Sequencing".

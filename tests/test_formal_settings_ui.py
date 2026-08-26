@@ -28,6 +28,22 @@ ORIGINAL_REPO = "https://github.com/NoisyFlake/NetworkManager"
 MAINTAINED_REPO = "https://github.com/doimty/NetworkManagerReborn"
 
 
+def code_lines(source: str) -> str:
+    """`source` with comment-only and preprocessor lines dropped.
+
+    An assertion that a symbol is absent has to be made against code, not prose.
+    The UI explains in a comment which controller call ends in a modem write, and
+    matching that sentence would fail the test on its own documentation.
+    """
+    kept = []
+    for line in source.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("//") or stripped.startswith("#"):
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
 def control_version() -> str:
     """The shipped version, from the file dpkg reads.
 
@@ -136,14 +152,17 @@ class FormalSettingsUITests(unittest.TestCase):
             "dataLine",
             "freshness",
             "recoveryState",
-            # The recovery action used to be "restore original bands", replaying the
-            # saved baseline into the modem. It is a carrier defaults reload now:
-            # the same button, a mechanism that needs no saved record to undo an
-            # enable, so it also works when the baseline is missing or foreign.
-            "resetCarrierDefaults",
+            # The recovery action replays the saved baseline into the modem. 1.6.0
+            # made it a carrier defaults reload, which needed no saved record and
+            # so also worked when the baseline was missing; the target device
+            # showed the reload does not actually widen the bands back, so the
+            # reverse write is the mechanism again and the row is named for the
+            # saved configuration it restores.
+            "restoreSavedConfiguration",
         ):
             self.assertEqual(identifiers.count(identifier), 1)
-        self.assertNotIn("restoreOriginalBands", identifiers)
+        for retired in ("restoreOriginalBands", "resetCarrierDefaults"):
+            self.assertNotIn(retired, identifiers)
         self.assertIn("rebuildRecoverySection", self.controller)
         self.assertIn("removeObjectsInArray:self.recoverySpecifiers", self.controller)
         loader_start = self.controller.index("loadSpecifiersFromPlistName:")
@@ -183,13 +202,14 @@ class FormalSettingsUITests(unittest.TestCase):
             self.assertNotIn(forbidden, combined)
 
     def test_ui_has_no_direct_modem_write(self):
+        sources = code_lines(self.controller) + code_lines(self.cells)
         for forbidden in (
             "setActiveBandInfo",
             "_CTServerConnectionSetRATSelection",
             "setRatSelection:",
             "setRatSelectionMask:",
         ):
-            self.assertNotIn(forbidden, self.controller + self.cells)
+            self.assertNotIn(forbidden, sources)
 
     def test_ui_is_wired_to_policy_and_truthful_serving_provider(self):
         for token in (

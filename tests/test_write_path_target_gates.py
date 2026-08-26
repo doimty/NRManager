@@ -5,7 +5,7 @@ This file used to pin a split into two gates, because there were two kinds of
 write:
 
 * Self-sourced. ``performEnable`` reads live BandInfo and resends it with the NR
-  array narrowed, and ``performRestoreOperation:`` resent a baseline this device
+  array narrowed, and ``performRestoreOperation:`` resends a baseline this device
   had written about itself. Every byte originated on the device receiving it.
 
 * Historical replay. The known-orphan path carried a reviewed BandInfo table
@@ -13,16 +13,17 @@ write:
   front of it. It proceeded only after the live active and supported dictionaries
   matched that table exactly.
 
-Only the first kind is left. Undoing an enable is a carrier defaults reload now,
-which discards the whole carrier configuration and therefore needs no record of
-what was narrowed -- so both the baseline replay and the historical replay lost
-their reason to exist, and with them the second gate.
+Only the first kind is left. 1.6.0 briefly had one self-sourced writer and no
+replay of either sort, because undoing an enable was a carrier defaults reload;
+the target device disproved that mechanism, so the reverse baseline write is back
+and there are two self-sourced writers again. The historical replay stayed
+retired, and so did its gate.
 
-What has to stay pinned is narrower than a split but not weaker: one gate, on the
-one path that writes; it reads identity itself instead of trusting the reporting
-dictionary; and it renders no verdict about which device or OS is acceptable. The
-last part is the regression to guard, because a model allowlist is the thing that
-was removed and it is a natural thing to reach for again.
+What has to stay pinned: one gate, on every path that writes and on no others; it
+reads identity itself instead of trusting the reporting dictionary; and it renders
+no verdict about which device or OS is acceptable. The last part is the regression
+to guard, because a model allowlist is the thing that was removed and it is a
+natural thing to reach for again.
 """
 
 from __future__ import annotations
@@ -44,9 +45,15 @@ ORPHAN_FIXTURE = REPO / "tests/fixtures/known_orphaned_n78_evidence.json"
 WRITE_GATE = "CCNMValidateSelfSourcedWriteTarget"
 RETIRED_REPLAY_GATE = "CCNMValidateHistoricalReplayTarget"
 
-# The only method that may reach the modem setter, and so the only one that may
-# call the gate. `performRestoreOperation:` used to be here too.
-WRITE_CALLERS = {"performEnable"}
+# The only methods that may reach the modem setter, and so the only ones that may
+# call the gate.
+WRITE_CALLERS = {"performEnable", "performRestoreOperation:"}
+
+# One definition, plus one call in performEnable, plus two in
+# performRestoreOperation: -- the second is the resumable no-write cleanup branch,
+# which revalidates the target before it trusts a checkpoint written by an earlier
+# boot. A change to this number means a write path appeared or disappeared.
+WRITE_GATE_OCCURRENCES = 4
 
 _ENCLOSING = re.compile(
     r"^(?:static\s+[\w\s*<>]+?(?P<fn>CCNM\w+)\s*\(|- \([\w\s*<>]+\)(?P<sel>\w+:?))"
@@ -64,6 +71,25 @@ def gate_call_sites(source: str, gate: str) -> set[str]:
         if f"{gate}(" in line and not line.startswith("static BOOL"):
             callers.add(enclosing)
     return callers
+
+
+def method_body(source: str, signature: str) -> str:
+    """The body of an Objective-C method, skipping any forward declaration.
+
+    `performRestoreOperation:` is declared in the private class extension before it
+    is defined, so the first occurrence of its signature is followed by a `;` and
+    no body at all. Slicing from there silently returns the first method of the
+    implementation instead, which is a different function that happens to parse.
+    """
+    position = 0
+    while True:
+        start = source.index(signature, position)
+        rest = source[start:]
+        brace = rest.find("{")
+        semicolon = rest.find(";")
+        if brace != -1 and (semicolon == -1 or brace < semicolon):
+            return rest[: rest.index("\n}\n")]
+        position = start + len(signature)
 
 
 class WritePathTargetGateTests(unittest.TestCase):
@@ -100,11 +126,9 @@ class WritePathTargetGateTests(unittest.TestCase):
                 self.assertNotIn("CCNMKnownOrphanHistorical", source)
                 self.assertNotIn("CCNMKnownOrphanBandInfoMatches", source)
 
-    def test_only_the_enable_path_is_gated_because_only_it_writes(self) -> None:
+    def test_every_writing_path_is_gated_and_nothing_else_is(self) -> None:
         self.assertEqual(gate_call_sites(self.source, WRITE_GATE), WRITE_CALLERS)
-        # Exactly one call and one definition. A second call would mean a second
-        # write path appeared without this file noticing.
-        self.assertEqual(self.source.count(f"{WRITE_GATE}("), 2)
+        self.assertEqual(self.source.count(f"{WRITE_GATE}("), WRITE_GATE_OCCURRENCES)
 
     def test_the_gate_runs_before_the_setter_is_reached(self) -> None:
         """Ordering, not just presence: a gate after the write decides nothing."""
@@ -114,6 +138,22 @@ class WritePathTargetGateTests(unittest.TestCase):
         self.assertLess(enable.index(WRITE_GATE), enable.index("CCNMCreateClient"))
         self.assertLess(enable.index(WRITE_GATE), enable.index("CCNMBuildSelectedNRPayload"))
         self.assertIn("CCNMN78PolicyErrorUnsupportedTarget", enable)
+
+    def test_the_restore_path_is_gated_before_it_builds_a_payload(self) -> None:
+        """The reverse write gets the same ordering guarantee as the enable.
+
+        Both call sites are checked, and the writing one is checked against the
+        payload builder rather than only against the client: the payload is what
+        the setter receives, and a gate after it has already let an ungated
+        decision be made.
+        """
+        restore = method_body(self.source, "- (NSDictionary *)performRestoreOperation:")
+        first = restore.index(WRITE_GATE)
+        last = restore.rindex(WRITE_GATE)
+        self.assertLess(first, last)
+        self.assertLess(last, restore.index("CCNMBuildRestorePayload("))
+        self.assertLess(last, restore.index("CCNMCallSetter("))
+        self.assertIn("CCNMN78PolicyErrorUnsupportedTarget", restore)
 
     def test_identity_is_read_by_the_gate_not_taken_from_the_caller(self) -> None:
         """A baseline cannot be written without model, version, and build.
@@ -219,35 +259,69 @@ class WritePathTargetGateTests(unittest.TestCase):
                               '"supportedBands"', '"modifiedBandKeys"'):
                     self.assertIn(field, validate)
 
-    def test_the_retired_compatibility_check_left_no_stub_behind(self) -> None:
-        """It compared a baseline against the live modem before replaying it.
+    def test_the_compatibility_check_is_live_again_and_only_where_it_writes(self) -> None:
+        """It compares a retained baseline against the live modem before replaying it.
 
-        With no replay there is no write for it to guard, and an exported
-        predicate with no caller reads as protection that is still running.
+        1.6.0 retired it, correctly for that build: the reload undid an enable
+        without reading what had been narrowed, so there was no replay for the
+        check to guard and an exported predicate with no caller reads as protection
+        that is still running. The reverse write brought the replay back, so the
+        check is load-bearing again -- but only in the controller. The reader is
+        what the maintenance daemon links, and the daemon never writes, so a copy
+        there would be exactly the uncalled predicate 1.6.0 was right to delete.
         """
-        for name, source in self.compatibility_sources():
-            with self.subTest(source=name):
-                self.assertNotIn("CCNMValidateBaselineCompatibility", source)
-                self.assertNotIn("CCNMBaselineNRBandsFitCurrentCapability", source)
+        self.assertIn("static BOOL CCNMValidateBaselineCompatibility(", self.source)
+        self.assertIn("static BOOL CCNMBaselineNRBandsFitCurrentCapability(", self.source)
+        for name in ("CCNMValidateBaselineCompatibility", "CCNMBaselineNRBandsFitCurrentCapability"):
+            with self.subTest(symbol=name):
+                self.assertNotIn(name, self.reader)
         header = (REPO / "networkmanagerprefs/CCNMN78PolicyReader.h").read_text(encoding="utf-8")
         self.assertNotIn("CCNMValidateBaselineCompatibility", header)
+        # Its one caller is the restore, and it runs before the payload is built.
+        self.assertEqual(gate_call_sites(self.source, "CCNMValidateBaselineCompatibility"),
+                         {"performRestoreOperation:"})
+        restore = method_body(self.source, "- (NSDictionary *)performRestoreOperation:")
+        self.assertLess(restore.index("CCNMValidateBaselineCompatibility("),
+                        restore.index("CCNMBuildRestorePayload("))
 
-    def test_the_error_code_it_produced_stays_mapped_for_older_state(self) -> None:
-        """Retired producer, retained mapping, and the two are different things.
+    def test_the_compatibility_check_still_refuses_to_judge_the_os(self) -> None:
+        """Same hardware is a gate; the OS version and build are not.
 
-        1.5.0 shipped this code and persisted it into the state record's
-        errorCode. A device upgrading from that state would otherwise be shown the
-        generic failure string in place of the reason.
+        An iOS update does not invalidate a rollback whose capability shape and
+        owned-band evidence still fit, and refusing on build alone would strand
+        every device that updates while the policy is enabled. The version fields
+        stay recorded as evidence, which is why they are present in the record and
+        absent from the verdict.
         """
-        controller = self.source
+        body = self.function_body(self.source, "CCNMValidateBaselineCompatibility")
+        self.assertIn('[baseline[@"deviceModel"] isEqual:identity[@"deviceModel"]]', body)
+        self.assertNotIn('identity[@"systemVersion"]', body)
+        self.assertNotIn('identity[@"systemBuild"]', body)
+        # A baseline written before the capability snapshot existed is accepted, for
+        # the same reason CCNMValidateBaselineRecord accepts it.
+        self.assertIn("if (!hasCapabilitySnapshot) {", body)
+        self.assertNotIn("iPhone14,3", body)
+        self.assertNotIn("19B81", body)
+
+    def test_the_error_code_it_produces_stays_mapped_in_the_ui(self) -> None:
+        """A producer with no user-visible string shows the generic failure instead.
+
+        1.5.0 shipped this code and persisted it into the state record's errorCode,
+        so the mapping had to survive the 1.6.0 retirement for devices upgrading
+        out of that state. The producer is back, which makes the mapping current
+        rather than merely historical -- both halves are asserted here so neither
+        can be removed as dead on the assumption that the other went with it.
+        """
         ui = (REPO / "networkmanagerprefs/CCNMRootListController.m").read_text(encoding="utf-8")
         support = (REPO / "networkmanagerprefs/CCNMN78PolicySupport.h").read_text(encoding="utf-8")
         implementation = (REPO / "networkmanagerprefs/CCNMN78PolicySupport.m").read_text(encoding="utf-8")
-        for text in (support, implementation, ui):
+        for text in (support, implementation, ui, self.source):
             self.assertIn("CCNMN78PolicyErrorBaselineIncompatible", text)
         self.assertIn("POLICY_ERROR_BASELINE_INCOMPATIBLE", ui)
-        # No producer left, and that is the assertion, not an omission.
-        self.assertNotIn("CCNMN78PolicyErrorBaselineIncompatible", controller)
+        for lproj in ("en", "zh-Hans"):
+            strings = (REPO / f"networkmanagerprefs/Resources/{lproj}.lproj/NetworkManagerPrefs.strings")
+            with self.subTest(lproj=lproj):
+                self.assertIn("POLICY_ERROR_BASELINE_INCOMPATIBLE", strings.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

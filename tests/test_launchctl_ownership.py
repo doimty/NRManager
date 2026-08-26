@@ -262,15 +262,28 @@ class SentinelHandoffTests(unittest.TestCase):
         # act. Deleted, not unreferenced, and out of the build too.
         self.assertFalse(RETIRED_PRERM_SOURCE.exists())
         self.assertNotIn("prerm.m", ACTIONS_MAKEFILE.read_text())
-        # The ordering that mattered is now between the reset and the bootout,
-        # in the other direction from the guard's: the modem has to be handed back
-        # to the carrier while the package is still whole, and only then may the
-        # daemon be stopped. A daemon stopped first would be one less reader of
-        # the state the reset is about to invalidate, but it would also mean a
-        # failed reset leaves nothing running to notice.
+        # The ordering that mattered was between the guard and the bootout. What is
+        # left is between the record decisions and the bootout, and it still runs
+        # in that direction: every question about the policy records is answered
+        # and acted on before launchd is asked for anything.
+        #
+        # The reason is that the bootout is the one step here that can hang or be
+        # refused. It is deliberately not a blocking condition -- dpkg unlinks the
+        # plist with the package -- and putting it last is what keeps a launchd
+        # that never answers from also costing the user the warning about a
+        # baseline that is still in effect.
         prerm_shell = PRERM_TEMPLATE.read_text()
-        self.assertLess(prerm_shell.index("carrier_reset_defaults"),
-                        prerm_shell.index("launchd_bootout"))
+        bootout = prerm_shell.index("launchd_bootout")
+        for earlier in ("policy_baseline_present", "BASELINE_PRESENT=1",
+                        "CANNOT undo it", "discard_policy_records",
+                        "discard_band_selection"):
+            with self.subTest(before_bootout=earlier):
+                self.assertLess(prerm_shell.index(earlier), bootout)
+        # 1.6.0's ordering constraint was about a modem write in this script. There
+        # is none, so nothing here may signal CommCenter to create one.
+        self.assertNotIn("CommCenter", "\n".join(
+            line for line in prerm_shell.splitlines()
+            if not line.lstrip().startswith("#")))
 
 
 class ShellOwnsLaunchctlTests(unittest.TestCase):

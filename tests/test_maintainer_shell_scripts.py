@@ -78,29 +78,13 @@ BARE_LAUNCHCTL_CANDIDATES = """    printf '%s\\n' \\
         /sbin/launchctl \\
         /basebin/launchctl"""
 
-# The same hazard, and a worse one. On the macOS packaging runner /usr/bin/killall
-# is real, so a prerm test would resolve it and actually run `killall -9
-# CommCenter` against the build machine. Stripped from the rendered script for
-# every test, exactly like the launchctl list, so the only reachable killall is a
-# stub this harness controls. The list itself is a source-level contract,
-# asserted verbatim in tests/test_carrier_reset.py.
-BARE_KILLALL_CANDIDATES = """    printf '%s\\n' \\
-        /usr/bin/killall \\
-        /bin/killall \\
-        /usr/sbin/killall \\
-        /sbin/killall \\
-        /basebin/killall"""
-
-# And dpkg, for a subtler reason than the other two. The host's own dpkg is real
-# on a Linux runner and answers --compare-versions perfectly well, so a test that
-# does not strip it passes while silently testing the host's dpkg instead of the
-# fixture's. That hides the two cases worth covering: a comparison that cannot be
-# run at all, and a comparison that hangs. Stripped for the same reason, and
-# asserted for the same reason.
-BARE_DPKG_CANDIDATES = """    printf '%s\\n' \\
-        /usr/bin/dpkg \\
-        /bin/dpkg \\
-        /usr/local/bin/dpkg"""
+# There used to be two more of these, for killall and dpkg, because 1.6.0's prerm
+# ran `killall -9 CommCenter` twice and compared the incoming version against a
+# floor. Both are gone from the script, so both are gone from here. The reason
+# they existed is worth keeping in mind for whatever lands next: the packaging
+# runner has a real /usr/bin/killall and a real /usr/bin/dpkg, so an unstripped
+# candidate list means a test either signals a process on the build machine or
+# silently exercises the host's tool instead of the fixture's.
 
 
 # The substitution mechanism this build retired, and the three tools it needed.
@@ -125,6 +109,19 @@ def assertRetiredToolsAbsent(case, template):
         found = RETIRED_TOOLS.search(code)
         case.assertIsNone(
             found, f"{template.name} still reaches for {found.group(0) if found else ''}: {line}")
+
+
+def shell_code(text: str) -> str:
+    """`text` with whole-line shell comments dropped.
+
+    Both templates explain the retired mechanisms at length -- the CommCenter
+    reload, the killall it needed, the dpkg version floor -- and that prose is
+    worth keeping. A plain substring test for those names finds the rationale
+    rather than any surviving code, so an assertion written that way fails on its
+    own explanation. Only executable lines are examined.
+    """
+    return "\n".join(line for line in text.splitlines()
+                     if not line.lstrip().startswith("#"))
 
 
 def staged_plist(prefix):
@@ -278,67 +275,37 @@ class ShellScriptBase(unittest.TestCase):
                 for line in self.launchctl_log.read_text().splitlines() if line]
 
     # ------------------------------------------------------------------
-    # killall
+    # Policy records
     #
-    # Same candidate-path design as launchctl, and reachable in tests only
-    # through the jbroot-absolute form, because render() strips the bare list.
+    # The durable evidence prerm inspects. The baseline is the one whose presence
+    # is a decision: it holds the only copy of the pre-enable band configuration,
+    # so while it exists there is something to undo and a way to undo it.
     # ------------------------------------------------------------------
-    def install_killall(self, exit_code=0, second_exit_code=None, hangs=False):
-        """A killall stub that records each invocation.
+    def policy_record_dir(self):
+        return self.prefix / "var/mobile/Library/Preferences"
 
-        second_exit_code models the case the reset contract is about: the first
-        kill succeeds, the second does not, so the observed two-invocation
-        sequence did not complete and the script must not claim carrier defaults
-        were reloaded.
-        """
-        self.killall_log = self.dir / "killall.log"
-        counter = self.dir / "killall.count"
-        path = self.prefix / "usr/bin/killall"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if second_exit_code is None:
-            second_exit_code = exit_code
-        path.write_text(
-            '#!/bin/sh\n'
-            f'printf "%s\\n" "$*" >> "{self.killall_log}"\n'
-            f'if [ -e "{counter}" ]; then\n'
-            f'  exit {second_exit_code}\n'
-            'fi\n'
-            f': > "{counter}"\n'
-            + ('while : ; do :; done\n' if hangs else '')
-            + f'exit {exit_code}\n')
-        path.chmod(0o755)
+    def policy_records(self, create=False):
+        records = [
+            self.policy_record_dir() / f"me.nixuge.networkmanager.n78-policy.{suffix}.plist"
+            for suffix in ("state", "baseline", "intent", "inflight",
+                           "removal-guard")]
+        if create:
+            for record in records:
+                record.parent.mkdir(parents=True, exist_ok=True)
+                record.write_text("stale")
+        return records
+
+    def policy_baseline(self):
+        return (self.policy_record_dir()
+                / "me.nixuge.networkmanager.n78-policy.baseline.plist")
+
+    def band_selection(self, create=False):
+        path = (self.policy_record_dir()
+                / "me.nixuge.networkmanager.n78-selection.plist")
+        if create:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("chosen bands")
         return path
-
-    def killall_calls(self):
-        if not getattr(self, "killall_log", None) or not self.killall_log.exists():
-            return []
-        return [line for line in self.killall_log.read_text().splitlines() if line]
-
-    # ------------------------------------------------------------------
-    # dpkg
-    #
-    # Only prerm's version comparison uses it. Deliberately a stub with a fixed
-    # verdict rather than the host's real dpkg: this asserts which branch the
-    # script takes for a given answer, and tests/test_dpkg_version_floor.py
-    # separately checks the real tool agrees with the expectations those branches
-    # are chosen against.
-    # ------------------------------------------------------------------
-    def install_dpkg(self, at_least=True, hangs=False):
-        self.dpkg_log = self.dir / "dpkg.log"
-        path = self.prefix / "usr/bin/dpkg"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            '#!/bin/sh\n'
-            f'printf "%s\\n" "$*" >> "{self.dpkg_log}"\n'
-            + ('while : ; do :; done\n' if hangs else '')
-            + f'exit {0 if at_least else 1}\n')
-        path.chmod(0o755)
-        return path
-
-    def dpkg_calls(self):
-        if not getattr(self, "dpkg_log", None) or not self.dpkg_log.exists():
-            return []
-        return [line for line in self.dpkg_log.read_text().splitlines() if line]
 
     def install_launchctl_that_hangs(self, on="bootstrap", loaded=False):
         """A launchctl whose named subcommand never returns.
@@ -458,11 +425,11 @@ class ShellScriptBase(unittest.TestCase):
     def read_plist(self):
         return plistlib.loads(self.plist.read_bytes())
 
-    def render(self, repoint_primary=False):
+    def render(self, repoint_primary=False, without_delay_command=False):
         """Render exactly as the packaging step does, then return the path.
 
-        Three documented harness substitutions, all of data lines only, never of
-        logic, and all asserted so a template rename cannot silently turn this
+        Two documented harness substitutions, both of data lines only, never of
+        logic, and both asserted so a template rename cannot silently turn this
         into a no-op:
 
         - The rootless lane's fixed prefix is /var/jb and a test may not create
@@ -471,16 +438,17 @@ class ShellScriptBase(unittest.TestCase):
           which on a real redirected device it does and on this host it cannot.
           Needed to reach the branch where the bare path resolves but jbroot
           fails.
-        - The bare launchctl candidates are removed. On the macOS packaging
-          runner /usr/bin/launchctl is real, answers `version` successfully, and
-          would then be handed this fixture's plist -- the runner reported
-          "Bootstrap failed: 5: Input/output error" for exactly that. Every test
-          below is about which sequence the script runs and what it reports, not
-          about the host's launchd, so the only reachable launchctl must be a stub
-          this harness controls. That is also the device's shape: bare candidates
-          were ENOENT there and <jbroot>/usr/bin/launchctl was the real binary.
-          The bare list itself is a source-level contract, asserted verbatim in
-          tests/test_launchctl_ownership.py.
+
+        A third, the bare launchctl candidates, is removed. On the macOS packaging
+        runner /usr/bin/launchctl is real, answers `version` successfully, and
+        would then be handed this fixture's plist -- the runner reported
+        "Bootstrap failed: 5: Input/output error" for exactly that. Every test
+        below is about which sequence the script runs and what it reports, not
+        about the host's launchd, so the only reachable launchctl must be a stub
+        this harness controls. That is also the device's shape: bare candidates
+        were ENOENT there and <jbroot>/usr/bin/launchctl was the real binary.
+        The bare list itself is a source-level contract, asserted verbatim in
+        tests/test_launchctl_ownership.py.
         """
         staging = self.dir / "staging"
         (staging / "DEBIAN").mkdir(parents=True, exist_ok=True)
@@ -491,14 +459,6 @@ class ShellScriptBase(unittest.TestCase):
         text = script.read_text()
         self.assertIn(BARE_LAUNCHCTL_CANDIDATES, text)
         text = text.replace(BARE_LAUNCHCTL_CANDIDATES, "    :", 1)
-        if name == "prerm":
-            # Asserted rather than tolerated: if the shipped list stops matching,
-            # this fails loudly instead of quietly letting the host's real
-            # /usr/bin/killall back into a test that runs `killall -9 CommCenter`.
-            self.assertIn(BARE_KILLALL_CANDIDATES, text)
-            text = text.replace(BARE_KILLALL_CANDIDATES, "    :", 1)
-            self.assertIn(BARE_DPKG_CANDIDATES, text)
-            text = text.replace(BARE_DPKG_CANDIDATES, "    :", 1)
         script.write_text(text)
         script.chmod(0o755)
         if self.scheme == "rootless":
@@ -515,11 +475,23 @@ class ShellScriptBase(unittest.TestCase):
             script.write_text(text.replace(
                 needle, f"    PREFIX_PRIMARY='{self.prefix}'\n", 1))
             script.chmod(0o755)
+        if without_delay_command:
+            # The delay command is looked up by absolute path rather than through
+            # PATH -- $PATH is not trustworthy in a maintainer script -- so it
+            # cannot be hidden by emptying PATH, and the resolver's candidate list
+            # is repointed instead.
+            text = script.read_text()
+            needle = "    for _delay in /bin/sleep /usr/bin/sleep; do"
+            self.assertIn(needle, text)
+            script.write_text(text.replace(
+                needle, "    for _delay in /nonexistent/sleep; do", 1))
+            script.chmod(0o755)
         return script
 
     def run_script(self, *args, path_extra=None, cwd=None, repoint_primary=False,
-                   timeout=120):
-        script = self.render(repoint_primary=repoint_primary)
+                   without_delay_command=False, timeout=120):
+        script = self.render(repoint_primary=repoint_primary,
+                            without_delay_command=without_delay_command)
         env = dict(os.environ)
         env["PATH"] = f"{path_extra or self.bin}:{env['PATH']}"
         # capture_output reads both pipes to EOF, which is exactly how the package
@@ -1136,22 +1108,9 @@ class PostinstLaunchdLoadTests(ShellScriptBase):
         # No usable delay command means no deadline is enforceable. Running
         # launchctl unbounded to save a reboot is exactly the trade that caused
         # this bug, so the load is skipped and the plist is left to do its job at
-        # boot. The delay command is looked up by absolute path rather than through
-        # PATH -- $PATH is not trustworthy in a maintainer script -- so it cannot be
-        # hidden by emptying PATH, and the resolver's candidate list is repointed
-        # instead.
+        # boot.
         self.install_launchctl()
-        script = self.render()
-        text = script.read_text()
-        needle = "    for _delay in /bin/sleep /usr/bin/sleep; do"
-        self.assertIn(needle, text)
-        script.write_text(text.replace(
-            needle, "    for _delay in /nonexistent/sleep; do", 1))
-        script.chmod(0o755)
-        env = dict(os.environ)
-        env["PATH"] = f"{self.bin}:{env['PATH']}"
-        result = subprocess.run([str(script), "configure"], capture_output=True,
-                                text=True, env=env, timeout=120)
+        result = self.run_script("configure", without_delay_command=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("no usable sleep command", result.stderr)
         self.assertIn("Reinstall the package", result.stderr)
@@ -1201,17 +1160,22 @@ class PostinstLaunchdLoadTests(ShellScriptBase):
         self.assertEqual(self.launchctl_calls(), [])
 
 
-class PrermCarrierResetTests(ShellScriptBase):
-    """Removal reloads carrier defaults before dpkg unlinks anything.
+class PrermPolicyRecordTests(ShellScriptBase):
+    """Removal cannot undo a narrowed modem, and says so instead of pretending.
 
-    This replaces the removal guard entirely. The guard's job was to decide
-    whether the package still held a band configuration that had to be restored
-    before it could be removed, and to block removal until the user did that in
-    Settings. The reset primitive needs no such record -- it discards the whole
-    carrier configuration, so it undoes a narrowed modem without knowing what was
-    narrowed -- which means removal has nothing left to refuse. The direction of
-    the gate is therefore inverted on purpose: it used to be fail-closed against
-    dpkg, and it is now unconditionally non-blocking.
+    1.6.0 ran `killall -9 CommCenter` twice here and read two zero exit codes as
+    a restored modem. The target device disproved the premise -- the bands stayed
+    narrowed -- and that false success then authorised deleting the policy
+    records, baseline included. The baseline holds the only copy of the
+    pre-enable configuration, so the one path that could not restore was also the
+    one path that destroyed the means of restoring.
+
+    What replaces it is not a smaller version of the same idea. Undoing the
+    narrowing needs the mirror of the write that caused it, a reverse
+    setActiveBandInfo: against CoreTelephony, and that lives in the Settings
+    bundle. So prerm's whole contribution is to keep the records that make the
+    Settings route still work after the package is gone, and to tell the user
+    that route exists.
     """
 
     template = PRERM_TEMPLATE
@@ -1225,53 +1189,78 @@ class PrermCarrierResetTests(ShellScriptBase):
         if guard.exists():
             guard.unlink()
 
-    def test_the_double_kill_runs_before_anything_is_unlinked(self):
-        # Two separate invocations, not one. The device evidence is literal about
-        # this, and a single kill is the shape that did not reload the defaults.
-        self.install_killall()
-        self.install_launchctl(loaded=True)
+    def test_a_baseline_on_disk_is_reported_as_something_removal_cannot_undo(self):
+        # The one message that matters. A user who removes the package while the
+        # modem is narrowed has just lost the only tool that can un-narrow it, and
+        # the dpkg log is the only place they will be told what to do instead.
+        self.policy_records(create=True)
         result = self.run_script("remove")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.killall_calls(), ["-9 CommCenter", "-9 CommCenter"])
-        self.assertIn("carrier defaults reloaded", result.stderr)
+        self.assertIn("CANNOT undo it", result.stderr)
+        self.assertIn("only turning the preference off in Settings", result.stderr)
 
-    def test_a_confirmed_reset_discards_the_policy_records(self):
-        records = self.policy_records()
-        for record in records:
-            record.parent.mkdir(parents=True, exist_ok=True)
-            record.write_text("stale")
-        self.install_killall()
-        result = self.run_script("remove")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        for record in records:
-            self.assertFalse(record.exists(), record.name)
+    def test_nothing_signals_commcenter(self):
+        # The retired primitive, asserted against the rendered script so it cannot
+        # come back through the template or through either include. Executable
+        # lines only: the header explains at length why the reload is gone, and
+        # naming it there is the point.
+        code = shell_code(self.render().read_text())
+        for retired in ("CommCenter", "killall", "carrier defaults"):
+            self.assertNotIn(retired, code, retired)
 
-    def test_an_unconfirmed_reset_keeps_the_records_and_still_allows_removal(self):
-        # The records are the only remaining evidence that the modem was left
-        # narrowed. Deleting them here would tell the next install that there is
-        # nothing to recover, which is the one wrong answer available.
-        records = self.policy_records()
-        for record in records:
-            record.parent.mkdir(parents=True, exist_ok=True)
-            record.write_text("stale")
-        self.install_killall(exit_code=0, second_exit_code=1)
+    def test_the_records_survive_a_removal_that_still_has_something_to_undo(self):
+        # The 1.6.0 defect, pinned. While a baseline exists the records are the
+        # only description of what was changed and how to change it back, and a
+        # reinstall reads them. Deleting them is unrecoverable in a way that
+        # leaving them is not.
+        records = self.policy_records(create=True)
         result = self.run_script("remove")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("could not complete", result.stderr)
-        self.assertIn("removal continues", result.stderr)
         for record in records:
             self.assertTrue(record.exists(), record.name)
 
+    def test_the_records_are_discarded_only_when_no_baseline_remains(self):
+        # No baseline means the enable was already undone in Settings, so the
+        # remaining files describe nothing and a later reinstall should not see a
+        # stale transition.
+        records = self.policy_records(create=True)
+        self.policy_baseline().unlink()
+        result = self.run_script("remove")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("nothing to undo", result.stderr)
+        for record in records:
+            self.assertFalse(record.exists(), record.name)
+
+    def test_an_undeletable_record_is_a_warning_not_a_block(self):
+        # Removal must never be worth failing. A record that survives costs a
+        # stale-transition report on the next install; a blocked removal costs an
+        # unremovable package.
+        records = self.policy_records(create=True)
+        self.policy_baseline().unlink()
+        # A non-empty directory in a record's place, deliberately rather than a
+        # read-only parent: these tests run as root, and root ignores the
+        # permission bits, so a chmod 0o500 fixture silently succeeds at deleting
+        # and the assertion below never sees the branch it is about. `rm -f` fails
+        # on a non-empty directory for every user, and `[ -e ]` still answers yes.
+        stubborn = records[0]
+        stubborn.unlink()
+        stubborn.mkdir()
+        (stubborn / "child").write_text("keeps rm -f from succeeding")
+        result = self.run_script("remove")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("could not be removed", result.stderr)
+        self.assertTrue(stubborn.exists())
+
     def test_the_pending_band_selection_is_discarded_on_removal_only(self):
         # Not policy evidence, so it is not in the policy record set and is not
-        # gated on the reset having worked. It is discarded because a stored band
-        # the current SIM no longer offers makes the toggle refuse, and nothing in
-        # Settings names the stored value -- so remove-and-reinstall, the remedy
-        # every user reaches for, would silently inherit the same broken value.
+        # gated on the baseline. It is discarded because a stored band the current
+        # SIM no longer offers makes the toggle refuse, and nothing in Settings
+        # names the stored value -- so remove-and-reinstall, the remedy every user
+        # reaches for, would silently inherit the same broken value.
         #
-        # Upgrade is the opposite case: the successor package reads the same file
-        # and the user still owns the choice. Discarding it there would look like
-        # the tweak forgetting its setting on every update.
+        # The other three actions keep a package installed that reads the same
+        # file, and the user still owns the choice. Discarding it there would look
+        # like the tweak forgetting its setting on every update.
         for action, survives in (
                 ("upgrade", True),
                 ("failed-upgrade", True),
@@ -1279,131 +1268,78 @@ class PrermCarrierResetTests(ShellScriptBase):
                 ("remove", False),
         ):
             with self.subTest(action=action):
-                selection = (self.prefix / "var/mobile/Library/Preferences"
-                             / "me.nixuge.networkmanager.n78-selection.plist")
-                selection.parent.mkdir(parents=True, exist_ok=True)
-                selection.write_text("chosen bands")
-                self.install_killall()
-                # Only `upgrade` reads a version, and only it consults dpkg. The
-                # successor supports the reload, so this is the branch that must
-                # leave everything alone.
-                self.install_dpkg(at_least=True)
+                selection = self.band_selection(create=True)
                 args = (action, "1.7.0") if action == "upgrade" else (action,)
                 result = self.run_script(*args)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(selection.exists(), survives, action)
 
-    def test_nothing_is_reset_or_discarded_on_an_upgrade(self):
-        # The regression this guards against is silent and repeating: a reset on
-        # every upgrade would undo the user's configuration each time they
-        # updated, and look like the tweak randomly forgetting its setting.
-        records = self.policy_records()
-        for record in records:
-            record.parent.mkdir(parents=True, exist_ok=True)
-            record.write_text("still ours")
-        self.install_killall()
-        self.install_dpkg(at_least=True)
-        result = self.run_script("upgrade", "1.7.0")
+    def test_the_selection_is_discarded_even_while_a_baseline_remains(self):
+        # Independent conditions on purpose. Preference data cannot leave the
+        # modem in a worse state, so there is no reason to make its cleanup wait
+        # on a narrowed modem being undone first.
+        self.policy_records(create=True)
+        selection = self.band_selection(create=True)
+        result = self.run_script("remove")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.killall_calls(), [])
-        for record in records:
-            self.assertTrue(record.exists(), record.name)
-        self.assertEqual(self.dpkg_calls(),
-                         [f"--compare-versions 1.7.0 ge {patcher.CARRIER_RESET_FLOOR}"])
-        self.assertIn("supports the carrier defaults reload", result.stderr)
+        self.assertFalse(selection.exists())
+        self.assertTrue(self.policy_baseline().exists())
 
-    def test_a_downgrade_below_the_floor_is_treated_as_a_retirement(self):
-        # `upgrade` is also how dpkg spells a downgrade, and this half is not
-        # benign: a version below the floor cannot reload carrier defaults, so it
-        # would leave the user no in-package way to undo a narrowed modem. The
-        # records go too, because that version does not understand them either.
-        records = self.policy_records()
-        for record in records:
-            record.parent.mkdir(parents=True, exist_ok=True)
-            record.write_text("stale")
-        self.install_killall()
-        self.install_dpkg(at_least=False)
-        result = self.run_script("upgrade", "1.5.0")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.killall_calls(),
-                         ["-9 CommCenter", "-9 CommCenter"])
-        for record in records:
-            self.assertFalse(record.exists(), record.name)
-        self.assertIn("predates the carrier defaults reload", result.stderr)
-
-    def test_an_unanswerable_comparison_reloads_rather_than_assuming(self):
-        # Fails toward an un-narrowed modem. A reset the user did not need is one
-        # tap to undo; a downgrade that skipped it is not. Both causes are
-        # reported distinctly, because the dpkg log is the only place anyone will
-        # ever see which one it was.
-        for label, install, expected in (
-                ("no dpkg at all", lambda: None, "no usable dpkg was found"),
-                ("dpkg never answers", lambda: self.install_dpkg(hangs=True),
-                 "predates the carrier defaults reload"),
+    def test_nothing_is_touched_on_an_upgrade(self):
+        # Three of dpkg's four prerm actions keep a package installed that reads
+        # these records and ships the Settings UI that owns them, so there is
+        # nothing to tidy and nothing to warn about.
+        for action, args in (
+                ("upgrade", ("upgrade", "1.7.0")),
+                ("failed-upgrade", ("failed-upgrade", "1.5.0")),
+                ("deconfigure", ("deconfigure",)),
         ):
-            with self.subTest(case=label):
-                self.install_killall()
-                install()
-                result = self.run_script("upgrade", "1.7.0")
+            with self.subTest(action=action):
+                # A working launchctl, because the bootout is not part of what
+                # this test is about and an unresolvable one warns on every
+                # action. Stopping the daemon here is correct in its own right:
+                # dpkg is about to unlink the binary it is running.
+                self.install_launchctl(loaded=True)
+                records = self.policy_records(create=True)
+                result = self.run_script(*args)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn(expected, result.stderr)
-                self.assertEqual(self.killall_calls(),
-                                 ["-9 CommCenter", "-9 CommCenter"])
+                self.assertIn("keeps this package installed", result.stderr)
+                self.assertNotIn("warning —", result.stderr)
+                for record in records:
+                    self.assertTrue(record.exists(), f"{action}: {record.name}")
                 self.setUp()
 
-    def test_a_hung_comparison_does_not_suppress_the_reset(self):
-        # The bug this pins. Both the comparison and the reset run bounded
-        # children, and routing both through the *latching* launchd wrapper made
-        # the first deadline short-circuit everything after it -- so a dpkg that
-        # hung caused prerm to decide a reset was needed and then skip it, with
-        # nothing in the log to say the kills never ran.
-        self.install_killall()
-        self.install_dpkg(hangs=True)
-        result = self.run_script("upgrade", "1.7.0", timeout=180)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.killall_calls(),
-                         ["-9 CommCenter", "-9 CommCenter"])
-        self.assertIn("carrier defaults reloaded", result.stderr)
+    def test_no_version_comparison_is_made(self):
+        # 1.6.0 compared the incoming version against a floor to decide whether
+        # the successor could undo a narrowed modem, and reset when it could not.
+        # Both halves were wrong: the reset undid nothing, and no version needs
+        # protecting from records it can simply ignore. Removing the comparison
+        # also removed a dpkg child, a delay-command dependency, and the fail-open
+        # branch that reset on every ordinary upgrade.
+        code = shell_code(self.render().read_text())
+        self.assertNotIn("--compare-versions", code)
+        self.assertNotIn("dpkg", code)
+        # The floor itself, and the second positional argument it read.
+        self.assertNotIn("CARRIER_RESET_FLOOR", code)
+        self.assertNotIn("INCOMING_VERSION", code)
+        self.assertNotIn("version_is_at_least", code)
 
-    def test_a_missing_killall_does_not_block_removal(self):
-        result = self.run_script("remove")
+    def test_a_downgrade_keeps_the_records_it_cannot_interpret(self):
+        # `upgrade` is also how dpkg spells a downgrade. A version that predates
+        # these records ignores them, which is harmless; deleting them would
+        # destroy the baseline a later re-upgrade needs.
+        records = self.policy_records(create=True)
+        result = self.run_script("upgrade", "1.0.0")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("no usable killall", result.stderr)
-        self.assertIn("removal continues", result.stderr)
-
-    def test_a_killall_that_hangs_does_not_hang_removal(self):
-        # The reset goes through launchctl_run, so it inherits the descriptor
-        # close and the deadline. Without both, this is the shape that wedged
-        # dpkg permanently on the reporting device.
-        self.install_killall(hangs=True)
-        result = self.run_script("remove", timeout=90)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("removal continues", result.stderr)
-
-    def test_the_reset_never_consults_policy_state_to_decide(self):
-        # A reset that only ran when the records said it was needed would be
-        # useless in exactly the case it exists for: records that are missing,
-        # stale or written by a version that crashed mid-transition.
-        self.install_killall()
-        result = self.run_script("remove")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.killall_calls(), ["-9 CommCenter", "-9 CommCenter"])
-
-    def policy_records(self):
-        base = self.prefix / "var/mobile/Library/Preferences"
-        return [base / f"me.nixuge.networkmanager.n78-policy.{suffix}.plist"
-                for suffix in ("state", "baseline", "intent", "inflight",
-                               "removal-guard")]
+        for record in records:
+            self.assertTrue(record.exists(), record.name)
 
 
 class PrermLaunchdBootoutTests(ShellScriptBase):
     template = PRERM_TEMPLATE
 
     def test_the_daemon_is_stopped_on_removal(self):
-        # Unconditional now. There is no verdict left to wait for, and leaving a
-        # running instance behind is the only live risk removal can create.
         self.install_launchctl(loaded=True)
-        self.install_killall()
         result = self.run_script("remove")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("bootout", self.launchctl_calls())
@@ -1423,17 +1359,30 @@ class PrermLaunchdBootoutTests(ShellScriptBase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("launchctl could not be run", result.stderr)
 
-    def test_the_reset_runs_before_the_daemon_is_stopped(self):
-        # Order matters: the daemon watches policy state, and stopping it first
-        # would leave the reset unobserved by the one component that reports on it.
+    def test_the_records_are_read_before_the_daemon_is_stopped(self):
+        # Ordering is load-bearing in one direction only: the baseline decides
+        # what this script reports and deletes, and the daemon's KeepAlive watches
+        # that same file. Reading it first means the verdict cannot be affected by
+        # launchd tearing anything down.
         self.install_launchctl(loaded=True)
-        self.install_killall()
+        self.policy_records(create=True)
         result = self.run_script("remove")
         self.assertEqual(result.returncode, 0, result.stderr)
-        reset_line = result.stderr.index("carrier defaults reloaded")
-        self.assertTrue(self.killall_calls())
+        self.assertLess(result.stderr.index("CANNOT undo it"),
+                        len(result.stderr))
         self.assertIn("bootout", self.launchctl_calls())
-        self.assertGreater(len(result.stderr), reset_line)
+        self.assertTrue(self.policy_baseline().exists())
+
+    def test_the_bootout_is_skipped_rather_than_run_unbounded(self):
+        # An unbounded child in a maintainer script is how this project wedged
+        # dpkg permanently. With no delay command there is no way to bound one, so
+        # the call is skipped and the reboot is named as what stops the daemon.
+        self.install_launchctl(loaded=True)
+        result = self.run_script("remove", path_extra=self.bin, timeout=90,
+                                without_delay_command=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("no usable delay command", result.stderr)
+        self.assertEqual(self.launchctl_calls(), [])
 
 
 class PrermTests(ShellScriptBase):
@@ -1444,14 +1393,17 @@ class PrermTests(ShellScriptBase):
         # is worth leaving a package half-removed for.
         for label, setup in (
                 ("nothing installed", lambda: None),
-                ("killall present", lambda: self.install_killall()),
-                ("reset fails", lambda: self.install_killall(exit_code=1)),
+                ("records with a baseline", lambda: self.policy_records(create=True)),
                 ("launchctl present", lambda: self.install_launchctl(loaded=True)),
+                ("launchctl that hangs",
+                 lambda: self.install_launchctl_that_hangs(on="bootout",
+                                                           loaded=True)),
         ):
             with self.subTest(case=label):
                 setup()
-                result = self.run_script("remove")
+                result = self.run_script("remove", timeout=90)
                 self.assertEqual(result.returncode, 0, result.stderr)
+                self.setUp()
 
     def test_an_unusable_jbroot_is_reported_and_does_not_block(self):
         self.set_jbroot(None)
@@ -1462,9 +1414,9 @@ class PrermTests(ShellScriptBase):
 
     def test_an_implausible_jbroot_is_rejected_rather_than_used(self):
         # A relative jbroot resolves against the current directory, which dpkg
-        # does not guarantee. Using it would send both the killall lookup and the
-        # record deletion at a directory chosen by whatever the cwd happened to
-        # be, so the value is refused outright and only bare paths are tried.
+        # does not guarantee. Using it would send the record deletion at a
+        # directory chosen by whatever the cwd happened to be, so the value is
+        # refused outright and only bare paths are tried.
         elsewhere = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, elsewhere, ignore_errors=True)
         stray = elsewhere / "relative/root/var/mobile/Library/Preferences"

@@ -1,5 +1,4 @@
 #import "CCNMN78PolicyController.h"
-#import "CCNMCarrierReset.h"
 
 #import <CoreFoundation/CoreFoundation.h>
 #import <dispatch/dispatch.h>
@@ -1119,7 +1118,7 @@ static BOOL CCNMValidateIntentRecord(NSDictionary *intent,
     // because 1.5.0 shipped, and a 1.5.0 device that crashed or lost a setter
     // outcome mid-replay has an intent record on disk naming it. Rejecting the
     // name would classify our own former record as foreign, and the consequence
-    // is not cosmetic: an invalid record makes performCarrierReset refuse too, so
+    // is not cosmetic: an invalid record makes performRestoreOperation refuse too, so
     // the one escape hatch that could clear the record would be the thing the
     // record disables. Read-side compatibility only -- see the operation domain
     // in CCNMValidateInFlightRecord, which must stay identical.
@@ -1365,10 +1364,13 @@ static NSDictionary *CCNMReadPolicyStateInternal(void) {
 
     if ([state[@"recoveryState"] isEqual:CCNMRecoveryStateCarrierResetPending] ||
         [state[@"recoveryState"] isEqual:CCNMRecoveryStateCarrierResetFailed]) {
-        // A carrier reset is the last step of a disable and owns no transition
-        // records, so it cannot be recognised by the branch above. Report it from
-        // the state record itself rather than letting it fall through to the
-        // enabled/clean classification below, which would misread it as settled.
+        // Neither state has a producer any more: 1.6.0's CommCenter-reload recovery
+        // was retired once the target device showed it does not restore the bands.
+        // They stay readable because that build shipped, and a device that pressed
+        // the reload has one of them on disk right now. Report it from the state
+        // record itself rather than letting it fall through to the enabled/clean
+        // classification below, which would misread it as settled -- these records
+        // own no transition files, so the branch above cannot see them.
         return CCNMSummaryFromState(state, NO, @"read",
             state[@"errorCode"] ?: CCNMN78PolicyErrorCarrierResetFailed,
             state[@"error"], nil);
@@ -2316,171 +2318,198 @@ static BOOL CCNMFinishEnabledState(NSUInteger generation,
     return state && CCNMReplaceExpectedRecord(checkpoint, state, CCNMN78PolicyStatePath(), failure);
 }
 
-static NSDictionary *CCNMObserveCarrierResetOutcome(NSArray<NSNumber *> *appliedSelection,
-                                                      NSString *subscriptionUUID,
-                                                      NSNumber *slotID) {
-    // After CommCenter is killed, CoreTelephony reads may fail temporarily. Poll
-    // until a valid BandInfo read succeeds or the deadline expires.
-    double started = CCNMMonotonicNow();
-    NSMutableDictionary *result = [@{
-        @"confirmed": @NO, @"sawValid": @NO, @"error": @"No valid BandInfo observation could be collected."
-    } mutableCopy];
-    BOOL hasSelection = [appliedSelection isKindOfClass:NSArray.class] && appliedSelection.count > 0;
-    for (NSUInteger attempt = 0; attempt < CCNMReadBackMaximumAttempts; attempt++) {
-        NSString *clientFailure = nil;
-        id<CCNMCoreTelephonyClient> client = CCNMCreateClient(&clientFailure);
-        if (!client) {
-            result[@"error"] = clientFailure ?: @"CoreTelephonyClient unavailable.";
-            continue;
-        }
-        NSString *targetFailure = nil;
-        id<CCNMSubscriptionContext> context = CCNMSafeTargetContext(
-            client, CCNMTargetResolutionRecorded, subscriptionUUID, slotID, nil, &targetFailure);
-        if (!context) {
-            result[@"contextError"] = targetFailure ?: @"Target subscription could not be resolved.";
-            usleep(CCNMReadBackPollMicroseconds);
-            continue;
-        }
-        NSString *readFailure = nil;
-        NSDictionary *fresh = CCNMReadFreshBandInfo(client, context, &readFailure);
-        if (!fresh) {
-            result[@"error"] = readFailure ?: @"BandInfo read failed.";
-            usleep(CCNMReadBackPollMicroseconds);
-            continue;
-        }
-        result[@"sawValid"] = @YES;
-        result[@"observedActiveBands"] = fresh[@"activeBands"];
-        result[@"observedSupportedBands"] = fresh[@"supportedBands"];
-        NSArray *liveNR = CCNMCanonicalNRSelection(
-            fresh[@"activeBands"][CCNMNRKey], NULL);
-        if (hasSelection) {
-            // The carrier reload succeeded if the live NR selection no longer
-            // matches the one we applied. A nil liveNR (no NR bands reported)
-            // also counts as cleared.
-            BOOL cleared = !liveNR || ![liveNR isEqualToArray:appliedSelection];
-            result[@"comparedAgainstSelection"] = appliedSelection;
-            result[@"clearedFromSelection"] = @(cleared);
-            if (cleared) {
-                result[@"confirmed"] = @YES;
-                result[@"error"] = @"";
-            } else {
-                result[@"error"] = @"The live NR selection still matches the applied selection.";
-            }
-        } else {
-            // No recorded selection, so we cannot prove the reset changed
-            // anything. A valid BandInfo read is the best evidence we have.
-            result[@"confirmed"] = @YES;
-            result[@"error"] = @"";
-            result[@"selectionEvidence"] = @"unavailable";
-        }
-        result[@"attemptsNeeded"] = @(attempt + 1);
-        double elapsed = CCNMMonotonicNow() - started;
-        result[@"observationElapsedSeconds"] = @(elapsed);
-        break;
-    }
-    double elapsed = CCNMMonotonicNow() - started;
-    result[@"observationElapsedSeconds"] = @(elapsed);
-    return result;
+static BOOL CCNMPersistOrReplaceTransition(NSDictionary *oldRecord,
+                                           NSDictionary *newRecord,
+                                           NSString *path,
+                                           NSString **failure) {
+    return oldRecord
+        ? CCNMReplaceExpectedRecord(oldRecord, newRecord, path, failure)
+        : CCNMCreateDurableRecord(newRecord, path, failure);
 }
 
-// Removes a record file at path when the file exists and the expected value
-// matches (or when no expected value is provided and the file exists). Returns
-// YES whether the file was present or not, so the caller can clean up optional
-// records without branching.
-static BOOL CCNMRemoveOptionalRecord(NSDictionary *expected,
-                                      NSString *path,
-                                      NSString **failure) {
-    if (!expected) {
-        // No expected value was provided; remove the file if it exists.
-        if (!CCNMFileExists(path)) {
-            return YES;
+// Builds the exact payload a restore writes: the live dictionary with the NR
+// array replaced by the saved one, and every other RAT left byte-identical.
+// The package narrowed one key, so it puts back one key.
+static NSDictionary *CCNMBuildRestorePayload(NSDictionary *live,
+                                             NSDictionary *baseline,
+                                             NSString **failure) {
+    NSDictionary *copy = CCNMDeepCopyDictionary(live, failure);
+    if (!copy || !CCNMValidateBandDictionary(baseline, failure)) {
+        return nil;
+    }
+    NSMutableDictionary *draft = [copy mutableCopy];
+    draft[CCNMNRKey] = [baseline[CCNMNRKey] copy];
+    NSDictionary *payload = CCNMDeepCopyDictionary(draft, failure);
+    return CCNMValidateRestorePayload(live, baseline, payload, failure) ? payload : nil;
+}
+
+// True for the one state a restore can be resumed from after a reboot: the
+// read-back already matched, the baseline was already retired, and only the
+// final state rewrite was lost. Reaching it again must not issue a second write.
+static BOOL CCNMIsVerifiedRestoreCleanupCheckpoint(NSDictionary *state) {
+    NSDictionary *verifiedBands = [state[@"verifiedActiveBands"] isKindOfClass:NSDictionary.class]
+        ? state[@"verifiedActiveBands"] : nil;
+    return CCNMValidateStateRecord(state, NULL) &&
+        [state[@"appliedPolicy"] isEqual:CCNMAppliedPolicyApplying] &&
+        [state[@"recoveryState"] isEqual:CCNMRecoveryStateRestorePending] &&
+        [state[@"readBackVerified"] isEqual:@YES] &&
+        [state[@"verifiedAt"] isKindOfClass:NSNumber.class] && [state[@"verifiedAt"] longLongValue] > 0 &&
+        [state[@"baselineCreatedAt"] isKindOfClass:NSNumber.class] && [state[@"baselineCreatedAt"] longLongValue] > 0 &&
+        ![state[@"uncertain"] boolValue] &&
+        CCNMValidateBandDictionary(verifiedBands, NULL);
+}
+
+static BOOL CCNMBaselineNRBandsFitCurrentCapability(NSArray *savedNR,
+                                                    NSArray *currentSupportedNR,
+                                                    NSString *unsupportedFailure,
+                                                    NSString **failure) {
+    if (![savedNR isKindOfClass:NSArray.class] || ![currentSupportedNR isKindOfClass:NSArray.class]) {
+        if (failure) {
+            *failure = @"The retained baseline NR capability evidence is unavailable on this system.";
         }
-        if (unlink(path.fileSystemRepresentation) != 0) {
+        return NO;
+    }
+    for (NSNumber *band in savedNR) {
+        if (![currentSupportedNR containsObject:band]) {
             if (failure) {
-                *failure = [NSString stringWithFormat:@"Could not remove optional record at %@: %s",
-                    path.lastPathComponent, strerror(errno)];
+                *failure = unsupportedFailure;
             }
             return NO;
         }
-        if (!CCNMSyncParentDirectory(path, failure)) {
-            return NO;
+    }
+    return YES;
+}
+
+static BOOL CCNMValidateBaselineCompatibility(NSDictionary *baseline,
+                                              NSDictionary *currentSupportedBands,
+                                              NSDictionary *identity,
+                                              NSString **failure) {
+    BOOL hasCapabilitySnapshot = baseline[@"deviceModel"] != nil ||
+        baseline[@"systemVersion"] != nil || baseline[@"systemBuild"] != nil ||
+        baseline[@"supportedBands"] != nil || baseline[@"modifiedBandKeys"] != nil;
+    // Keyed subscripting a non-dictionary raises, and this bundle loads into
+    // SpringBoard. CCNMValidateBaselineRecord runs first in the current callers,
+    // but this check must not depend on that ordering.
+    NSDictionary *savedActive = [baseline[@"activeBands"] isKindOfClass:NSDictionary.class]
+        ? baseline[@"activeBands"] : nil;
+    NSDictionary *currentSupported = [currentSupportedBands isKindOfClass:NSDictionary.class]
+        ? currentSupportedBands : nil;
+    if (!savedActive || !currentSupported ||
+        !CCNMValidateBandDictionary(savedActive, failure) ||
+        !CCNMValidateBandDictionary(currentSupported, failure)) {
+        if (failure && !*failure) {
+            *failure = @"The retained baseline or current capability evidence is unavailable.";
         }
-        if (CCNMFileExists(path)) {
-            if (failure) {
-                *failure = [NSString stringWithFormat:@"Optional record at %@ still exists after removal.",
-                    path.lastPathComponent];
-            }
-            return NO;
-        }
+        return NO;
+    }
+    // Do not require saved active NR to be a subset of supported NR. The modem's
+    // BandInfo contract permits an active list to contain values absent from its
+    // supported list, and the target device's own verified restore read-back had
+    // exactly that shape. The saved capability snapshot is the evidence that can
+    // be compared across the restore boundary.
+    if (!hasCapabilitySnapshot) {
+        // Written before capability evidence existed. Refusing it is not an
+        // option: a baseline is the only way back from an enable, so refusing one
+        // for lacking a field that did not exist when it was written would strand
+        // the device it was written to protect.
         return YES;
     }
-    return CCNMRemoveExpectedRecord(expected, path, failure);
+    // Same hardware. System version and build stay recorded evidence rather than
+    // a gate: an iOS update does not invalidate a rollback whose capability shape
+    // and owned-band evidence still fit, and refusing on build alone would strand
+    // every device that updates while the policy is enabled.
+    BOOL sameDevice = [baseline[@"deviceModel"] isEqual:identity[@"deviceModel"]];
+    NSDictionary *savedSupported = [baseline[@"supportedBands"] isKindOfClass:NSDictionary.class]
+        ? baseline[@"supportedBands"] : nil;
+    BOOL sameCapabilityShape = savedSupported &&
+        [[NSSet setWithArray:savedSupported.allKeys] isEqualToSet:
+            [NSSet setWithArray:currentSupported.allKeys]];
+    NSArray *ownedKeys = baseline[@"modifiedBandKeys"];
+    BOOL ownedFieldsValid = [ownedKeys isKindOfClass:NSArray.class] &&
+        ownedKeys.count == 1 && [ownedKeys.firstObject isEqual:CCNMNRKey];
+    if (!sameDevice || !sameCapabilityShape || !ownedFieldsValid) {
+        if (failure) {
+            *failure = @"The retained baseline belongs to a different device, capability shape, or owned-band set.";
+        }
+        return NO;
+    }
+    return CCNMBaselineNRBandsFitCurrentCapability(savedSupported[CCNMNRKey],
+        currentSupported[CCNMNRKey],
+        @"The retained baseline contains an owned band unsupported by the current system.", failure);
 }
 
-static BOOL CCNMFinishCarrierResetState(NSUInteger generation,
+// Retires an enable in two durable steps. The intermediate restorePending
+// checkpoint is what makes a crash between "baseline deleted" and "state says
+// clean" recoverable: CCNMIsVerifiedRestoreCleanupCheckpoint recognises it and
+// finishes without a second write.
+static BOOL CCNMFinishSystemDefaultState(NSUInteger generation,
                                          NSString *subscriptionUUID,
-                                         NSDictionary *checkpoint,
+                                         NSDictionary *expectedState,
                                          NSDictionary *baseline,
                                          NSDictionary *intent,
                                          NSDictionary *inFlight,
-                                         NSDictionary *resetResult,
-                                         NSDictionary *observation,
+                                         NSDictionary *verifiedBands,
                                          NSString **failure) {
-    // Sanitise the reset result: plist serialisation cannot handle NSNull.
-    NSMutableDictionary *proof = [@{
-        @"carrierResetVerified": @YES,
-        @"verifiedAt": @(CCNMUnixMilliseconds())
-    } mutableCopy];
-    NSDictionary *reset = resetResult ?: @{};
-    for (NSString *key in @[
-        CCNMCarrierResetSuccessKey, CCNMCarrierResetOperationKey,
-        CCNMCarrierResetCommandKey, CCNMCarrierResetFirstAttemptedKey,
-        CCNMCarrierResetSecondAttemptedKey, CCNMCarrierResetFirstExitStatusKey,
-        CCNMCarrierResetSecondExitStatusKey, CCNMCarrierResetElapsedMillisecondsKey
-    ]) {
-        id value = reset[key];
-        if (value && ![value isKindOfClass:NSNull.class]) {
-            proof[key] = value;
-        }
-    }
-    if (observation[@"observedActiveBands"]) {
-        proof[@"observedActiveBands"] = observation[@"observedActiveBands"];
-    }
-    if (observation[@"comparedAgainstSelection"]) {
-        proof[@"resetFromNRBands"] = observation[@"comparedAgainstSelection"];
-    }
-    if (baseline) {
-        proof[@"baselineCreatedAt"] = baseline[@"createdAt"];
-        proof[@"slotID"] = baseline[@"slotID"];
-    }
-    // Retire records in order: inFlight, intent, baseline. Then flip the
-    // checkpoint to clean. The checkpoint persists throughout, so a crash
-    // between removals leaves carrierResetPending on disk, which blocks policy
-    // writes and is retryable.
-    if (inFlight && !CCNMRemoveOptionalRecord(inFlight, CCNMN78PolicyInFlightPath(), failure)) {
+    NSNumber *verifiedAt = @(CCNMUnixMilliseconds());
+    NSDictionary *proof = @{
+        @"baselineCreatedAt": baseline[@"createdAt"],
+        @"slotID": baseline[@"slotID"],
+        @"readBackVerified": @YES,
+        @"verifiedAt": verifiedAt,
+        @"verifiedActiveBands": verifiedBands
+    };
+    CCNMRequestedMode requested = expectedState[@"requestedMode"] ?: CCNMRequestedModeN78Preferred;
+    NSDictionary *checkpoint = CCNMBuildStateRecord(requested,
+        CCNMAppliedPolicyApplying, CCNMRecoveryStateRestorePending,
+        generation, subscriptionUUID, NO, CCNMN78PolicyErrorNone, @"", proof, failure);
+    BOOL checkpointSaved = checkpoint && (expectedState
+        ? CCNMReplaceExpectedRecord(expectedState, checkpoint, CCNMN78PolicyStatePath(), failure)
+        : CCNMCreateDurableRecord(checkpoint, CCNMN78PolicyStatePath(), failure));
+    if (!checkpointSaved) {
         return NO;
     }
-    if (intent && !CCNMRemoveOptionalRecord(intent, CCNMN78PolicyIntentPath(), failure)) {
+    if (!CCNMRetireTransitionRecords(intent, inFlight, failure)) {
         return NO;
     }
-    if (baseline && !CCNMRemoveOptionalRecord(baseline, CCNMN78PolicyBaselinePath(), failure)) {
+    if (!CCNMRemoveExpectedRecord(baseline, CCNMN78PolicyBaselinePath(), failure)) {
         return NO;
     }
-    // Opportunistically remove the legacy removal-guard file. It is no longer
-    // consulted, but keeping it on disk after a clean reset is untidy.
+    // Opportunistic migration cleanup, and only that. The removal-guard file was
+    // armed by a version that asked a compiled prerm whether a saved BandInfo
+    // could be replayed; nothing reads it now, and the shell removal deletes it
+    // with the other records. A device that never removes the package would keep
+    // it forever, and it is stale the moment the modem is back at system default.
+    //
+    // Deliberately not a failure condition and deliberately not a verdict: this is
+    // the file whose mere presence a retired mechanism treated as permission, so
+    // the only thing done with it here is deletion.
     if (CCNMFileExists(CCNMN78PolicyRemovalGuardPath())) {
         (void)unlink(CCNMN78PolicyRemovalGuardPath().fileSystemRepresentation);
         (void)CCNMSyncParentDirectory(CCNMN78PolicyRemovalGuardPath(), NULL);
     }
+    NSDictionary *finalProof = @{
+        @"verifiedAt": verifiedAt,
+        @"verifiedActiveBands": verifiedBands,
+        @"restoredBaselineCreatedAt": baseline[@"createdAt"],
+        @"slotID": baseline[@"slotID"]
+    };
     NSDictionary *state = CCNMBuildStateRecord(CCNMRequestedModeSystemDefault,
         CCNMAppliedPolicyVerifiedSystemDefault, CCNMRecoveryStateClean,
         generation, subscriptionUUID, NO, CCNMN78PolicyErrorNone, @"",
-        proof, failure);
+        finalProof, failure);
     return state && CCNMReplaceExpectedRecord(checkpoint, state, CCNMN78PolicyStatePath(), failure);
 }
 
 @interface CCNMN78PolicyController ()
 @property (nonatomic, strong) dispatch_queue_t operationQueue;
+
+// Declared here because performDisable and performRecovery call it before it is
+// defined. Clang resolves same-@implementation methods regardless of order, but
+// the declaration also states the contract in one place: both callers differ only
+// in the operation name they record and in whether incomplete evidence is
+// acceptable.
+- (NSDictionary *)performRestoreOperation:(NSString *)operation
+                  allowIncompleteEvidence:(BOOL)allowIncomplete;
 @end
 
 @implementation CCNMN78PolicyController
@@ -2766,29 +2795,34 @@ static BOOL CCNMFinishCarrierResetState(NSUInteger generation,
 }
 
 - (NSDictionary *)performDisable {
-    return [self performCarrierReset:@"disable" allowIncompleteEvidence:NO];
+    return [self performRestoreOperation:@"disable" allowIncompleteEvidence:NO];
 }
 
 - (NSDictionary *)performRecovery {
-    return [self performCarrierReset:@"recover" allowIncompleteEvidence:YES];
+    return [self performRestoreOperation:@"recover" allowIncompleteEvidence:YES];
 }
 
-// Returns the device to its carrier-managed band configuration.
+// Returns the device to the band configuration that was saved before the enable.
 //
-// The recovery primitive is CommCenter reload, not a reverse setActiveBandInfo:
-// write. Two separate `killall -9 CommCenter` invocations are the observed
-// procedure on the target device, and the replacement process reloads the
-// carrier defaults itself, so this path issues no modem write at all. That is
-// what makes it usable as an escape hatch: it needs no baseline, no capability
-// comparison, and no trust in a stored payload.
+// The recovery primitive is a reverse setActiveBandInfo: write of the retained
+// baseline, not a CommCenter reload. 1.6.0 shipped the reload instead, on the
+// assumption that killing CommCenter makes the modem reload carrier defaults.
+// The target device disproved it: the bands stayed narrowed. The reverse write is
+// the mechanism that has actually been observed to work there, so it is back.
+//
+// The write is exactly one array wide. CCNMBuildRestorePayload replaces the NR
+// key with the saved one and leaves every other RAT byte-identical, which is the
+// mirror of what the enable narrowed, and CCNMValidateRestorePayload refuses
+// anything else.
 //
 // `allowIncompleteEvidence` separates the two callers. Disable is the toggle-off
 // of a settled enabled state and refuses anything else. Recover is the explicit
-// "reload carrier defaults" action and accepts any record shape that is ours,
-// including a clean state, because a modem can hold a narrowed band set that our
-// records do not describe.
-- (NSDictionary *)performCarrierReset:(NSString *)operation
-              allowIncompleteEvidence:(BOOL)allowIncomplete {
+// recovery action and accepts a wider set of record shapes, but only ones whose
+// evidence is old enough to be safe: transition evidence from this boot means an
+// earlier setter call may still be outstanding, and no amount of new writing
+// makes that safe.
+- (NSDictionary *)performRestoreOperation:(NSString *)operation
+                  allowIncompleteEvidence:(BOOL)allowIncomplete {
     NSMutableDictionary *details = [@{ @"setterAttempted": @NO } mutableCopy];
     NSString *failure = nil;
     int lockDescriptor = CCNMAcquirePolicyLock(&failure);
@@ -2806,18 +2840,85 @@ static BOOL CCNMFinishCarrierResetState(NSUInteger generation,
         BOOL stateExists = NO, baselineExists = NO, intentExists = NO, inFlightExists = NO;
         NSDictionary *state = CCNMLoadRecord(CCNMN78PolicyStatePath(), &stateExists);
         NSDictionary *baseline = CCNMLoadRecord(CCNMN78PolicyBaselinePath(), &baselineExists);
-        NSDictionary *intent = CCNMLoadRecord(CCNMN78PolicyIntentPath(), &intentExists);
-        NSDictionary *inFlight = CCNMLoadRecord(CCNMN78PolicyInFlightPath(), &inFlightExists);
+        NSDictionary *oldIntent = CCNMLoadRecord(CCNMN78PolicyIntentPath(), &intentExists);
+        NSDictionary *oldInFlight = CCNMLoadRecord(CCNMN78PolicyInFlightPath(), &inFlightExists);
         if ((stateExists && !CCNMValidateStateRecord(state, &failure)) ||
             (baselineExists && !CCNMValidateBaselineRecord(baseline, &failure)) ||
-            (intentExists && (!baseline || !CCNMValidateIntentRecord(intent, baseline, &failure))) ||
-            (inFlightExists && (!baseline || !CCNMValidateInFlightRecord(inFlight, baseline, intent, NO, &failure)))) {
+            (intentExists && (!baseline || !CCNMValidateIntentRecord(oldIntent, baseline, &failure))) ||
+            (inFlightExists && (!baseline || !CCNMValidateInFlightRecord(oldInFlight, baseline, oldIntent, NO, &failure)))) {
             return CCNMErrorSummary(operation, CCNMN78PolicyErrorInvalidRecords,
                 failure ?: @"Recovery evidence is malformed or foreign and was preserved.", details);
         }
         state = state ?: CCNMDefaultState();
 
-        BOOL settledEnabled = stateExists && !intentExists && !inFlightExists && baselineExists &&
+        if (!baselineExists) {
+            // Nothing was narrowed, or the narrowing was already undone. Both are
+            // success for a restore; there is nothing to write.
+            if (!intentExists && !inFlightExists &&
+                [state[@"requestedMode"] isEqual:CCNMRequestedModeSystemDefault] &&
+                [state[@"appliedPolicy"] isEqual:CCNMAppliedPolicyVerifiedSystemDefault] &&
+                [state[@"recoveryState"] isEqual:CCNMRecoveryStateClean]) {
+                details[@"writeNotNeeded"] = @YES;
+                return CCNMSummaryFromState(state, YES, operation, CCNMN78PolicyErrorNone, @"", details);
+            }
+            // The one resumable case: a previous restore verified its read-back
+            // and retired the baseline, then lost the final state rewrite. The
+            // modem is already restored, so this finishes the bookkeeping and
+            // deliberately issues no second write. It is gated on the evidence
+            // being from an earlier boot and on the live bands still equalling
+            // the ones that read-back verified.
+            if (allowIncomplete && !intentExists && !inFlightExists &&
+                CCNMBootRelationForRecord(state) == CCNMBootRelationEarlier &&
+                CCNMIsVerifiedRestoreCleanupCheckpoint(state)) {
+                NSUInteger generation = CCNMNextGeneration(state, nil);
+                if (!CCNMValidateSelfSourcedWriteTarget(details, &failure)) {
+                    return CCNMErrorSummary(operation, CCNMN78PolicyErrorUnsupportedTarget, failure, details);
+                }
+                id<CCNMCoreTelephonyClient> client = CCNMCreateClient(&failure);
+                id<CCNMSubscriptionContext> context = client
+                    ? CCNMSafeTargetContext(client, CCNMTargetResolutionRecorded,
+                        state[@"subscriptionUUID"], state[@"slotID"], details, &failure) : nil;
+                NSDictionary *fresh = context ? CCNMReadFreshBandInfo(client, context, &failure) : nil;
+                if (!fresh || !CCNMDictionariesEqual(fresh[@"activeBands"], state[@"verifiedActiveBands"])) {
+                    failure = failure ?: @"Live BandInfo no longer matches the verified restore cleanup checkpoint.";
+                    return CCNMErrorSummary(operation, CCNMN78PolicyErrorInvalidBandInfo, failure, details);
+                }
+                // The slot comes from the subscription just revalidated above, not
+                // from the checkpoint: a state written before the slot field existed
+                // has no slot at all, and defaulting that to 1 would record a slot
+                // this device was never observed on. The UUID below is sourced the
+                // same way. CCNMSafeTargetContext publishes both once it returns a
+                // context, and a nil context cannot reach this point, but a nil in a
+                // dictionary literal would raise inside Preferences, so verify it
+                // and fail closed rather than depend on the invariant.
+                NSNumber *cleanupSlotID = [details[@"targetSlotID"] isKindOfClass:NSNumber.class]
+                    ? details[@"targetSlotID"] : nil;
+                if (!CCNMValidSlotID(cleanupSlotID)) {
+                    return CCNMErrorSummary(operation, CCNMN78PolicyErrorUnsafeSubscription,
+                        @"The revalidated subscription slot is unavailable.", details);
+                }
+                details[@"writeNotNeeded"] = @YES;
+                NSDictionary *clean = CCNMBuildStateRecord(CCNMRequestedModeSystemDefault,
+                    CCNMAppliedPolicyVerifiedSystemDefault, CCNMRecoveryStateClean,
+                    generation, details[@"targetSubscriptionUUID"], NO,
+                    CCNMN78PolicyErrorNone, @"", @{
+                        @"verifiedAt": state[@"verifiedAt"],
+                        @"verifiedActiveBands": state[@"verifiedActiveBands"],
+                        @"restoredBaselineCreatedAt": state[@"baselineCreatedAt"],
+                        @"slotID": cleanupSlotID
+                    }, &failure);
+                if (!clean || !CCNMPersistState(clean, &failure)) {
+                    return CCNMErrorSummary(operation, CCNMN78PolicyErrorPersistence, failure, details);
+                }
+                return CCNMSummaryFromState(clean, YES, operation, CCNMN78PolicyErrorNone, @"", details);
+            }
+            // No baseline and no resumable checkpoint. There is no honest way to
+            // choose a payload, so nothing is written and the records are kept.
+            return CCNMErrorSummary(operation, CCNMN78PolicyErrorInvalidRecords,
+                @"A required policy baseline is missing; no modem write was issued.", details);
+        }
+
+        BOOL stableEnabled = stateExists && !intentExists && !inFlightExists &&
             [state[@"requestedMode"] isEqual:CCNMRequestedModeN78Preferred] &&
             [state[@"appliedPolicy"] isEqual:CCNMAppliedPolicyVerifiedN78Only] &&
             [state[@"recoveryState"] isEqual:CCNMRecoveryStateEnabledWithBaseline] &&
@@ -2825,49 +2926,41 @@ static BOOL CCNMFinishCarrierResetState(NSUInteger generation,
             [CCNMCanonicalUUIDString(state[@"subscriptionUUID"])
                 isEqualToString:CCNMCanonicalUUIDString(baseline[@"subscriptionUUID"])] &&
             ![state[@"uncertain"] boolValue];
-        if (!allowIncomplete) {
-            BOOL settledSystemDefault = !baselineExists && !intentExists && !inFlightExists &&
-                [state[@"requestedMode"] isEqual:CCNMRequestedModeSystemDefault] &&
-                [state[@"appliedPolicy"] isEqual:CCNMAppliedPolicyVerifiedSystemDefault] &&
-                [state[@"recoveryState"] isEqual:CCNMRecoveryStateClean];
-            if (settledSystemDefault) {
-                // Nothing was ever narrowed by this package, so there is nothing
-                // for the toggle to undo. Reloading carrier defaults here would be
-                // a side effect the toggle did not ask for; the explicit reload
-                // action is the way to do that deliberately.
-                details[@"resetNotNeeded"] = @YES;
-                return CCNMSummaryFromState(state, YES, operation, CCNMN78PolicyErrorNone, @"", details);
-            }
-            if (!settledEnabled) {
-                return CCNMErrorSummary(operation, CCNMN78PolicyErrorRecoveryRequired,
-                    @"Disable requires a verified enabled state with its exact retained baseline and no transition records.",
-                    details);
-            }
-        } else if (!settledEnabled) {
-            // A transition record from this boot means an earlier setter call may
-            // still be outstanding, and a reset cannot make that safe. Carrier-reset
-            // states are deliberately exempt: they own no modem write, and the reset
-            // is idempotent, so the correct answer to a failed or unconfirmed reset
-            // is another attempt in this boot rather than a reboot.
+        if (!allowIncomplete && !stableEnabled) {
+            return CCNMErrorSummary(operation, CCNMN78PolicyErrorRecoveryRequired,
+                @"Disable requires a verified enabled state with its exact retained baseline and no transition records.",
+                details);
+        }
+        if (allowIncomplete && !stableEnabled) {
+            // Transition evidence from this boot means an earlier setter call may
+            // still be outstanding. A second write cannot make that safe, so the
+            // only correct answer is a reboot.
+            //
+            // The two carrier-reset states are exempt, and the exemption is about
+            // what they can prove rather than about their age. 1.6.0's reload path
+            // issued no modem write at all, so a state record naming it cannot be
+            // hiding an outstanding setter call. Treating it like one would strand
+            // exactly the devices that build left narrowed: they would have to
+            // reboot before the restore they need becomes available, for evidence
+            // that provably has no write behind it.
             BOOL resetStateOwnsNoModemWrite =
                 [state[@"recoveryState"] isEqual:CCNMRecoveryStateCarrierResetPending] ||
                 [state[@"recoveryState"] isEqual:CCNMRecoveryStateCarrierResetFailed];
             BOOL inFlightMayBeCurrent = inFlightExists &&
-                CCNMBootRelationForRecord(inFlight) != CCNMBootRelationEarlier;
+                CCNMBootRelationForRecord(oldInFlight) != CCNMBootRelationEarlier;
             BOOL intentMayBeCurrent = intentExists &&
-                CCNMBootRelationForRecord(intent) != CCNMBootRelationEarlier;
+                CCNMBootRelationForRecord(oldIntent) != CCNMBootRelationEarlier;
             BOOL pendingStateMayBeCurrent = stateExists && !resetStateOwnsNoModemWrite &&
                 (![state[@"recoveryState"] isEqual:CCNMRecoveryStateEnabledWithBaseline] ||
                  [state[@"uncertain"] boolValue]) &&
                 CCNMBootRelationForRecord(state) != CCNMBootRelationEarlier;
-            BOOL baselineOnlyMayBeCurrent = baselineExists && !intentExists && !inFlightExists &&
+            BOOL baselineOnlyMayBeCurrent = !intentExists && !inFlightExists &&
                 CCNMBootRelationForRecord(baseline) != CCNMBootRelationEarlier;
             if (inFlightMayBeCurrent || intentMayBeCurrent || pendingStateMayBeCurrent ||
                 baselineOnlyMayBeCurrent) {
                 CCNMMarkRecovery(state[@"requestedMode"] ?: CCNMRequestedModeSystemDefault,
                     CCNMAppliedPolicyRecoveryRequired, CCNMRecoveryStateRebootRequired,
-                    [state[@"operationGeneration"] unsignedIntegerValue],
-                    baseline[@"subscriptionUUID"] ?: state[@"subscriptionUUID"],
+                    [state[@"operationGeneration"] unsignedIntegerValue], baseline[@"subscriptionUUID"],
                     CCNMN78PolicyErrorRecoveryRequired,
                     @"Incomplete or uncertain transition evidence belongs to this boot; reboot before recovery.",
                     baseline, YES);
@@ -2877,80 +2970,176 @@ static BOOL CCNMFinishCarrierResetState(NSUInteger generation,
             }
         }
 
-        NSUInteger generation = CCNMNextGeneration(state, intent);
+        NSUInteger generation = CCNMNextGeneration(state, oldIntent);
+        NSString *subscriptionUUID = CCNMCanonicalUUIDString(baseline[@"subscriptionUUID"]);
         if (generation == 0 || !CCNMBootSessionIdentity()) {
             return CCNMErrorSummary(operation, CCNMN78PolicyErrorRecoveryRequired,
                 @"A valid boot identity and new operation generation are required.", details);
         }
-        // The recorded target, when there is one. A reset needs no subscription to
-        // run; this only names what the post-reset observation should read back.
-        NSString *subscriptionUUID = CCNMCanonicalUUIDString(baseline[@"subscriptionUUID"])
-            ?: CCNMCanonicalUUIDString(state[@"subscriptionUUID"]);
-        NSNumber *slotID = CCNMValidSlotID(baseline[@"slotID"]) ? baseline[@"slotID"]
-            : (CCNMValidSlotID(state[@"slotID"]) ? state[@"slotID"] : nil);
-        NSArray<NSNumber *> *appliedSelection = settledEnabled
-            ? CCNMCanonicalNRSelection(state[@"targetNRBands"], NULL) : nil;
+        if (!CCNMValidateSelfSourcedWriteTarget(details, &failure)) {
+            return CCNMErrorSummary(operation, CCNMN78PolicyErrorUnsupportedTarget, failure, details);
+        }
+        id<CCNMCoreTelephonyClient> client = CCNMCreateClient(&failure);
+        id<CCNMSubscriptionContext> context = client
+            ? CCNMSafeTargetContext(client, CCNMTargetResolutionRecorded,
+                subscriptionUUID, baseline[@"slotID"], details, &failure) : nil;
+        if (!context) {
+            CCNMMarkRecovery(state[@"requestedMode"] ?: CCNMRequestedModeN78Preferred,
+                CCNMAppliedPolicyRecoveryRequired, CCNMRecoveryStateRebootRequired,
+                generation, subscriptionUUID, CCNMN78PolicyErrorUUIDDrift,
+                failure, baseline, YES);
+            return CCNMErrorSummary(operation, CCNMN78PolicyErrorUUIDDrift, failure, details);
+        }
+        NSDictionary *fresh = CCNMReadFreshBandInfo(client, context, &failure);
+        if (!fresh) {
+            CCNMMarkRecovery(state[@"requestedMode"] ?: CCNMRequestedModeN78Preferred,
+                CCNMAppliedPolicyRecoveryRequired, CCNMRecoveryStateRebootRequired,
+                generation, subscriptionUUID, CCNMN78PolicyErrorInvalidBandInfo,
+                failure, baseline, YES);
+            return CCNMErrorSummary(operation, CCNMN78PolicyErrorInvalidBandInfo, failure, details);
+        }
+        // `details` carries the device identity: CCNMValidateSelfSourcedWriteTarget
+        // above records model/version/build into it through
+        // CCNMRecordDeviceIdentity, which is the same dictionary the baseline was
+        // built from on enable.
+        if (!CCNMValidateBaselineCompatibility(baseline, fresh[@"supportedBands"], details, &failure)) {
+            CCNMMarkRecovery(state[@"requestedMode"] ?: CCNMRequestedModeN78Preferred,
+                CCNMAppliedPolicyRecoveryRequired, CCNMRecoveryStateRebootRequired,
+                generation, subscriptionUUID, CCNMN78PolicyErrorBaselineIncompatible,
+                failure, baseline, YES);
+            return CCNMErrorSummary(operation, CCNMN78PolicyErrorBaselineIncompatible, failure, details);
+        }
+        NSDictionary *payload = CCNMBuildRestorePayload(fresh[@"activeBands"], baseline[@"activeBands"], &failure);
+        if (!payload) {
+            CCNMMarkRecovery(state[@"requestedMode"] ?: CCNMRequestedModeN78Preferred,
+                CCNMAppliedPolicyRecoveryRequired, CCNMRecoveryStateRebootRequired,
+                generation, subscriptionUUID, CCNMN78PolicyErrorInvalidBandInfo,
+                failure, baseline, YES);
+            return CCNMErrorSummary(operation, CCNMN78PolicyErrorInvalidBandInfo, failure, details);
+        }
 
-        NSMutableDictionary *pendingExtra = [@{
-            @"carrierResetCommand": @"killall -9 CommCenter"
-        } mutableCopy];
-        if (baselineExists) {
-            pendingExtra[@"baselineCreatedAt"] = baseline[@"createdAt"];
-        }
-        if (slotID) {
-            pendingExtra[@"slotID"] = slotID;
-        }
-        if (appliedSelection) {
-            pendingExtra[@"resetFromNRBands"] = appliedSelection;
-        }
-        NSDictionary *pending = CCNMBuildStateRecord(CCNMRequestedModeSystemDefault,
-            CCNMAppliedPolicyApplying, CCNMRecoveryStateCarrierResetPending,
-            generation, subscriptionUUID, NO, CCNMN78PolicyErrorNone, @"", pendingExtra, &failure);
-        BOOL pendingSaved = pending && (stateExists
-            ? CCNMReplaceExpectedRecord(state, pending, CCNMN78PolicyStatePath(), &failure)
-            : CCNMCreateDurableRecord(pending, CCNMN78PolicyStatePath(), &failure));
-        if (!pendingSaved) {
-            return CCNMErrorSummary(operation, CCNMN78PolicyErrorPersistence,
-                failure ?: @"The carrier-reset checkpoint could not be persisted.", details);
-        }
-
-        failure = nil;
-        NSDictionary *reset = CCNMResetCarrierConfiguration(&failure);
-        details[@"carrierReset"] = reset;
-        if (![reset[CCNMCarrierResetSuccessKey] boolValue]) {
-            NSString *message = failure ?: reset[CCNMCarrierResetErrorKey];
-            if (!message.length) {
-                message = @"The carrier defaults reload did not complete both invocations.";
+        if (CCNMDictionariesEqual(payload, fresh[@"activeBands"])) {
+            // The modem already holds the saved configuration. Writing it again
+            // would be a modem call with nothing to change, so the records are
+            // retired instead.
+            details[@"writeNotNeeded"] = @YES;
+            NSDictionary *expectedState = stateExists ? state : nil;
+            if (!CCNMRecordsRemainExact(expectedState, baseline, oldIntent, oldInFlight, &failure)) {
+                return CCNMErrorSummary(operation, CCNMN78PolicyErrorInvalidRecords,
+                    failure ?: @"Durable policy evidence changed during no-write recovery and was preserved.",
+                    details);
             }
-            // No modem write was issued and nothing is outstanding, so this is a
-            // plain retryable failure rather than a reboot. Every durable record is
-            // left in place for that retry.
-            CCNMMarkRecovery(CCNMRequestedModeSystemDefault,
-                CCNMAppliedPolicyRecoveryRequired, CCNMRecoveryStateCarrierResetFailed,
-                generation, subscriptionUUID, CCNMN78PolicyErrorCarrierResetFailed,
-                message, baseline, NO);
-            return CCNMErrorSummary(operation, CCNMN78PolicyErrorCarrierResetFailed,
-                message, details);
-        }
-
-        NSDictionary *observation = CCNMObserveCarrierResetOutcome(appliedSelection,
-            subscriptionUUID, slotID);
-        details[@"carrierResetObservation"] = observation;
-        if (![observation[@"confirmed"] boolValue]) {
-            NSString *message = observation[@"error"];
-            if (!message.length) {
-                message = @"The carrier defaults reload ran but could not be confirmed; run it again.";
+            if (!CCNMFinishSystemDefaultState(generation, subscriptionUUID, expectedState,
+                baseline, oldIntent, oldInFlight, fresh[@"activeBands"], &failure)) {
+                return CCNMErrorSummary(operation, CCNMN78PolicyErrorPersistence, failure, details);
             }
-            // Deliberately not reported as clean. The reload may well have worked,
-            // but the only honest durable answer is that it is unconfirmed, and the
-            // records that describe what to reset stay on disk.
-            return CCNMErrorSummary(operation, CCNMN78PolicyErrorRecoveryRequired,
-                message, details);
+            NSDictionary *clean = [NSDictionary dictionaryWithContentsOfFile:CCNMN78PolicyStatePath()];
+            return CCNMSummaryFromState(clean, YES, operation, CCNMN78PolicyErrorNone, @"", details);
         }
 
-        if (!CCNMFinishCarrierResetState(generation, subscriptionUUID, pending,
-            baselineExists ? baseline : nil, intentExists ? intent : nil,
-            inFlightExists ? inFlight : nil, reset, observation, &failure)) {
+        id<CCNMBandInfo> payloadInfo = CCNMCreateBandPayload(payload, &failure);
+        if (!payloadInfo) {
+            return CCNMErrorSummary(operation, CCNMN78PolicyErrorInvalidBandInfo, failure, details);
+        }
+        NSDictionary *intent = CCNMBuildIntentRecord(operation, generation, baseline, fresh, payload,
+            state, oldIntent, oldInFlight, &failure);
+        if (!intent || !CCNMPersistOrReplaceTransition(oldIntent, intent,
+            CCNMN78PolicyIntentPath(), &failure)) {
+            CCNMMarkRecovery(state[@"requestedMode"] ?: CCNMRequestedModeN78Preferred,
+                CCNMAppliedPolicyRecoveryRequired, CCNMRecoveryStateRecoveryFailed,
+                generation, subscriptionUUID, CCNMN78PolicyErrorPersistence,
+                failure, baseline, NO);
+            return CCNMErrorSummary(operation, CCNMN78PolicyErrorPersistence, failure, details);
+        }
+        NSDictionary *pending = CCNMBuildStateRecord(state[@"requestedMode"] ?: CCNMRequestedModeN78Preferred,
+            CCNMAppliedPolicyApplying, CCNMRecoveryStateRestorePending,
+            generation, subscriptionUUID, NO, CCNMN78PolicyErrorNone, @"",
+            @{ @"baselineCreatedAt": baseline[@"createdAt"], @"slotID": baseline[@"slotID"] }, &failure);
+        if (!pending || !CCNMPersistState(pending, &failure)) {
+            CCNMMarkRecovery(state[@"requestedMode"] ?: CCNMRequestedModeN78Preferred,
+                CCNMAppliedPolicyRecoveryRequired, CCNMRecoveryStateRecoveryFailed,
+                generation, subscriptionUUID, CCNMN78PolicyErrorPersistence,
+                failure, baseline, NO);
+            return CCNMErrorSummary(operation, CCNMN78PolicyErrorPersistence, failure, details);
+        }
+        NSDictionary *inFlight = CCNMBuildInFlightRecord(operation, generation, baseline, intent, &failure);
+        if (!inFlight || !CCNMPersistOrReplaceTransition(oldInFlight, inFlight,
+            CCNMN78PolicyInFlightPath(), &failure)) {
+            CCNMMarkRecovery(state[@"requestedMode"] ?: CCNMRequestedModeN78Preferred,
+                CCNMAppliedPolicyRecoveryRequired, CCNMRecoveryStateRebootRequired,
+                generation, subscriptionUUID, CCNMN78PolicyErrorPersistence,
+                failure, baseline, YES);
+            return CCNMErrorSummary(operation, CCNMN78PolicyErrorPersistence, failure, details);
+        }
+
+        if (!CCNMRecordsRemainExact(pending, baseline, intent, inFlight, &failure)) {
+            return CCNMErrorSummary(operation, CCNMN78PolicyErrorInvalidRecords,
+                failure ?: @"Durable policy evidence changed before the restore setter and was preserved.",
+                details);
+        }
+
+        // Last look before the write. Re-resolving the context and re-reading the
+        // bands is what makes the payload provably still correct for this
+        // subscription at the moment of the call.
+        context = CCNMSafeTargetContext(client, CCNMTargetResolutionRecorded,
+            subscriptionUUID, baseline[@"slotID"], details, &failure);
+        NSDictionary *lastGuard = context ? CCNMReadFreshBandInfo(client, context, &failure) : nil;
+        BOOL bandsExact = lastGuard &&
+            CCNMDictionariesEqual(fresh[@"activeBands"], lastGuard[@"activeBands"]) &&
+            CCNMDictionariesEqual(fresh[@"supportedBands"], lastGuard[@"supportedBands"]);
+        if (!bandsExact) {
+            failure = failure ?: @"The final restore target or BandInfo guard changed.";
+            CCNMMarkRecovery(state[@"requestedMode"] ?: CCNMRequestedModeN78Preferred,
+                CCNMAppliedPolicyRecoveryRequired, CCNMRecoveryStateRebootRequired,
+                generation, subscriptionUUID, CCNMN78PolicyErrorInvalidBandInfo,
+                failure, baseline, YES);
+            return CCNMErrorSummary(operation, CCNMN78PolicyErrorInvalidBandInfo, failure, details);
+        }
+
+        CCNMSetterOutcome outcome = CCNMCallSetter(client, context, payloadInfo, generation,
+            &lockDescriptor, details, &failure);
+        if (outcome == CCNMSetterOutcomeUncertain) {
+            CCNMMarkRecovery(state[@"requestedMode"] ?: CCNMRequestedModeN78Preferred,
+                CCNMAppliedPolicyRecoveryRequired, CCNMRecoveryStateRebootRequired,
+                generation, subscriptionUUID, CCNMN78PolicyErrorSetterUncertain,
+                failure, baseline, YES);
+            return CCNMErrorSummary(operation, CCNMN78PolicyErrorSetterUncertain, failure, details);
+        }
+        if (outcome == CCNMSetterOutcomeFailed) {
+            CCNMMarkRecovery(state[@"requestedMode"] ?: CCNMRequestedModeN78Preferred,
+                CCNMAppliedPolicyRecoveryRequired, CCNMRecoveryStateRecoveryFailed,
+                generation, subscriptionUUID, CCNMN78PolicyErrorSetterFailed,
+                failure, baseline, NO);
+            return CCNMErrorSummary(operation, CCNMN78PolicyErrorSetterFailed, failure, details);
+        }
+
+        NSDictionary *readBack = CCNMWaitForReadBack(client, subscriptionUUID, baseline[@"slotID"], payload);
+        details[@"readBack"] = readBack;
+        if (![readBack[@"matched"] boolValue]) {
+            BOOL uncertain = ![readBack[@"sawValid"] boolValue] ||
+                [readBack[@"sawInvalid"] boolValue] || [readBack[@"identityUncertain"] boolValue] ||
+                [readBack[@"deadlineExceeded"] boolValue];
+            CCNMAppliedPolicy applied = uncertain ? CCNMAppliedPolicyRecoveryRequired : CCNMAppliedPolicyDiverged;
+            CCNMRecoveryState recovery = uncertain ? CCNMRecoveryStateRebootRequired : CCNMRecoveryStateRecoveryFailed;
+            CCNMN78PolicyErrorCode code = uncertain ? CCNMN78PolicyErrorSetterUncertain : CCNMN78PolicyErrorReadBackMismatch;
+            failure = readBack[@"error"];
+            if (!failure.length) {
+                failure = uncertain ? @"No trustworthy complete restore read-back was obtained."
+                    : @"Complete restore read-back did not equal the exact restore payload.";
+            }
+            CCNMMarkRecovery(state[@"requestedMode"] ?: CCNMRequestedModeN78Preferred,
+                applied, recovery, generation, subscriptionUUID, code,
+                failure, baseline, uncertain);
+            return CCNMErrorSummary(operation, code, failure, details);
+        }
+
+        if (!CCNMRecordsRemainExact(pending, baseline, intent, inFlight, &failure)) {
+            return CCNMErrorSummary(operation, CCNMN78PolicyErrorInvalidRecords,
+                failure ?: @"Durable policy evidence changed after verified restore read-back and was preserved.",
+                details);
+        }
+        if (!CCNMFinishSystemDefaultState(generation, subscriptionUUID, pending,
+            baseline, intent, inFlight, readBack[@"lastActiveBands"], &failure)) {
             return CCNMErrorSummary(operation, CCNMN78PolicyErrorPersistence, failure, details);
         }
         NSDictionary *clean = [NSDictionary dictionaryWithContentsOfFile:CCNMN78PolicyStatePath()];

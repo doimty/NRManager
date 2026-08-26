@@ -101,12 +101,15 @@ resolve_delay_command() {
 # Returns the command's own exit status, 124 if the deadline expired or it died
 # from a signal, or 125 if no delay command was resolved.
 #
-# Deliberately knows nothing about launchd. Three different kinds of child run
-# through here now -- launchctl, dpkg --compare-versions, and killall -- and only
-# the first has anything to do with the not-answering latch. Folding the latch in
-# here made a hung dpkg suppress the carrier reset, because the reset's killall
-# calls then returned 124 without being run. launchctl_run below adds the latch;
-# every other caller uses this directly.
+# Deliberately knows nothing about launchd. The latch that decides "launchd is
+# not answering" lives one level up, in launchctl_run, and the separation is not
+# tidiness: 1.6.0 ran a dpkg version comparison and two killall calls through the
+# latching wrapper, and a hung dpkg then made every later call return 124 without
+# being run -- so prerm decided a carrier reset was needed and silently skipped
+# it. Those callers are gone with the reset, so launchctl_run is currently the
+# only caller here. The split stays because the bug it prevents is a property of
+# mixing the two concerns, not of those particular callers: anything added later
+# that is not a question for launchd belongs on bounded_run.
 #
 # The wait is a real wait() on our own child, not a kill -0 poll: an exited child
 # stays a zombie until it is reaped, so kill -0 keeps succeeding after it is gone

@@ -108,23 +108,22 @@ class FormalPolicyStaticTests(unittest.TestCase):
         self.assertIn("modifiedBandKeys.count == 1", self.source)
         self.assertIn('[baseline[@"modifiedBandKeys"] count] == 1', self.source)
         self.assertIn("CCNMNRKey", self.source)
-        # There used to be a third check, CCNMValidateBaselineCompatibility, run
-        # just before replaying a baseline into the modem: same device, same
-        # capability shape, every owned band still supported. Nothing replays a
-        # baseline any more -- undoing an enable is a carrier reset -- so the
-        # comparison has no write to guard, and a check with no caller is worse
-        # than no check because it reads as protection that is still running.
-        self.assertNotIn("CCNMValidateBaselineCompatibility", self.source)
+        # A third check, CCNMValidateBaselineCompatibility, runs just before a
+        # baseline is replayed into the modem: same device, same capability shape,
+        # every owned band still supported. It is asserted in detail by
+        # test_write_path_target_gates, which owns the write-path gates; here it
+        # only has to exist, because the fields above are what it compares.
+        self.assertIn("CCNMValidateBaselineCompatibility", self.source)
 
     def test_readback_has_attempt_and_monotonic_wall_clock_bounds(self):
         self.assertIn("CCNMReadBackMaximumAttempts = 31", self.source)
         self.assertIn("CCNMReadBackDeadlineSeconds = 30.0", self.source)
         self.assertIn('result[@"deadlineExceeded"] = @YES', self.source)
-        # One consumer, because one write path is left. The second was the restore
-        # replaying a baseline; a carrier reset replaced it and is verified by
-        # observing the modem afterwards rather than by reading back what was
-        # written to it, because nothing was.
-        self.assertEqual(self.source.count('[readBack[@"deadlineExceeded"] boolValue]'), 1)
+        # Two consumers, one per write path: the enable and the reverse restore.
+        # Both have to treat an exhausted deadline as an uncertain outcome rather
+        # than a mismatch, because a read-back that never completed says nothing
+        # about what the modem did with the write.
+        self.assertEqual(self.source.count('[readBack[@"deadlineExceeded"] boolValue]'), 2)
 
     def test_read_only_preflight_failure_does_not_create_recovery_state(self):
         start = self.source.index("NSDictionary *initial = CCNMReadFreshBandInfo")

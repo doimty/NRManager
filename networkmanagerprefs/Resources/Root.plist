@@ -214,15 +214,15 @@
 		</dict>
 		<dict>
 			<key>action</key>
-			<string>reloadCarrierDefaults:</string>
+			<string>restoreSavedConfiguration:</string>
 			<key>cell</key>
 			<string>PSButtonCell</string>
 			<key>enabled</key>
 			<false/>
 			<key>id</key>
-			<string>resetCarrierDefaults</string>
+			<string>restoreSavedConfiguration</string>
 			<key>label</key>
-			<string>RESET_CARRIER_DEFAULTS</string>
+			<string>RESTORE_SAVED_CONFIGURATION</string>
 		</dict>
 
 		<dict>
@@ -285,7 +285,7 @@
 			<key>label</key>
 			<string>VERSION</string>
 			<key>value</key>
-			<string>1.6.0</string>
+			<string>1.6.1</string>
 		</dict>
 	</array>
 	<key>title</key>

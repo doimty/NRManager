@@ -76,22 +76,22 @@
 "FRESHNESS_STALE_FORMAT" = "Stale · %@";
 
 "GROUP_RECOVERY" = "Recovery & Maintenance";
-"RECOVERY_FOOTER" = "Shown whenever a validated policy record exists, including a normal enabled state. Reloading carrier defaults is how an enable is undone.";
+"RECOVERY_FOOTER" = "Shown whenever a validated policy record exists, including a normal enabled state. Restoring the saved configuration is how an enable is undone; it needs the original band configuration this package saved before applying yours.";
 "ROW_RECOVERY_STATE" = "Recovery state";
 "ROW_MAINTENANCE" = "Required action";
 "RECOVERY_STATE_CLEAN" = "No recovery required";
 "RECOVERY_STATE_ENABLE_PENDING" = "Enable is pending";
 "RECOVERY_STATE_ENABLED_WITH_BASELINE" = "Original configuration is retained";
-"RECOVERY_STATE_CARRIER_RESET_PENDING" = "Carrier reload is pending";
-"RECOVERY_STATE_CARRIER_RESET_FAILED" = "Carrier reload was not confirmed";
+"RECOVERY_STATE_CARRIER_RESET_PENDING" = "An earlier carrier reload was left pending";
+"RECOVERY_STATE_CARRIER_RESET_FAILED" = "An earlier carrier reload was not confirmed";
 "RECOVERY_STATE_REBOOT_REQUIRED" = "Restart required";
 "RECOVERY_STATE_FAILED" = "Recovery failed";
 "RECOVERY_REBOOT_REQUIRED_DETAIL" = "The modem setter result is uncertain. Restart the device before making another change.";
-"RESET_CARRIER_DEFAULTS" = "Reload carrier defaults";
-"CARRIER_RESET_ALERT_TITLE" = "Reload carrier defaults?";
-"CARRIER_RESET_ALERT_MESSAGE" = "Cellular service is restarted so the modem reloads the carrier's own band configuration, which undoes the n78 preference. Service drops for a few seconds.";
+"RESTORE_SAVED_CONFIGURATION" = "Restore saved configuration";
+"RESTORE_ALERT_TITLE" = "Restore saved configuration?";
+"RESTORE_ALERT_MESSAGE" = "The band configuration saved before the n78 preference was applied is written back to the modem, which undoes the preference. The result is verified by reading the modem back.";
 "BUTTON_CANCEL" = "Cancel";
-"BUTTON_CARRIER_RESET" = "Reload";
+"BUTTON_RESTORE" = "Restore";
 
 "GROUP_ABOUT" = "About";
 "ABOUT_CREDITS_FOOTER" = "Original project by NoisyFlake, continued by Nixuge, and maintained by doimty.";
@@ -114,7 +114,7 @@
 "POLICY_ERROR_N78_UNAVAILABLE" = "Band n78 is not present in both the active and supported NR band lists.";
 "POLICY_ERROR_REBOOT_REQUIRED" = "The modem setter result is uncertain. Restart the device before making another change.";
 "POLICY_ERROR_RECOVERY_REQUIRED" = "Saved policy evidence must be recovered before another change.";
-"POLICY_ERROR_CARRIER_RESET_FAILED" = "The carrier reload could not be confirmed. Try it again from Recovery & Maintenance.";
+"POLICY_ERROR_CARRIER_RESET_FAILED" = "An earlier carrier reload could not be confirmed. Restore the saved configuration from Recovery & Maintenance.";
 "POLICY_ERROR_GENERIC" = "The policy could not be changed or verified. Review the recovery state before retrying.";
 "POLICY_ERROR_DIAGNOSTIC_FORMAT" = "%@\n\nError code: %@\nDetails: %@";
 "POLICY_ERROR_MEASURED_DEVICE_FORMAT" = "This device: %@ / iOS %@ (%@)";

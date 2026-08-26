@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Executable model and static contracts for user-chosen NR band selection (1.6.0).
+"""Executable model and static contracts for user-chosen NR band selection (1.6.1).
 
 The shipped 1.5.0 feature pins NR to the literal ``[78]``. This suite specifies the
 generalisation to a user-chosen subset: what a legal selection is, where the legal

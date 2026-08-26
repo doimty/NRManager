@@ -749,6 +749,11 @@ static NSDictionary *CCNMReadPolicyStateInternal(void) {
     }
     if ([state[@"recoveryState"] isEqual:CCNMRecoveryStateCarrierResetPending] ||
         [state[@"recoveryState"] isEqual:CCNMRecoveryStateCarrierResetFailed]) {
+        // Read-only counterpart of the controller's branch, and for the same
+        // reason: neither state has a producer any more, but 1.6.0 shipped, so a
+        // device that pressed the reload has one of them on disk right now. The
+        // fallback text exists because a state written by that build may carry an
+        // empty error string, and this daemon has nothing else to say about it.
         return CCNMSummaryFromState(state, NO, @"read",
             state[@"errorCode"] ?: CCNMN78PolicyErrorCarrierResetFailed,
             state[@"error"] ?: @"Carrier defaults reset is pending or failed.", nil);
