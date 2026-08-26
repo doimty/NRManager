@@ -176,13 +176,45 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
         : CCNMPreferencesLocalizedString(@"REQUESTED_SYSTEM_DEFAULT");
 }
 
+// A verified enabled state is rendered from the band set the policy recorded, not
+// from a fixed string.
+//
+// 1.6.0 generalised the feature from a hardcoded n78 to any subset of the bands
+// the system already allows, and the write, read-back and persistence paths all
+// followed. This row did not: it mapped CCNMAppliedPolicyVerifiedN78Only straight
+// onto a constant that says "NR allows only n78". A device with n1 selected read
+// back correctly, applied correctly and served n1, while the row claimed n78 --
+// which looks exactly like the modem ignoring the restriction, the most alarming
+// failure this project can have. Reading the recorded target is what makes the
+// row's claim checkable against the pane that produced it.
+//
+// CCNMCanonicalNRSelection is the same canonicaliser the write path and the band
+// pane use, so the row cannot present an ordering or a duplicate the policy would
+// not have stored. A missing or malformed target is reported as a verified
+// restriction without naming bands: the applied policy is a fact here, and the
+// band list is the part that is unavailable, so inventing one would be worse than
+// saying less.
 - (NSString *)appliedPolicyDisplayValue:(NSDictionary *)summary {
     NSString *applied = summary[CCNMN78PolicySummaryAppliedPolicyKey];
+    if ([applied isEqual:CCNMAppliedPolicyVerifiedN78Only]) {
+        id target = summary[CCNMN78PolicySummaryTargetNRBandsKey];
+        NSArray<NSNumber *> *bands = [target isKindOfClass:NSArray.class]
+            ? CCNMCanonicalNRSelection(target, NULL) : nil;
+        if (bands.count == 0) {
+            return CCNMPreferencesLocalizedString(@"APPLIED_VERIFIED_NR_UNNAMED");
+        }
+        NSMutableArray<NSString *> *names = [NSMutableArray array];
+        for (NSNumber *band in bands) {
+            [names addObject:[NSString stringWithFormat:@"n%@", band]];
+        }
+        return [NSString stringWithFormat:
+            CCNMPreferencesLocalizedString(@"APPLIED_VERIFIED_NR_FORMAT"),
+            [names componentsJoinedByString:@", "]];
+    }
     NSDictionary *keys = @{
         CCNMAppliedPolicyUnknown: @"APPLIED_UNKNOWN",
         CCNMAppliedPolicyApplying: @"APPLIED_APPLYING",
         CCNMAppliedPolicyVerifiedSystemDefault: @"APPLIED_VERIFIED_SYSTEM_DEFAULT",
-        CCNMAppliedPolicyVerifiedN78Only: @"APPLIED_VERIFIED_N78_ONLY",
         CCNMAppliedPolicyDiverged: @"APPLIED_DIVERGED",
         CCNMAppliedPolicyRecoveryRequired: @"APPLIED_RECOVERY_REQUIRED",
     };

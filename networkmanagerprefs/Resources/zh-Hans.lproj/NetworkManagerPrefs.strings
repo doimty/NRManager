@@ -1,10 +1,10 @@
 "SETTINGS_TITLE" = "NetworkManagerReborn";
 "HEADER_TITLE" = "NetworkManagerReborn";
-"HEADER_SUBTITLE" = "5G n78 偏好与真实驻网状态";
+"HEADER_SUBTITLE" = "NR 频段选择与真实驻网状态";
 
-"GROUP_N78_PREFERENCE" = "5G n78 偏好";
-"N78_PREFERENCE_FOOTER" = "启用后，NR 仅允许 n78；LTE 频段保持不变并可在无 5G 时回落。";
-"TOGGLE_N78_PREFERENCE" = "启用 n78 偏好";
+"GROUP_N78_PREFERENCE" = "NR 频段限制";
+"N78_PREFERENCE_FOOTER" = "启用后，NR 仅允许已选择的频段；LTE 频段保持不变，并可在无 5G 时回落。";
+"TOGGLE_N78_PREFERENCE" = "启用 NR 频段限制";
 "ROW_TRANSITION_STATE" = "转换状态";
 "TRANSITION_APPLYING" = "正在应用";
 "TRANSITION_VERIFIED" = "已验证";
@@ -20,7 +20,7 @@
 "BAND_GROUP_FOOTER_DROPPED" = "只有同时被 iOS 启用、且被本机基带报告为支持的频段才可选。已保存的选择中还包含 %@，本机当前不提供这些频段，因此不予显示，也不会再次保存。";
 "ROW_BAND_SELECTION_STATUS" = "当前选择";
 "ROW_BAND_UNAVAILABLE" = "暂不可用";
-"BAND_UNAVAILABLE_ENABLED" = "n78 偏好当前已开启，此时 iOS 报告的频段是已应用的结果，而不是原始配置。请先在上一页关闭开关，再修改选择。";
+"BAND_UNAVAILABLE_ENABLED" = "NR 频段限制当前已开启，此时 iOS 报告的频段是已应用的结果，而不是原始配置。请先在上一页关闭开关，再修改选择。";
 "BAND_UNAVAILABLE_RECOVERY" = "已保存的策略记录需要先处理，之后才能修改选择。请先在上一页处理恢复状态。";
 "BAND_UNAVAILABLE_NO_EVIDENCE" = "尚未从本机读到可用的 NR 频段证据。请返回上一页刷新驻网状态。";
 "BAND_RANGE_SUB6" = "Sub-6 GHz";
@@ -54,17 +54,18 @@
 "ROW_FRESHNESS" = "更新时间";
 "REFRESH_SERVING_STATUS" = "刷新驻网状态";
 "REQUESTED_SYSTEM_DEFAULT" = "系统默认";
-"REQUESTED_N78_PREFERENCE" = "n78 偏好";
+"REQUESTED_N78_PREFERENCE" = "NR 频段限制";
 "APPLIED_UNKNOWN" = "未知";
 "APPLIED_APPLYING" = "正在应用";
 "APPLIED_VERIFIED_SYSTEM_DEFAULT" = "已验证系统默认策略";
-"APPLIED_VERIFIED_N78_ONLY" = "NR 仅允许 n78，LTE 未修改";
+"APPLIED_VERIFIED_NR_FORMAT" = "NR 仅允许 %@，LTE 未修改";
+"APPLIED_VERIFIED_NR_UNNAMED" = "已验证 NR 频段限制，LTE 未修改";
 "APPLIED_DIVERGED" = "已应用策略与请求不一致";
 "APPLIED_RECOVERY_REQUIRED" = "需要恢复";
 "SERVING_NR_N78" = "NR n78";
 "SERVING_NR_N78_FORMAT" = "NR n78 · %@";
 "SERVING_NR_OTHER_FORMAT" = "NR %@";
-"SERVING_LTE_FORMAT" = "LTE %@（n78 当前未驻留）";
+"SERVING_LTE_FORMAT" = "LTE %@（当前未驻留 NR）";
 "SERVING_OTHER" = "其他驻网制式";
 "SERVING_UNKNOWN_STALE" = "未知（数据已过期）";
 "SERVING_UNKNOWN_RESTART_SETTINGS" = "未知（再次操作基带前请重启“设置”）";
@@ -89,7 +90,7 @@
 "RECOVERY_REBOOT_REQUIRED_DETAIL" = "基带设置结果不确定。再次更改前必须重启设备。";
 "RESTORE_SAVED_CONFIGURATION" = "恢复已保存的配置";
 "RESTORE_ALERT_TITLE" = "恢复已保存的配置？";
-"RESTORE_ALERT_MESSAGE" = "会把应用 n78 偏好之前保存的频段配置写回基带，从而撤销该偏好。写入后会回读基带来验证结果。";
+"RESTORE_ALERT_MESSAGE" = "会把应用 NR 频段限制之前保存的频段配置写回基带，从而移除该限制。写入后会回读基带来验证结果。";
 "BUTTON_CANCEL" = "取消";
 "BUTTON_RESTORE" = "恢复";
 
@@ -106,12 +107,12 @@
 "LINK_OPEN_FAILED_MESSAGE" = "无法打开源码仓库链接。";
 "BUTTON_OK" = "好";
 
-"POLICY_ERROR_TITLE" = "无法更改 n78 偏好";
+"POLICY_ERROR_TITLE" = "无法更改 NR 频段限制";
 "POLICY_ERROR_BUSY" = "另一个策略操作或驻网状态刷新仍在进行。";
 "POLICY_ERROR_UNSUPPORTED_TARGET" = "此操作需要可读取的设备身份和匹配的运行时频段能力证据。";
 "POLICY_ERROR_SUBSCRIPTION" = "当前数据线路的 SIM 布局或订阅身份不满足安全操作条件。";
 "POLICY_ERROR_BASELINE_INCOMPATIBLE" = "保存的策略基线与当前设备或基带能力不兼容。";
-"POLICY_ERROR_N78_UNAVAILABLE" = "当前启用与支持的 NR 频段列表未同时包含 n78。";
+"POLICY_ERROR_N78_UNAVAILABLE" = "一个或多个已选择的 NR 频段已不再同时出现在当前启用与支持的频段列表中。";
 "POLICY_ERROR_REBOOT_REQUIRED" = "基带设置结果不确定。再次更改前必须重启设备。";
 "POLICY_ERROR_RECOVERY_REQUIRED" = "再次更改前，必须先处理已保存的策略恢复记录。";
 "POLICY_ERROR_CARRIER_RESET_FAILED" = "早前的运营商设置重载未能确认。请在“恢复与维护”中恢复已保存的配置。";

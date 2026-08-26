@@ -27,6 +27,44 @@ BARE_KEY = re.compile(r"[A-Z0-9_]+")
 ORIGINAL_REPO = "https://github.com/NoisyFlake/NetworkManager"
 MAINTAINED_REPO = "https://github.com/doimty/NetworkManagerReborn"
 
+# The only strings allowed to name a specific band. These report what the modem was
+# measured on, so the band number is the fact being stated. Everything else in the
+# table describes the policy, which since 1.6.0 is any subset of the allowed NR
+# bands and therefore cannot name one.
+SERVING_KEYS_THAT_MAY_NAME_A_BAND = frozenset({
+    "SERVING_NR_N78",
+    "SERVING_NR_N78_FORMAT",
+})
+
+
+def method_body(source: str, signature: str) -> str:
+    """The body of the method whose implementation starts with `signature`.
+
+    Skips a forward declaration: a private @interface repeats the signature and is
+    terminated by `;`, so taking the first occurrence slices the class body instead
+    of the method and every assertion below would silently check unrelated code.
+    """
+    start = 0
+    while True:
+        index = source.find(signature, start)
+        if index < 0:
+            raise AssertionError(f"no implementation of {signature}")
+        brace = source.find("{", index)
+        semicolon = source.find(";", index)
+        if brace >= 0 and (semicolon < 0 or brace < semicolon):
+            break
+        start = index + len(signature)
+
+    depth = 0
+    for offset in range(brace, len(source)):
+        if source[offset] == "{":
+            depth += 1
+        elif source[offset] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[brace:offset + 1]
+    raise AssertionError(f"unbalanced braces after {signature}")
+
 
 def code_lines(source: str) -> str:
     """`source` with comment-only and preprocessor lines dropped.
@@ -113,7 +151,50 @@ class FormalSettingsUITests(unittest.TestCase):
         ):
             self.assertIn(key, self.chinese)
             self.assertTrue(self.chinese[key].strip())
-        self.assertEqual(self.chinese["TOGGLE_N78_PREFERENCE"], "启用 n78 偏好")
+        self.assertEqual(self.chinese["TOGGLE_N78_PREFERENCE"], "启用 NR 频段限制")
+
+    def test_generic_policy_copy_does_not_name_one_band(self):
+        """Policy copy describes the mechanism; only measured state may name a band.
+
+        1.6.0 generalised the feature to any subset of the allowed NR bands, but
+        left this copy written for a hardcoded n78. On a device with n1 selected
+        the applied-policy row therefore claimed n78, which reads as the modem
+        ignoring the restriction rather than as a wording bug.
+        """
+        for table in (self.english, self.chinese):
+            for key, value in table.items():
+                if key in SERVING_KEYS_THAT_MAY_NAME_A_BAND:
+                    continue
+                self.assertNotIn("n78", value.lower(), key)
+
+    def test_serving_rows_may_still_name_the_measured_band(self):
+        """n78 in a serving string is a measurement, not a policy claim."""
+        for table in (self.english, self.chinese):
+            for key in SERVING_KEYS_THAT_MAY_NAME_A_BAND:
+                self.assertIn("n78", table[key].lower(), key)
+
+    def test_applied_policy_row_renders_the_recorded_target_bands(self):
+        """The row must read the recorded band set, not a constant.
+
+        Nothing else caught the 1.6.0 regression: the write, read-back and
+        persistence paths were all correct and every test was green, because no
+        assertion required this row to consume the value the policy stores.
+        """
+        body = method_body(self.controller, "- (NSString *)appliedPolicyDisplayValue:")
+        self.assertIn("CCNMN78PolicySummaryTargetNRBandsKey", body)
+        self.assertIn("APPLIED_VERIFIED_NR_FORMAT", body)
+        self.assertIn("APPLIED_VERIFIED_NR_UNNAMED", body)
+        self.assertIn(
+            "CCNMCanonicalNRSelection",
+            body,
+            "reuse the write path's canonicaliser so the row cannot show an"
+            " ordering the policy would not have stored",
+        )
+        self.assertNotIn("APPLIED_VERIFIED_N78_ONLY", self.controller)
+        for table in (self.english, self.chinese):
+            self.assertNotIn("APPLIED_VERIFIED_N78_ONLY", table)
+            self.assertIn("%@", table["APPLIED_VERIFIED_NR_FORMAT"])
+            self.assertNotIn("%@", table["APPLIED_VERIFIED_NR_UNNAMED"])
 
     def test_pull_over_inspired_header_is_compact_and_independent(self):
         headers = [item for item in self.items if item.get("cellClass") == "CCNMHeaderCell"]

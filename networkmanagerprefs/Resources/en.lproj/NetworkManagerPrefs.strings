@@ -1,10 +1,10 @@
 "SETTINGS_TITLE" = "NetworkManagerReborn";
 "HEADER_TITLE" = "NetworkManagerReborn";
-"HEADER_SUBTITLE" = "5G n78 preference and actual serving status";
+"HEADER_SUBTITLE" = "NR band selection and actual serving status";
 
-"GROUP_N78_PREFERENCE" = "5G n78 Preference";
-"N78_PREFERENCE_FOOTER" = "When enabled, NR allows only n78. LTE bands remain unchanged and can be used when 5G is unavailable.";
-"TOGGLE_N78_PREFERENCE" = "Enable n78 preference";
+"GROUP_N78_PREFERENCE" = "NR Band Restriction";
+"N78_PREFERENCE_FOOTER" = "When enabled, NR allows only the selected bands. LTE bands remain unchanged and can be used when 5G is unavailable.";
+"TOGGLE_N78_PREFERENCE" = "Enable NR band restriction";
 "ROW_TRANSITION_STATE" = "Transition state";
 "TRANSITION_APPLYING" = "Applying";
 "TRANSITION_VERIFIED" = "Verified";
@@ -20,7 +20,7 @@
 "BAND_GROUP_FOOTER_DROPPED" = "Only bands that are both enabled by iOS and reported as supported by this modem can be chosen. Your saved selection also contained %@, which this device does not currently offer; those bands are not shown and will not be saved again.";
 "ROW_BAND_SELECTION_STATUS" = "Selection";
 "ROW_BAND_UNAVAILABLE" = "Unavailable";
-"BAND_UNAVAILABLE_ENABLED" = "The n78 preference is currently on, so the bands iOS reports are the ones already applied rather than your original configuration. Turn the switch off on the previous screen, then change the selection.";
+"BAND_UNAVAILABLE_ENABLED" = "The NR band restriction is currently enabled, so the bands reported by iOS are the applied result rather than the original configuration. Turn off the switch on the previous screen before changing the selection.";
 "BAND_UNAVAILABLE_RECOVERY" = "Saved policy evidence needs attention before the selection can change. Resolve the recovery state on the previous screen first.";
 "BAND_UNAVAILABLE_NO_EVIDENCE" = "No usable NR band evidence has been read from this device yet. Return to the previous screen and refresh the serving status.";
 "BAND_RANGE_SUB6" = "Sub-6 GHz";
@@ -54,17 +54,18 @@
 "ROW_FRESHNESS" = "Updated";
 "REFRESH_SERVING_STATUS" = "Refresh serving status";
 "REQUESTED_SYSTEM_DEFAULT" = "System default";
-"REQUESTED_N78_PREFERENCE" = "n78 preference";
+"REQUESTED_N78_PREFERENCE" = "NR band restriction";
 "APPLIED_UNKNOWN" = "Unknown";
 "APPLIED_APPLYING" = "Applying";
 "APPLIED_VERIFIED_SYSTEM_DEFAULT" = "System default verified";
-"APPLIED_VERIFIED_N78_ONLY" = "NR allows only n78; LTE unchanged";
+"APPLIED_VERIFIED_NR_FORMAT" = "NR allows only %@; LTE unchanged";
+"APPLIED_VERIFIED_NR_UNNAMED" = "NR band restriction verified; LTE unchanged";
 "APPLIED_DIVERGED" = "Applied policy differs from the request";
 "APPLIED_RECOVERY_REQUIRED" = "Recovery required";
 "SERVING_NR_N78" = "NR n78";
 "SERVING_NR_N78_FORMAT" = "NR n78 · %@";
 "SERVING_NR_OTHER_FORMAT" = "NR %@";
-"SERVING_LTE_FORMAT" = "LTE %@ (n78 is not currently serving)";
+"SERVING_LTE_FORMAT" = "LTE %@ (NR is not currently serving)";
 "SERVING_OTHER" = "Other serving network";
 "SERVING_UNKNOWN_STALE" = "Unknown (data is stale)";
 "SERVING_UNKNOWN_RESTART_SETTINGS" = "Unknown (restart Settings before another modem operation)";
@@ -89,7 +90,7 @@
 "RECOVERY_REBOOT_REQUIRED_DETAIL" = "The modem setter result is uncertain. Restart the device before making another change.";
 "RESTORE_SAVED_CONFIGURATION" = "Restore saved configuration";
 "RESTORE_ALERT_TITLE" = "Restore saved configuration?";
-"RESTORE_ALERT_MESSAGE" = "The band configuration saved before the n78 preference was applied is written back to the modem, which undoes the preference. The result is verified by reading the modem back.";
+"RESTORE_ALERT_MESSAGE" = "The band configuration saved before the NR band restriction was applied is written back to the modem, which removes the restriction. The result is verified by reading the modem back.";
 "BUTTON_CANCEL" = "Cancel";
 "BUTTON_RESTORE" = "Restore";
 
@@ -106,12 +107,12 @@
 "LINK_OPEN_FAILED_MESSAGE" = "The repository link could not be opened.";
 "BUTTON_OK" = "OK";
 
-"POLICY_ERROR_TITLE" = "Unable to Change n78 Preference";
+"POLICY_ERROR_TITLE" = "Unable to Change NR Band Restriction";
 "POLICY_ERROR_BUSY" = "Another policy or serving-status operation is still running.";
 "POLICY_ERROR_UNSUPPORTED_TARGET" = "This operation requires readable device identity and matching runtime capability evidence.";
 "POLICY_ERROR_SUBSCRIPTION" = "The data-line SIM layout or subscription identity is not safe for this operation.";
 "POLICY_ERROR_BASELINE_INCOMPATIBLE" = "The retained policy baseline is incompatible with this device or its modem capability evidence.";
-"POLICY_ERROR_N78_UNAVAILABLE" = "Band n78 is not present in both the active and supported NR band lists.";
+"POLICY_ERROR_N78_UNAVAILABLE" = "One or more selected NR bands are no longer present in both the active and supported band lists.";
 "POLICY_ERROR_REBOOT_REQUIRED" = "The modem setter result is uncertain. Restart the device before making another change.";
 "POLICY_ERROR_RECOVERY_REQUIRED" = "Saved policy evidence must be recovered before another change.";
 "POLICY_ERROR_CARRIER_RESET_FAILED" = "An earlier carrier reload could not be confirmed. Restore the saved configuration from Recovery & Maintenance.";
