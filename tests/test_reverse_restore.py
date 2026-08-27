@@ -29,7 +29,11 @@ CONTROLLER = (PREFS / "CCNMN78PolicyController.m").read_text()
 READER = (PREFS / "CCNMN78PolicyReader.m").read_text()
 ROOT_CONTROLLER = (PREFS / "CCNMRootListController.m").read_text()
 ROOT_HEADER = (PREFS / "CCNMRootListController.h").read_text()
+SUPPORT_HEADER = (PREFS / "CCNMN78PolicySupport.h").read_text()
+SUPPORT_SOURCE = (PREFS / "CCNMN78PolicySupport.m").read_text()
 ROOT_PLIST = (PREFS / "Resources/Root.plist").read_text()
+ENGLISH_STRINGS = (PREFS / "Resources/en.lproj/NetworkManagerPrefs.strings").read_text()
+CHINESE_STRINGS = (PREFS / "Resources/zh-Hans.lproj/NetworkManagerPrefs.strings").read_text()
 PRERM = (ROOT / "package-actions/prerm.sh.in").read_text()
 POSTINST = (ROOT / "package-actions/postinst.sh.in").read_text()
 POLICY_SHELL = (ROOT / "package-actions/policy-records.sh.inc").read_text()
@@ -347,6 +351,35 @@ class RetiredResetStateTests(unittest.TestCase):
 
 
 class SettingsRestoreActionTests(unittest.TestCase):
+    def test_verified_cleanup_checkpoint_is_reachable_end_to_end(self):
+        key = "CCNMN78PolicySummaryCleanupCheckpointRecoverableKey"
+        self.assertIn(key, SUPPORT_HEADER)
+        self.assertIn(key, SUPPORT_SOURCE)
+
+        reader = function_body(READER, "static NSDictionary *CCNMReadPolicyStateInternal(void)")
+        checkpoint = reader.index("CCNMIsVerifiedRestoreCleanupCheckpoint")
+        generic_recovery = reader.index("BOOL enabled")
+        self.assertLess(checkpoint, generic_recovery)
+        self.assertIn(key, reader[checkpoint:generic_recovery])
+
+        apply_summary = function_body(ROOT_CONTROLLER, "- (void)applyPolicySummary:")
+        self.assertIn(key, apply_summary)
+        self.assertIn("cleanupCheckpointRecoverable", apply_summary)
+
+        rebuild = function_body(ROOT_CONTROLLER, "- (void)rebuildRecoverySection {")
+        self.assertIn("self.hasRecoverableBaseline || self.cleanupCheckpointRecoverable", rebuild)
+
+        action = function_body(
+            ROOT_CONTROLLER, "- (void)restoreSavedConfiguration:(PSSpecifier *)specifier {")
+        self.assertIn("self.cleanupCheckpointRecoverable", action)
+        self.assertIn("FINISH_VERIFIED_RESTORE_CLEANUP", action)
+        self.assertIn("CLEANUP_ALERT_MESSAGE", action)
+
+        for table in (ENGLISH_STRINGS, CHINESE_STRINGS):
+            self.assertIn('"RECOVERY_STATE_CLEANUP_PENDING"', table)
+            self.assertIn('"FINISH_VERIFIED_RESTORE_CLEANUP"', table)
+            self.assertIn('"CLEANUP_ALERT_MESSAGE"', table)
+
     def test_settings_exposes_one_restore_action(self):
         self.assertIn("restoreSavedConfigurationHandler", ROOT_HEADER)
         self.assertIn("restoreSavedConfiguration:", ROOT_CONTROLLER)
@@ -370,10 +403,10 @@ class SettingsRestoreActionTests(unittest.TestCase):
         self.assertIn("CCNMRecoverN78Preference", function_body(
             ROOT_CONTROLLER, "- (void)beginPolicyRecovery {"))
 
-    def test_the_action_is_gated_on_a_recoverable_baseline(self):
+    def test_the_action_is_gated_on_recoverable_evidence(self):
         body = function_body(ROOT_CONTROLLER,
                              "- (void)restoreSavedConfiguration:(PSSpecifier *)specifier {")
-        self.assertIn("!self.hasRecoverableBaseline", body)
+        self.assertIn("!self.hasRecoverableBaseline && !self.cleanupCheckpointRecoverable", body)
         self.assertIn("self.requiresReboot", body)
         self.assertIn("self.policyOperationInProgress", body)
 

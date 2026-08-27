@@ -23,6 +23,7 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
 @property (nonatomic, assign) BOOL n78PreferenceControlAvailable;
 @property (nonatomic, assign) BOOL recoverySectionVisible;
 @property (nonatomic, assign) BOOL hasRecoverableBaseline;
+@property (nonatomic, assign) BOOL cleanupCheckpointRecoverable;
 @property (nonatomic, assign) BOOL requiresReboot;
 @property (nonatomic, copy) NSArray<PSSpecifier *> *recoverySpecifiers;
 @property (nonatomic, copy) NSDictionary<NSString *, id> *policySummary;
@@ -194,22 +195,61 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
 // restriction without naming bands: the applied policy is a fact here, and the
 // band list is the part that is unavailable, so inventing one would be worse than
 // saying less.
-- (NSString *)appliedPolicyDisplayValue:(NSDictionary *)summary {
-    NSString *applied = summary[CCNMN78PolicySummaryAppliedPolicyKey];
+- (NSString *)displayNameForNRBands:(NSArray<NSNumber *> *)bands {
+    NSMutableArray<NSString *> *names = [NSMutableArray arrayWithCapacity:bands.count];
+    for (NSNumber *band in bands) {
+        [names addObject:[NSString stringWithFormat:@"n%@", band]];
+    }
+    return [names componentsJoinedByString:@", "];
+}
+
+// The durable policy summary proves what a completed write once matched. Fresh
+// capabilityActiveNRBands proves what the modem allows now. The row keeps those
+// time domains separate: exact current match, observed drift, or last-verified
+// history when current capability evidence is unavailable.
+- (NSString *)appliedPolicyDisplayValue:(NSDictionary *)policySummary
+                         servingSummary:(NSDictionary *)servingSummary {
+    NSString *applied = policySummary[CCNMN78PolicySummaryAppliedPolicyKey];
     if ([applied isEqual:CCNMAppliedPolicyVerifiedN78Only]) {
-        id target = summary[CCNMN78PolicySummaryTargetNRBandsKey];
-        NSArray<NSNumber *> *bands = [target isKindOfClass:NSArray.class]
-            ? CCNMCanonicalNRSelection(target, NULL) : nil;
-        if (bands.count == 0) {
+        id rawTarget = policySummary[CCNMN78PolicySummaryTargetNRBandsKey];
+        NSArray<NSNumber *> *target = [rawTarget isKindOfClass:NSArray.class]
+            ? CCNMCanonicalNRSelection(rawTarget, NULL) : nil;
+        if (target.count == 0) {
             return CCNMPreferencesLocalizedString(@"APPLIED_VERIFIED_NR_UNNAMED");
         }
-        NSMutableArray<NSString *> *names = [NSMutableArray array];
-        for (NSNumber *band in bands) {
-            [names addObject:[NSString stringWithFormat:@"n%@", band]];
+        NSString *targetName = [self displayNameForNRBands:target];
+        NSString *policyUUID = [policySummary[@"subscriptionUUID"] isKindOfClass:NSString.class]
+            ? policySummary[@"subscriptionUUID"] : @"";
+        NSString *capabilityUUID =
+            [servingSummary[CCNMServingSummarySubscriptionUUIDKey] isKindOfClass:NSString.class]
+                ? servingSummary[CCNMServingSummarySubscriptionUUIDKey] : @"";
+        long long capabilitySampledAt = [servingSummary[
+            CCNMServingSummaryCapabilitySampledAtMillisecondsKey] longLongValue];
+        long long capabilityAge = (long long)(NSDate.date.timeIntervalSince1970 * 1000.0) -
+            capabilitySampledAt;
+        BOOL sameSubscription = policyUUID.length > 0 && capabilityUUID.length > 0 &&
+            [policyUUID caseInsensitiveCompare:capabilityUUID] == NSOrderedSame;
+        BOOL capabilityAvailable = sameSubscription && capabilitySampledAt > 0 &&
+            capabilityAge >= 0 && capabilityAge <= 30000 &&
+            ![servingSummary[CCNMServingSummaryUnsafeOutstandingKey] boolValue] &&
+            [servingSummary[CCNMServingSummaryCapabilityReadSuccessKey] boolValue];
+        id rawActive = servingSummary[CCNMServingSummaryCapabilityActiveNRBandsKey];
+        NSArray<NSNumber *> *active = capabilityAvailable &&
+            [rawActive isKindOfClass:NSArray.class]
+                ? CCNMCanonicalNRSelection(rawActive, NULL) : nil;
+        if (active.count == 0) {
+            return [NSString stringWithFormat:
+                CCNMPreferencesLocalizedString(@"APPLIED_LAST_VERIFIED_NR_FORMAT"),
+                targetName];
+        }
+        if ([active isEqualToArray:target]) {
+            return [NSString stringWithFormat:
+                CCNMPreferencesLocalizedString(@"APPLIED_VERIFIED_NR_FORMAT"),
+                targetName];
         }
         return [NSString stringWithFormat:
-            CCNMPreferencesLocalizedString(@"APPLIED_VERIFIED_NR_FORMAT"),
-            [names componentsJoinedByString:@", "]];
+            CCNMPreferencesLocalizedString(@"APPLIED_LIVE_NR_DRIFT_FORMAT"),
+            [self displayNameForNRBands:active], targetName];
     }
     NSDictionary *keys = @{
         CCNMAppliedPolicyUnknown: @"APPLIED_UNKNOWN",
@@ -222,6 +262,9 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
 }
 
 - (NSString *)recoveryDisplayValue:(NSDictionary *)summary {
+    if ([summary[CCNMN78PolicySummaryCleanupCheckpointRecoverableKey] boolValue]) {
+        return CCNMPreferencesLocalizedString(@"RECOVERY_STATE_CLEANUP_PENDING");
+    }
     NSString *recovery = summary[CCNMN78PolicySummaryRecoveryStateKey];
     NSDictionary *keys = @{
         CCNMRecoveryStateClean: @"RECOVERY_STATE_CLEAN",
@@ -257,14 +300,19 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
 
     [self setDisplayValue:[self requestedPolicyDisplayValue:summary]
            forSpecifierID:CCNMRequestedPolicySpecifierID];
-    [self setDisplayValue:[self appliedPolicyDisplayValue:summary]
+    [self setDisplayValue:[self appliedPolicyDisplayValue:summary
+                                               servingSummary:self.servingSummary]
            forSpecifierID:CCNMAppliedPolicySpecifierID];
 
     BOOL baselineValid = [summary[@"baselineValid"] boolValue];
-    BOOL recoveryVisible = ![recoveryState isEqual:CCNMRecoveryStateClean];
+    BOOL cleanupCheckpointRecoverable =
+        [summary[CCNMN78PolicySummaryCleanupCheckpointRecoverableKey] boolValue];
+    BOOL recoveryVisible = ![recoveryState isEqual:CCNMRecoveryStateClean] ||
+        cleanupCheckpointRecoverable;
     [self updateRecoveryStateWithLocalizationKey:[self recoveryDisplayValue:summary]
                                          visible:recoveryVisible
                           hasRecoverableBaseline:baselineValid
+                    cleanupCheckpointRecoverable:cleanupCheckpointRecoverable
                                   requiresReboot:[summary[CCNMN78PolicySummaryRequiresRebootKey] boolValue]];
 }
 
@@ -343,7 +391,8 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
         isEqual:CCNMRequestedModeN78Preferred] controlAvailable:NO];
     [self setDisplayValue:@"FRESHNESS_REFRESHING" forSpecifierID:CCNMFreshnessSpecifierID];
     [self updateCurrentStateWithRequestedValue:[self requestedPolicyDisplayValue:self.policySummary]
-                                  appliedValue:[self appliedPolicyDisplayValue:self.policySummary]
+                                  appliedValue:[self appliedPolicyDisplayValue:self.policySummary
+                                                               servingSummary:self.servingSummary]
                                   servingValue:[self servingDisplayValue:self.servingSummary]
                                  dataLineValue:[self dataLineDisplayValue:self.servingSummary]
                                 freshnessValue:CCNMPreferencesLocalizedString(@"FRESHNESS_REFRESHING")
@@ -365,7 +414,8 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
 - (void)applyServingSummary:(NSDictionary<NSString *, id> *)summary {
     self.servingSummary = summary ?: CCNMServingStatusEmptySummary();
     [self updateCurrentStateWithRequestedValue:[self requestedPolicyDisplayValue:self.policySummary]
-                                  appliedValue:[self appliedPolicyDisplayValue:self.policySummary]
+                                  appliedValue:[self appliedPolicyDisplayValue:self.policySummary
+                                                               servingSummary:self.servingSummary]
                                   servingValue:[self servingDisplayValue:self.servingSummary]
                                  dataLineValue:[self dataLineDisplayValue:self.servingSummary]
                                 freshnessValue:[self freshnessDisplayValue:self.servingSummary]
@@ -526,23 +576,26 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
     }
 }
 
-// Writes the saved pre-enable band configuration back to the modem.
-//
-// 1.6.0 spelled this "reload carrier defaults" and implemented it by killing
-// CommCenter twice. The target device showed the bands stay narrowed, so the
-// action is a reverse setActiveBandInfo: write again, which is why it is gated on
-// a recoverable baseline: without the saved configuration there is nothing to
-// write back, and this bundle will not invent one.
+// Routes both recovery forms through the policy owner. A retained baseline needs
+// the reverse setActiveBandInfo: write. A verified cleanup checkpoint has already
+// matched that write and retired the baseline, so recovery only revalidates live
+// complete BandInfo and finishes the durable clean-state rewrite. The latter must
+// never claim that it will write a missing baseline or issue a second setter.
 - (void)restoreSavedConfiguration:(PSSpecifier *)specifier {
     (void)specifier;
-    if (!self.hasRecoverableBaseline || self.requiresReboot || self.policyOperationInProgress ||
+    if ((!self.hasRecoverableBaseline && !self.cleanupCheckpointRecoverable) ||
+        self.requiresReboot || self.policyOperationInProgress ||
         self.servingRefreshInProgress || !self.restoreSavedConfigurationHandler) {
         return;
     }
 
+    BOOL cleanupOnly = self.cleanupCheckpointRecoverable;
+    NSString *titleKey = cleanupOnly ? @"CLEANUP_ALERT_TITLE" : @"RESTORE_ALERT_TITLE";
+    NSString *messageKey = cleanupOnly ? @"CLEANUP_ALERT_MESSAGE" : @"RESTORE_ALERT_MESSAGE";
+    NSString *buttonKey = cleanupOnly ? @"FINISH_VERIFIED_RESTORE_CLEANUP" : @"BUTTON_RESTORE";
     UIAlertController *alert = [UIAlertController
-        alertControllerWithTitle:CCNMPreferencesLocalizedString(@"RESTORE_ALERT_TITLE")
-        message:CCNMPreferencesLocalizedString(@"RESTORE_ALERT_MESSAGE")
+        alertControllerWithTitle:CCNMPreferencesLocalizedString(titleKey)
+        message:CCNMPreferencesLocalizedString(messageKey)
         preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction
         actionWithTitle:CCNMPreferencesLocalizedString(@"BUTTON_CANCEL")
@@ -551,8 +604,8 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
 
     __weak typeof(self) weakSelf = self;
     [alert addAction:[UIAlertAction
-        actionWithTitle:CCNMPreferencesLocalizedString(@"BUTTON_RESTORE")
-        style:UIAlertActionStyleDestructive
+        actionWithTitle:CCNMPreferencesLocalizedString(buttonKey)
+        style:cleanupOnly ? UIAlertActionStyleDefault : UIAlertActionStyleDestructive
         handler:^(UIAlertAction *action) {
             (void)action;
             CCNMSettingsActionHandler handler = weakSelf.restoreSavedConfigurationHandler;
@@ -646,10 +699,12 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
 - (void)updateRecoveryStateWithLocalizationKey:(NSString *)localizationKey
                                        visible:(BOOL)visible
                         hasRecoverableBaseline:(BOOL)hasRecoverableBaseline
+                  cleanupCheckpointRecoverable:(BOOL)cleanupCheckpointRecoverable
                                 requiresReboot:(BOOL)requiresReboot {
     (void)[self specifiers];
     self.recoverySectionVisible = visible;
     self.hasRecoverableBaseline = hasRecoverableBaseline;
+    self.cleanupCheckpointRecoverable = cleanupCheckpointRecoverable;
     self.requiresReboot = requiresReboot;
     [self setDisplayValue:localizationKey forSpecifierID:CCNMRecoveryStateSpecifierID];
     [self rebuildRecoverySection];
@@ -675,7 +730,12 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
         if (self.requiresReboot && reboot) {
             [visibleMaintenanceSpecifiers addObject:reboot];
         }
-        if (self.hasRecoverableBaseline && restore) {
+        if ((self.hasRecoverableBaseline || self.cleanupCheckpointRecoverable) && restore) {
+            NSString *titleKey = self.cleanupCheckpointRecoverable
+                ? @"FINISH_VERIFIED_RESTORE_CLEANUP" : @"RESTORE_SAVED_CONFIGURATION";
+            NSString *title = CCNMPreferencesLocalizedString(titleKey);
+            restore.name = title;
+            [restore setProperty:title forKey:PSTitleKey];
             BOOL restoreEnabled = self.restoreSavedConfigurationHandler != nil &&
                 !self.requiresReboot && !self.policyOperationInProgress && !self.servingRefreshInProgress;
             [restore setProperty:@(restoreEnabled) forKey:PSEnabledKey];

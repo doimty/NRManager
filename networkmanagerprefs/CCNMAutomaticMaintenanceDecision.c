@@ -74,5 +74,8 @@ CCNMAutomaticMaintenanceDecision CCNMEvaluateAutomaticMaintenance(
     if (input.operationInProgress) {
         return CCNMAutomaticMaintenanceDeferBusy;
     }
+    if (input.dropRecordedForCurrentSample) {
+        return CCNMAutomaticMaintenanceDropRecorded;
+    }
     return CCNMAutomaticMaintenanceCorrectOnce;
 }

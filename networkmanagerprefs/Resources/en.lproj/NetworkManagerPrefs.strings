@@ -58,8 +58,10 @@
 "APPLIED_UNKNOWN" = "Unknown";
 "APPLIED_APPLYING" = "Applying";
 "APPLIED_VERIFIED_SYSTEM_DEFAULT" = "System default verified";
-"APPLIED_VERIFIED_NR_FORMAT" = "NR allows only %@; LTE unchanged";
-"APPLIED_VERIFIED_NR_UNNAMED" = "NR band restriction verified; LTE unchanged";
+"APPLIED_VERIFIED_NR_FORMAT" = "Current NR allows only %@; LTE unchanged";
+"APPLIED_LAST_VERIFIED_NR_FORMAT" = "Last verified NR target %@; current modem bands unavailable";
+"APPLIED_LIVE_NR_DRIFT_FORMAT" = "Current NR %@ differs from recorded target %@";
+"APPLIED_VERIFIED_NR_UNNAMED" = "NR band restriction was verified; recorded bands unavailable";
 "APPLIED_DIVERGED" = "Applied policy differs from the request";
 "APPLIED_RECOVERY_REQUIRED" = "Recovery required";
 "SERVING_NR_N78" = "NR n78";
@@ -77,7 +79,7 @@
 "FRESHNESS_STALE_FORMAT" = "Stale · %@";
 
 "GROUP_RECOVERY" = "Recovery & Maintenance";
-"RECOVERY_FOOTER" = "Shown whenever a validated policy record exists, including a normal enabled state. Restoring the saved configuration is how an enable is undone; it needs the original band configuration this package saved before applying yours.";
+"RECOVERY_FOOTER" = "Shown whenever validated policy evidence needs attention. A saved baseline reverses the NR restriction with a verified modem write. If that restore was already verified, Settings only rechecks the live bands and finishes durable cleanup; it does not write the modem again.";
 "ROW_RECOVERY_STATE" = "Recovery state";
 "ROW_MAINTENANCE" = "Required action";
 "RECOVERY_STATE_CLEAN" = "No recovery required";
@@ -86,11 +88,15 @@
 "RECOVERY_STATE_CARRIER_RESET_PENDING" = "An earlier carrier reload was left pending";
 "RECOVERY_STATE_CARRIER_RESET_FAILED" = "An earlier carrier reload was not confirmed";
 "RECOVERY_STATE_REBOOT_REQUIRED" = "Restart required";
+"RECOVERY_STATE_CLEANUP_PENDING" = "Modem restore verified; cleanup pending";
 "RECOVERY_STATE_FAILED" = "Recovery failed";
 "RECOVERY_REBOOT_REQUIRED_DETAIL" = "The modem setter result is uncertain. Restart the device before making another change.";
 "RESTORE_SAVED_CONFIGURATION" = "Restore saved configuration";
+"FINISH_VERIFIED_RESTORE_CLEANUP" = "Finish verified restore";
 "RESTORE_ALERT_TITLE" = "Restore saved configuration?";
 "RESTORE_ALERT_MESSAGE" = "The band configuration saved before the NR band restriction was applied is written back to the modem, which removes the restriction. The result is verified by reading the modem back.";
+"CLEANUP_ALERT_TITLE" = "Finish verified restore?";
+"CLEANUP_ALERT_MESSAGE" = "The modem already matched the saved configuration. Settings will recheck the live complete band configuration and finish the durable policy cleanup. No modem write is issued.";
 "BUTTON_CANCEL" = "Cancel";
 "BUTTON_RESTORE" = "Restore";
 

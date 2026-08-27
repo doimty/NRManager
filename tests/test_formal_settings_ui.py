@@ -180,10 +180,22 @@ class FormalSettingsUITests(unittest.TestCase):
         persistence paths were all correct and every test was green, because no
         assertion required this row to consume the value the policy stores.
         """
-        body = method_body(self.controller, "- (NSString *)appliedPolicyDisplayValue:")
+        body = method_body(
+            self.controller,
+            "- (NSString *)appliedPolicyDisplayValue:(NSDictionary *)policySummary",
+        )
         self.assertIn("CCNMN78PolicySummaryTargetNRBandsKey", body)
         self.assertIn("APPLIED_VERIFIED_NR_FORMAT", body)
+        self.assertIn("APPLIED_LAST_VERIFIED_NR_FORMAT", body)
+        self.assertIn("APPLIED_LIVE_NR_DRIFT_FORMAT", body)
         self.assertIn("APPLIED_VERIFIED_NR_UNNAMED", body)
+        self.assertIn("CCNMServingSummaryCapabilityActiveNRBandsKey", body)
+        self.assertIn("CCNMServingSummaryCapabilityReadSuccessKey", body)
+        self.assertIn("CCNMServingSummaryCapabilitySampledAtMillisecondsKey", body)
+        self.assertIn("CCNMServingSummarySubscriptionUUIDKey", body)
+        self.assertIn("caseInsensitiveCompare", body)
+        self.assertIn("CCNMServingSummaryUnsafeOutstandingKey", body)
+        self.assertIn("isEqualToArray", body)
         self.assertIn(
             "CCNMCanonicalNRSelection",
             body,
@@ -193,8 +205,19 @@ class FormalSettingsUITests(unittest.TestCase):
         self.assertNotIn("APPLIED_VERIFIED_N78_ONLY", self.controller)
         for table in (self.english, self.chinese):
             self.assertNotIn("APPLIED_VERIFIED_N78_ONLY", table)
-            self.assertIn("%@", table["APPLIED_VERIFIED_NR_FORMAT"])
+            self.assertEqual(table["APPLIED_VERIFIED_NR_FORMAT"].count("%@"), 1)
+            self.assertEqual(table["APPLIED_LAST_VERIFIED_NR_FORMAT"].count("%@"), 1)
+            self.assertEqual(table["APPLIED_LIVE_NR_DRIFT_FORMAT"].count("%@"), 2)
             self.assertNotIn("%@", table["APPLIED_VERIFIED_NR_UNNAMED"])
+
+    def test_applied_policy_row_recomputes_when_live_capability_changes(self):
+        apply_policy = method_body(self.controller, "- (void)applyPolicySummary:")
+        apply_serving = method_body(self.controller, "- (void)applyServingSummary:")
+        refresh = method_body(self.controller, "- (void)beginServingRefresh {")
+        for body in (apply_policy, apply_serving, refresh):
+            self.assertIn("appliedPolicyDisplayValue", body)
+            self.assertIn("self.servingSummary", body)
+        self.assertNotIn("CCNMAReadStatus", self.controller)
 
     def test_pull_over_inspired_header_is_compact_and_independent(self):
         headers = [item for item in self.items if item.get("cellClass") == "CCNMHeaderCell"]

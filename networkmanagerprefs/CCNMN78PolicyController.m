@@ -1238,6 +1238,8 @@ static NSDictionary *CCNMSyntheticRecoveryState(NSDictionary *state,
     return synthetic;
 }
 
+static BOOL CCNMIsVerifiedRestoreCleanupCheckpoint(NSDictionary *state);
+
 static NSDictionary *CCNMSummaryFromState(NSDictionary *state,
                                           BOOL success,
                                           NSString *operation,
@@ -1291,6 +1293,7 @@ static NSDictionary *CCNMSummaryFromState(NSDictionary *state,
         CCNMN78PolicySummaryRequiresRebootKey: @(requiresReboot),
         CCNMN78PolicySummaryMayWriteKey: @((normalDefault || normalEnabled) && !requiresReboot),
         CCNMN78PolicySummaryMayUninstallKey: @(normalDefault),
+        CCNMN78PolicySummaryCleanupCheckpointRecoverableKey: @NO,
         @"baselinePresent": @(baselinePresent),
         @"baselineValid": @(baselineValid),
         @"transitionPresent": @(transitionPresent),
@@ -1343,6 +1346,14 @@ static NSDictionary *CCNMReadPolicyStateInternal(void) {
             @"Policy evidence exists without its state record.");
         return CCNMSummaryFromState(synthetic, NO, @"read", CCNMN78PolicyErrorInvalidRecords,
             synthetic[@"error"], nil);
+    }
+    if (!baselineExists && !intentExists && !inFlightExists &&
+        CCNMBootRelationForRecord(state) == CCNMBootRelationEarlier &&
+        CCNMIsVerifiedRestoreCleanupCheckpoint(state)) {
+        return CCNMSummaryFromState(state, NO, @"read",
+            CCNMN78PolicyErrorRecoveryRequired,
+            @"The modem restore was verified; durable cleanup remains pending.",
+            @{CCNMN78PolicySummaryCleanupCheckpointRecoverableKey: @YES});
     }
     if (intentExists || inFlightExists) {
         if ([state[@"appliedPolicy"] isEqual:CCNMAppliedPolicyDiverged] &&

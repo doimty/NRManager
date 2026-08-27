@@ -116,7 +116,7 @@ int main(void) {
     NSDictionary *record = CCNMABuildRecord(policy, identity, prev, curr,
         1, @1234567890000, CCNMAutomaticMaintenanceAwaitEvidence, nil);
     if (!record) return 1;
-    if (![record[CCNMARecordSchemaVersionKey] isEqual:@1]) return 2;
+    if (![record[CCNMARecordSchemaVersionKey] isEqual:@2]) return 2;
     if (![record[CCNMARecordOwnerKey] isEqual:@"me.nixuge.networkmanager.automatic-maintenance"]) return 3;
     if (![record[CCNMARecordDeviceModelKey] isEqual:@"iPhone14,3"]) return 4;
     if (![record[CCNMARecordSystemVersionKey] isEqual:@"15.1.1"]) return 5;
@@ -144,7 +144,20 @@ int main(void) {
     if (![record3[CCNMARecordDropGenerationKey] isEqual:@1]) return 16;
     if (![record3[CCNMARecordDropRATKey] isEqual:@(CCNMAutomaticMaintenanceRATNR)]) return 17;
     if (![record3[CCNMARecordDropBandKey] isEqual:@41]) return 18;
-    if (![record3[CCNMARecordVerificationPendingKey] isEqual:@YES]) return 19;
+    if (![record3[CCNMARecordVerificationPendingKey] isEqual:@NO]) return 19;
+    // A second identical refresh feeds the pending bit back into the decision and
+    // must preserve the original drop generation rather than inventing another.
+    if (!CCNMARecordMatchesCurrentContext(record3, identity,
+            1, @1234567890000)) return 60;
+    if (CCNMARecordMatchesCurrentContext(record3, identity,
+            2, @1234567890000)) return 61;
+    if (CCNMARecordMatchesCurrentContext(record3, identity,
+            1, @1234567890001)) return 62;
+    NSDictionary *record4 = CCNMABuildRecord(policy, identity, nr41, nr41b,
+        1, @1234567890000, CCNMAutomaticMaintenanceDropRecorded, record3);
+    if (![record4[CCNMARecordDropGenerationKey] isEqual:@1]) return 63;
+    if (![record4[CCNMARecordVerificationPendingKey] isEqual:@NO]) return 64;
+    if (![record4[CCNMARecordLastDecisionKey] isEqual:@"dropRecorded"]) return 68;
     // CCNMAValidateRecord
     if (!CCNMAValidateRecord(record)) return 20;
     if (!CCNMAValidateRecord(record3)) return 21;
@@ -160,6 +173,15 @@ int main(void) {
     bad = [record mutableCopy];
     bad[CCNMARecordDeviceModelKey] = @"";
     if (CCNMAValidateRecord(bad)) return 24;
+    bad = [record mutableCopy];
+    bad[CCNMARecordVerificationPendingKey] = @"yes";
+    if (CCNMAValidateRecord(bad)) return 65;
+    bad = [record mutableCopy];
+    bad[CCNMARecordCooldownUntilKey] = @"later";
+    if (CCNMAValidateRecord(bad)) return 66;
+    bad = [record mutableCopy];
+    [bad removeObjectForKey:CCNMARecordLastDecisionAtKey];
+    if (CCNMAValidateRecord(bad)) return 67;
     // CCNMAValidateStatus
     NSDictionary *emptyServing = @{
         @"state": @"",
@@ -303,7 +325,8 @@ class AutomaticMaintenanceRecordTests(unittest.TestCase):
         self.assertIn("CCNMServingStatusEmptySummary", source)
         self.assertIn("CCNMARecordCapabilitySupportedNRBandsKey", record_source)
         self.assertIn("CCNMAIdentitySnapshotMatchesRecord", record_source)
-        self.assertIn("sameIdentity &&", record_source)
+        self.assertIn("sameContext &&", record_source)
+        self.assertIn("CCNMARecordMatchesCurrentContext", record_source)
         self.assertIn("Missing current SIM identity", HARNESS)
 
     def test_header_exports_path_functions(self):
@@ -322,6 +345,26 @@ class AutomaticMaintenanceRecordTests(unittest.TestCase):
         self.assertIn("CCNMAValidateRecord", header)
         self.assertIn("CCNMAValidateStatus", header)
         self.assertIn("CCNMARecordMatchesCurrentIdentity", header)
+
+    def test_record_context_includes_policy_and_baseline_identity(self):
+        header = HEADER.read_text()
+        source = SOURCE.read_text()
+        self.assertIn("static const long long CCNMASchemaVersion = 2", source)
+        self.assertIn("CCNMARecordMatchesCurrentContext", header)
+        context = source[source.index("BOOL CCNMARecordMatchesCurrentContext"):]
+        self.assertIn("CCNMARecordPolicyGenerationKey", context)
+        self.assertIn("CCNMARecordBaselineCreatedAtKey", context)
+        self.assertIn("CCNMARecordMatchesCurrentIdentity", context)
+        builder = source[source.index("NSDictionary *CCNMABuildRecord"):]
+        self.assertIn("CCNMARecordMatchesCurrentContext", builder)
+
+    def test_decision_feedback_fields_are_required_by_record_validation(self):
+        source = SOURCE.read_text()
+        validation = source[source.index("BOOL CCNMAValidateRecord"):source.index(
+            "BOOL CCNMAValidateStatus")]
+        self.assertIn("CCNMARecordVerificationPendingKey", validation)
+        self.assertIn("CCNMARecordCooldownUntilKey", validation)
+        self.assertIn("CCNMARecordLastDecisionAtKey", validation)
 
     def test_record_contains_no_writer_code(self):
         source = SOURCE.read_text()

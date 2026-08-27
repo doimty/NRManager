@@ -32,7 +32,10 @@ static NSString *const CCNMAServingStateKey = @"state";
 static NSString *const CCNMAServingBandKey = @"band";
 static NSString *const CCNMAServingFrequencyMHzKey = @"frequencyMHz";
 static NSString *const CCNMAServingSampledAtMillisecondsKey = @"sampledAtMilliseconds";
-static const long long CCNMASchemaVersion = 1;
+// Schema 1 marked a read-only CorrectOnce observation as verificationPending
+// even though no setter existed. Schema 2 separates the recorded drop candidate
+// from real post-setter verification, so old false-pending records fail closed.
+static const long long CCNMASchemaVersion = 2;
 static const long long CCNMAStatusSchemaVersion = 1;
 
 NSString *CCNMAutomaticMaintenanceRecordPath(void) {
@@ -147,6 +150,8 @@ NSString *CCNMADecisionName(CCNMAutomaticMaintenanceDecision decision) {
             return @"deferCooldown";
         case CCNMAutomaticMaintenanceVerificationPending:
             return @"verificationPending";
+        case CCNMAutomaticMaintenanceDropRecorded:
+            return @"dropRecorded";
         case CCNMAutomaticMaintenanceCorrectOnce:
             return @"correctOnce";
         case CCNMAutomaticMaintenanceStopAttemptExhausted:
@@ -292,7 +297,10 @@ NSDictionary *CCNMABuildRecord(NSDictionary *policySummary,
     if (!CCNMValidAutomaticSlotID(slotID)) {
         return nil;
     }
-    if (!deviceModel.length || !systemVersion.length || !systemBuild.length) {
+    if (!deviceModel.length || !systemVersion.length || !systemBuild.length ||
+        ![baselineCreatedAt isKindOfClass:NSNumber.class] ||
+        !CCNMNSNumberIsInteger(baselineCreatedAt) ||
+        [baselineCreatedAt longLongValue] <= 0) {
         return nil;
     }
 
@@ -309,32 +317,43 @@ NSDictionary *CCNMABuildRecord(NSDictionary *policySummary,
     NSArray *supportedRATKeys = [identity[CCNMARecordCapabilitySupportedRATKeysKey] isKindOfClass:NSArray.class]
         ? identity[CCNMARecordCapabilitySupportedRATKeysKey] : @[];
 
-    // Carry forward drop state only when boot and the full identity/capability
-    // snapshot are unchanged. A new SIM or capability shape starts clean.
-    BOOL sameBoot = [existingRecord[CCNMARecordBootSessionUUIDKey] isEqual:bootSession];
-    BOOL sameIdentity = sameBoot && CCNMAIdentitySnapshotMatchesRecord(existingRecord, identity);
-    NSUInteger dropGeneration = sameIdentity
+    // Carry feedback only inside the exact boot-local policy transaction. A new
+    // enable can have the same SIM and capability snapshot, so identity alone is
+    // not enough: generation and baseline creation identity must also match.
+    BOOL sameContext = CCNMARecordMatchesCurrentContext(existingRecord, identity,
+        policyGeneration, baselineCreatedAt);
+    NSUInteger dropGeneration = sameContext
         ? [existingRecord[CCNMARecordDropGenerationKey] unsignedIntegerValue] : 0;
-    NSNumber *dropRAT = sameIdentity ? existingRecord[CCNMARecordDropRATKey] : nil;
-    NSNumber *dropBand = sameIdentity ? existingRecord[CCNMARecordDropBandKey] : nil;
-    BOOL attemptConsumed = sameIdentity &&
+    NSNumber *dropRAT = sameContext ? existingRecord[CCNMARecordDropRATKey] : nil;
+    NSNumber *dropBand = sameContext ? existingRecord[CCNMARecordDropBandKey] : nil;
+    BOOL attemptConsumed = sameContext &&
         [existingRecord[CCNMARecordAttemptConsumedKey] boolValue];
-    BOOL verificationPending = sameIdentity &&
+    BOOL verificationPending = sameContext &&
         [existingRecord[CCNMARecordVerificationPendingKey] boolValue];
-    NSNumber *cooldownUntil = sameIdentity
+    NSNumber *cooldownUntil = sameContext
         ? existingRecord[CCNMARecordCooldownUntilKey] : nil;
 
-    // When the decision is CorrectOnce, check if we need to record a new drop.
-    // The decision module already verified two matching clean non-target samples.
+    // CorrectOnce records a candidate, not a modem attempt. The daemon is still
+    // read-only, so verificationPending must remain false until a future writer
+    // persists setter intent and actually calls the setter. A repeated decision
+    // for the same recorded RAT+band is idempotent even if caller wiring regresses.
     BOOL isCorrectOnce = (decision == CCNMAutomaticMaintenanceCorrectOnce);
-    // If the identity changed, start a fresh generation. Otherwise a second
-    // CorrectOnce after an unconsumed drop records the same boot-local drop.
-    if (isCorrectOnce && (!sameIdentity || !attemptConsumed)) {
-        dropGeneration = sameIdentity ? dropGeneration + 1 : 1;
+    BOOL sameRecordedDrop = sameContext && dropGeneration > 0 &&
+        !attemptConsumed && !verificationPending &&
+        [dropRAT isEqual:@(current.rat)] && [dropBand isEqual:@(current.band)];
+    if (isCorrectOnce && !sameRecordedDrop) {
+        dropGeneration = sameContext ? dropGeneration + 1 : 1;
         dropRAT = @(current.rat);
         dropBand = @(current.band);
         attemptConsumed = NO;
-        verificationPending = YES;
+        verificationPending = NO;
+        cooldownUntil = nil;
+    }
+    if (decision == CCNMAutomaticMaintenanceTargetStable) {
+        dropRAT = nil;
+        dropBand = nil;
+        attemptConsumed = NO;
+        verificationPending = NO;
         cooldownUntil = nil;
     }
 
@@ -367,9 +386,7 @@ NSDictionary *CCNMABuildRecord(NSDictionary *policySummary,
         CCNMARecordLastDecisionAtKey: @(now)
     } mutableCopy];
 
-    if (baselineCreatedAt) {
-        record[CCNMARecordBaselineCreatedAtKey] = baselineCreatedAt;
-    }
+    record[CCNMARecordBaselineCreatedAtKey] = baselineCreatedAt;
     if (dropRAT) {
         record[CCNMARecordDropRATKey] = dropRAT;
     }
@@ -535,7 +552,10 @@ BOOL CCNMAValidateRecord(NSDictionary *record) {
     if (CCNMCanonicalUUIDString(record[CCNMARecordBootSessionUUIDKey]) == nil) {
         return NO;
     }
-    if (![record[CCNMARecordPolicyGenerationKey] isKindOfClass:NSNumber.class]) {
+    if (!CCNMNSNumberIsInteger(record[CCNMARecordPolicyGenerationKey]) ||
+        [record[CCNMARecordPolicyGenerationKey] longLongValue] < 0 ||
+        !CCNMNSNumberIsInteger(record[CCNMARecordBaselineCreatedAtKey]) ||
+        [record[CCNMARecordBaselineCreatedAtKey] longLongValue] <= 0) {
         return NO;
     }
     if (![record[CCNMARecordDeviceModelKey] isKindOfClass:NSString.class] ||
@@ -571,13 +591,29 @@ BOOL CCNMAValidateRecord(NSDictionary *record) {
         ![record[CCNMARecordCurrentSampleKey] isKindOfClass:NSDictionary.class]) {
         return NO;
     }
-    if (![record[CCNMARecordDropGenerationKey] isKindOfClass:NSNumber.class]) {
+    if (!CCNMNSNumberIsInteger(record[CCNMARecordDropGenerationKey]) ||
+        [record[CCNMARecordDropGenerationKey] longLongValue] < 0 ||
+        ![record[CCNMARecordAttemptConsumedKey] isKindOfClass:NSNumber.class] ||
+        ![record[CCNMARecordVerificationPendingKey] isKindOfClass:NSNumber.class] ||
+        ![record[CCNMARecordLastDecisionKey] isKindOfClass:NSString.class] ||
+        !CCNMNSNumberIsInteger(record[CCNMARecordLastDecisionAtKey]) ||
+        [record[CCNMARecordLastDecisionAtKey] longLongValue] <= 0) {
         return NO;
     }
-    if (![record[CCNMARecordAttemptConsumedKey] isKindOfClass:NSNumber.class]) {
+    if (record[CCNMARecordCooldownUntilKey] &&
+        (!CCNMNSNumberIsInteger(record[CCNMARecordCooldownUntilKey]) ||
+         [record[CCNMARecordCooldownUntilKey] longLongValue] < 0)) {
         return NO;
     }
-    if (![record[CCNMARecordLastDecisionKey] isKindOfClass:NSString.class]) {
+    BOOL hasDropRAT = record[CCNMARecordDropRATKey] != nil;
+    BOOL hasDropBand = record[CCNMARecordDropBandKey] != nil;
+    if (hasDropRAT != hasDropBand ||
+        (hasDropRAT &&
+         (!CCNMNSNumberIsInteger(record[CCNMARecordDropRATKey]) ||
+          [record[CCNMARecordDropRATKey] longLongValue] <= CCNMAutomaticMaintenanceRATUnknown ||
+          [record[CCNMARecordDropRATKey] longLongValue] > CCNMAutomaticMaintenanceRATNR ||
+          !CCNMNSNumberIsInteger(record[CCNMARecordDropBandKey]) ||
+          [record[CCNMARecordDropBandKey] longLongValue] <= 0))) {
         return NO;
     }
     return YES;
@@ -636,6 +672,23 @@ BOOL CCNMARecordMatchesCurrentIdentity(NSDictionary *record,
     }
     if (record[CCNMARecordCapabilityReadSuccessKey] == nil ||
         !CCNMAIdentitySnapshotMatchesRecord(record, identity)) {
+        return NO;
+    }
+    return YES;
+}
+
+BOOL CCNMARecordMatchesCurrentContext(NSDictionary *record,
+                                       NSDictionary *identity,
+                                       NSUInteger policyGeneration,
+                                       NSNumber *baselineCreatedAt) {
+    NSString *currentBoot = CCNMBootSessionIdentity();
+    if (!currentBoot || !CCNMAValidateRecord(record) ||
+        ![record[CCNMARecordBootSessionUUIDKey] isEqual:currentBoot] ||
+        !CCNMARecordMatchesCurrentIdentity(record, identity) ||
+        [record[CCNMARecordPolicyGenerationKey] unsignedIntegerValue] != policyGeneration ||
+        !CCNMNSNumberIsInteger(baselineCreatedAt) ||
+        [baselineCreatedAt longLongValue] <= 0 ||
+        ![record[CCNMARecordBaselineCreatedAtKey] isEqual:baselineCreatedAt]) {
         return NO;
     }
     return YES;

@@ -154,4 +154,12 @@ FOUNDATION_EXPORT BOOL CCNMAValidateStatus(NSDictionary *status);
 FOUNDATION_EXPORT BOOL CCNMARecordMatchesCurrentIdentity(NSDictionary *record,
                                                           NSDictionary *identity);
 
+// Decision feedback is boot- and policy-local. A record may feed a new decision
+// only when its complete identity/capability snapshot, policy generation and
+// baseline creation identity all match the current context.
+FOUNDATION_EXPORT BOOL CCNMARecordMatchesCurrentContext(NSDictionary *record,
+                                                         NSDictionary *identity,
+                                                         NSUInteger policyGeneration,
+                                                         NSNumber *baselineCreatedAt);
+
 NS_ASSUME_NONNULL_END

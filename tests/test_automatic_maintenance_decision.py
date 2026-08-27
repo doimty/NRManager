@@ -51,6 +51,9 @@ int main(void) {
 
     input.previous = sample(true, false, false, CCNMAutomaticMaintenanceRATLTE, 3);
     if (CCNMEvaluateAutomaticMaintenance(input) != CCNMAutomaticMaintenanceCorrectOnce) return 4;
+    input.dropRecordedForCurrentSample = true;
+    if (CCNMEvaluateAutomaticMaintenance(input) != CCNMAutomaticMaintenanceDropRecorded) return 24;
+    input.dropRecordedForCurrentSample = false;
 
     input.previous = sample(true, false, false, CCNMAutomaticMaintenanceRATNR, 41);
     input.current = sample(true, false, false, CCNMAutomaticMaintenanceRATNR, 41);
@@ -171,6 +174,24 @@ class AutomaticMaintenanceDecisionTests(unittest.TestCase):
         self.assertNotIn("input.targetBand = 78", daemon)
         self.assertIn("CCNMN78PolicySummaryTargetNRBandsKey", daemon)
         self.assertIn("input.targetBandCount", daemon)
+
+    def test_the_daemon_feeds_same_context_record_state_into_each_decision(self):
+        daemon = (ROOT / "maintenance-daemon" / "main.m").read_text()
+        evaluate = daemon.index("CCNMEvaluateAutomaticMaintenance(input)")
+        window = daemon[daemon.rfind("CCNMAutomaticMaintenanceInput input", 0, evaluate):evaluate]
+        self.assertIn("CCNMAReadRecord()", window)
+        self.assertIn("CCNMARecordMatchesCurrentContext", window)
+        self.assertIn("input.verificationPending", window)
+        self.assertIn("CCNMARecordVerificationPendingKey", window)
+        self.assertIn("input.dropRecordedForCurrentSample", window)
+        self.assertIn("CCNMARecordDropGenerationKey", window)
+        self.assertIn("CCNMARecordDropRATKey", window)
+        self.assertIn("CCNMARecordDropBandKey", window)
+        self.assertIn("input.attemptUsedForDrop", window)
+        self.assertIn("CCNMARecordAttemptConsumedKey", window)
+        self.assertIn("input.cooldownUntilMilliseconds", window)
+        self.assertIn("CCNMARecordCooldownUntilKey", window)
+        self.assertIn("input.nowMilliseconds", window)
 
     def test_pure_decision_model(self):
         self.assertTrue(SOURCE.exists(), SOURCE)

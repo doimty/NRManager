@@ -30,6 +30,34 @@ static BOOL CCNMPolicySummaryIsStableEnabled(NSDictionary *summary) {
         ![summary[@"uncertain"] boolValue];
 }
 
+static BOOL CCNMMaintenancePolicyRecordContext(NSDictionary *policy,
+                                                NSNumber **generation,
+                                                NSNumber **baselineCreatedAt) {
+    NSNumber *candidateGeneration = [policy[@"operationGeneration"] isKindOfClass:NSNumber.class]
+        ? policy[@"operationGeneration"] : nil;
+    NSString *baselinePath = [policy[@"baselinePath"] isKindOfClass:NSString.class]
+        ? policy[@"baselinePath"] : nil;
+    NSDictionary *baseline = baselinePath.length > 0
+        ? [NSDictionary dictionaryWithContentsOfFile:baselinePath] : nil;
+    NSNumber *candidateBaselineCreatedAt =
+        [baseline[@"createdAt"] isKindOfClass:NSNumber.class] ? baseline[@"createdAt"] : nil;
+    if (!CCNMPolicySummaryIsStableEnabled(policy) ||
+        !CCNMNSNumberIsInteger(candidateGeneration) ||
+        candidateGeneration.longLongValue < 0 ||
+        !CCNMValidateBaselineRecord(baseline, NULL) ||
+        !CCNMNSNumberIsInteger(candidateBaselineCreatedAt) ||
+        candidateBaselineCreatedAt.longLongValue <= 0) {
+        return NO;
+    }
+    if (generation) {
+        *generation = candidateGeneration;
+    }
+    if (baselineCreatedAt) {
+        *baselineCreatedAt = candidateBaselineCreatedAt;
+    }
+    return YES;
+}
+
 static NSDictionary *CCNMMaintenanceIdentityFromServingSummary(NSDictionary *summary) {
     NSString *deviceModel = CCNMSysctlString("hw.machine") ?: @"";
     NSString *systemBuild = CCNMSysctlString("kern.osversion") ?: @"";
@@ -231,7 +259,6 @@ static void CCNMPolicyChanged(CFNotificationCenterRef center,
 @property (nonatomic, assign) CCNMAutomaticMaintenanceSample previousSample;
 @property (nonatomic, assign) CCNMAutomaticMaintenanceSample currentSample;
 @property (nonatomic, assign) CCNMAutomaticMaintenanceDecision lastDecision;
-@property (nonatomic, strong) NSDictionary *cachedIdentity;
 @property (nonatomic, strong) NSNumber *cachedPolicyGeneration;
 @property (nonatomic, strong) NSNumber *cachedBaselineCreatedAt;
 - (void)start;
@@ -283,7 +310,6 @@ static void CCNMPolicyChanged(CFNotificationCenterRef center,
     self.previousSample = (CCNMAutomaticMaintenanceSample){0};
     self.currentSample = (CCNMAutomaticMaintenanceSample){0};
     self.lastDecision = CCNMAutomaticMaintenanceDisabled;
-    self.cachedIdentity = nil;
     self.cachedPolicyGeneration = nil;
     self.cachedBaselineCreatedAt = nil;
 }
@@ -312,19 +338,16 @@ static void CCNMPolicyChanged(CFNotificationCenterRef center,
         }
         return;
     }
-    // Cache policy identity for the record.
-    NSDictionary *state = summary[CCNMN78PolicySummaryStateKey];
-    if ([state isKindOfClass:NSDictionary.class]) {
-        self.cachedPolicyGeneration = state[@"operationGeneration"];
-    }
-    // Cache baseline creation timestamp (from the summary's baselinePath).
-    if (summary[@"baselinePresent"]) {
-        NSDictionary *baseline = [NSDictionary dictionaryWithContentsOfFile:
-            summary[@"baselinePath"]];
-        if ([baseline isKindOfClass:NSDictionary.class]) {
-            self.cachedBaselineCreatedAt = baseline[@"createdAt"];
-        }
-    }
+    // Cache the exact policy transaction identity used by both decision feedback
+    // and the record written after that decision. Missing or malformed values make
+    // the existing record ineligible rather than borrowing state from another
+    // enable generation.
+    NSNumber *policyGeneration = nil;
+    NSNumber *baselineCreatedAt = nil;
+    (void)CCNMMaintenancePolicyRecordContext(summary,
+        &policyGeneration, &baselineCreatedAt);
+    self.cachedPolicyGeneration = policyGeneration;
+    self.cachedBaselineCreatedAt = baselineCreatedAt;
     [self requestRefreshIfEligible];
 }
 
@@ -371,6 +394,13 @@ static void CCNMPolicyChanged(CFNotificationCenterRef center,
             self.currentSample = sample;
             self.hasCurrentSample = YES;
 
+            NSNumber *latestPolicyGeneration = nil;
+            NSNumber *latestBaselineCreatedAt = nil;
+            (void)CCNMMaintenancePolicyRecordContext(latestPolicy,
+                &latestPolicyGeneration, &latestBaselineCreatedAt);
+            self.cachedPolicyGeneration = latestPolicyGeneration;
+            self.cachedBaselineCreatedAt = latestBaselineCreatedAt;
+
             CCNMAutomaticMaintenanceInput input = {0};
             input.policyEnabled = YES;
             NSDictionary *identity = CCNMMaintenanceIdentityFromServingSummary(summary);
@@ -378,6 +408,29 @@ static void CCNMPolicyChanged(CFNotificationCenterRef center,
                 latestPolicy, summary, identity);
             input.operationInProgress = [latestPolicy[@"transitionPresent"] boolValue];
             input.unsafeOutstanding = sample.unsafeOutstanding;
+
+            long long nowMilliseconds = CCNMUnixMilliseconds();
+            input.nowMilliseconds = nowMilliseconds > 0 ? (uint64_t)nowMilliseconds : 0;
+            NSDictionary *existingRecord = CCNMAReadRecord();
+            BOOL recordMatchesContext = self.cachedPolicyGeneration &&
+                self.cachedBaselineCreatedAt &&
+                CCNMARecordMatchesCurrentContext(existingRecord, identity,
+                    self.cachedPolicyGeneration.unsignedIntegerValue,
+                    self.cachedBaselineCreatedAt);
+            if (recordMatchesContext) {
+                input.verificationPending =
+                    [existingRecord[CCNMARecordVerificationPendingKey] boolValue];
+                input.attemptUsedForDrop =
+                    [existingRecord[CCNMARecordAttemptConsumedKey] boolValue];
+                input.dropRecordedForCurrentSample =
+                    [existingRecord[CCNMARecordDropGenerationKey] unsignedIntegerValue] > 0 &&
+                    !input.verificationPending && !input.attemptUsedForDrop &&
+                    [existingRecord[CCNMARecordDropRATKey] intValue] == sample.rat &&
+                    [existingRecord[CCNMARecordDropBandKey] intValue] == sample.band;
+                NSNumber *cooldownUntil = existingRecord[CCNMARecordCooldownUntilKey];
+                input.cooldownUntilMilliseconds = [cooldownUntil isKindOfClass:NSNumber.class]
+                    ? cooldownUntil.unsignedLongLongValue : 0;
+            }
             // The maintained target is whatever selection the policy recorded, not
             // a fixed band. An unreadable or malformed selection yields a zero
             // count, which the decision module turns into a refusal.
@@ -420,11 +473,19 @@ static void CCNMPolicyChanged(CFNotificationCenterRef center,
         return;
     }
 
+    NSNumber *currentPolicyGeneration = nil;
+    NSNumber *currentBaselineCreatedAt = nil;
+    if (!CCNMMaintenancePolicyRecordContext(policy,
+            &currentPolicyGeneration, &currentBaselineCreatedAt) ||
+        ![currentPolicyGeneration isEqual:self.cachedPolicyGeneration] ||
+        ![currentBaselineCreatedAt isEqual:self.cachedBaselineCreatedAt]) {
+        return;
+    }
     NSDictionary *identity = CCNMMaintenanceIdentityFromServingSummary(servingSummary);
 
     // Read existing record to carry forward drop state.
     NSDictionary *existingRecord = CCNMAReadRecord();
-    NSUInteger policyGeneration = [self.cachedPolicyGeneration unsignedIntegerValue];
+    NSUInteger policyGeneration = currentPolicyGeneration.unsignedIntegerValue;
 
     NSDictionary *record = CCNMABuildRecord(
         policy,
@@ -432,7 +493,7 @@ static void CCNMPolicyChanged(CFNotificationCenterRef center,
         previous,
         self.currentSample,
         policyGeneration,
-        self.cachedBaselineCreatedAt,
+        currentBaselineCreatedAt,
         decision,
         existingRecord);
     if (record) {

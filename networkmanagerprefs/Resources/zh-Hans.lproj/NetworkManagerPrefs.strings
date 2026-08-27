@@ -58,8 +58,10 @@
 "APPLIED_UNKNOWN" = "未知";
 "APPLIED_APPLYING" = "正在应用";
 "APPLIED_VERIFIED_SYSTEM_DEFAULT" = "已验证系统默认策略";
-"APPLIED_VERIFIED_NR_FORMAT" = "NR 仅允许 %@，LTE 未修改";
-"APPLIED_VERIFIED_NR_UNNAMED" = "已验证 NR 频段限制，LTE 未修改";
+"APPLIED_VERIFIED_NR_FORMAT" = "当前 NR 仅允许 %@，LTE 未修改";
+"APPLIED_LAST_VERIFIED_NR_FORMAT" = "上次验证的 NR 目标为 %@，当前基带频段不可用";
+"APPLIED_LIVE_NR_DRIFT_FORMAT" = "当前 NR %@ 与记录目标 %@ 不一致";
+"APPLIED_VERIFIED_NR_UNNAMED" = "NR 频段限制曾通过验证，记录的频段不可用";
 "APPLIED_DIVERGED" = "已应用策略与请求不一致";
 "APPLIED_RECOVERY_REQUIRED" = "需要恢复";
 "SERVING_NR_N78" = "NR n78";
@@ -77,7 +79,7 @@
 "FRESHNESS_STALE_FORMAT" = "已过期 · %@";
 
 "GROUP_RECOVERY" = "恢复与维护";
-"RECOVERY_FOOTER" = "只要存在已验证的策略记录就会显示，包括正常的已启用状态。恢复已保存的配置就是撤销启用的方式，它依赖本插件在应用你的选择之前保存下来的原始频段配置。";
+"RECOVERY_FOOTER" = "只要已验证的策略证据需要处理就会显示。已保存的基线会通过回读验证的基带写入撤销 NR 限制；如果恢复早已验证完成，“设置”只会重新核对当前完整频段配置并完成持久记录清理，不会再次写入基带。";
 "ROW_RECOVERY_STATE" = "恢复状态";
 "ROW_MAINTENANCE" = "必要操作";
 "RECOVERY_STATE_CLEAN" = "无需恢复";
@@ -86,11 +88,15 @@
 "RECOVERY_STATE_CARRIER_RESET_PENDING" = "早前的运营商设置重载尚未完成";
 "RECOVERY_STATE_CARRIER_RESET_FAILED" = "早前的运营商设置重载未确认";
 "RECOVERY_STATE_REBOOT_REQUIRED" = "需要重启";
+"RECOVERY_STATE_CLEANUP_PENDING" = "基带恢复已验证，等待完成清理";
 "RECOVERY_STATE_FAILED" = "恢复失败";
 "RECOVERY_REBOOT_REQUIRED_DETAIL" = "基带设置结果不确定。再次更改前必须重启设备。";
 "RESTORE_SAVED_CONFIGURATION" = "恢复已保存的配置";
+"FINISH_VERIFIED_RESTORE_CLEANUP" = "完成已验证的恢复";
 "RESTORE_ALERT_TITLE" = "恢复已保存的配置？";
 "RESTORE_ALERT_MESSAGE" = "会把应用 NR 频段限制之前保存的频段配置写回基带，从而移除该限制。写入后会回读基带来验证结果。";
+"CLEANUP_ALERT_TITLE" = "完成已验证的恢复？";
+"CLEANUP_ALERT_MESSAGE" = "基带已经与保存的配置完全一致。“设置”将重新核对当前完整频段配置并完成持久策略记录清理，不会写入基带。";
 "BUTTON_CANCEL" = "取消";
 "BUTTON_RESTORE" = "恢复";
 

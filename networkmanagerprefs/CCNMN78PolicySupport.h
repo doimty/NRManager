@@ -59,6 +59,11 @@ FOUNDATION_EXPORT NSString *const CCNMN78PolicySummaryErrorKey;
 FOUNDATION_EXPORT NSString *const CCNMN78PolicySummaryRequiresRebootKey;
 FOUNDATION_EXPORT NSString *const CCNMN78PolicySummaryMayWriteKey;
 FOUNDATION_EXPORT NSString *const CCNMN78PolicySummaryMayUninstallKey;
+/// True only when a restore already passed complete modem read-back and retired
+/// its baseline, but crashed before the final clean-state rewrite. Recovery may
+/// finish the durable bookkeeping after revalidating the live complete BandInfo;
+/// it must not issue another setter call.
+FOUNDATION_EXPORT NSString *const CCNMN78PolicySummaryCleanupCheckpointRecoverableKey;
 /// The NR band set the policy has verified as applied, ascending. Absent unless
 /// the summary describes a stable enabled state, so a reader must treat a missing
 /// value as "no selection is in effect" rather than substituting a default.

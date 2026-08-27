@@ -625,6 +625,21 @@ static NSDictionary *CCNMSyntheticRecoveryState(NSDictionary *state,
     return synthetic;
 }
 
+static BOOL CCNMIsVerifiedRestoreCleanupCheckpoint(NSDictionary *state) {
+    NSDictionary *verifiedBands = [state[@"verifiedActiveBands"] isKindOfClass:NSDictionary.class]
+        ? state[@"verifiedActiveBands"] : nil;
+    return CCNMValidateStateRecord(state, NULL) &&
+        [state[@"appliedPolicy"] isEqual:CCNMAppliedPolicyApplying] &&
+        [state[@"recoveryState"] isEqual:CCNMRecoveryStateRestorePending] &&
+        [state[@"readBackVerified"] isEqual:@YES] &&
+        [state[@"verifiedAt"] isKindOfClass:NSNumber.class] &&
+        [state[@"verifiedAt"] longLongValue] > 0 &&
+        [state[@"baselineCreatedAt"] isKindOfClass:NSNumber.class] &&
+        [state[@"baselineCreatedAt"] longLongValue] > 0 &&
+        ![state[@"uncertain"] boolValue] &&
+        CCNMValidateBandDictionary(verifiedBands, NULL);
+}
+
 static NSDictionary *CCNMSummaryFromState(NSDictionary *state,
                                            BOOL success,
                                            NSString *operation,
@@ -681,6 +696,7 @@ static NSDictionary *CCNMSummaryFromState(NSDictionary *state,
         CCNMN78PolicySummaryMayWriteKey: @((normalDefault || normalEnabled) &&
             !requiresReboot),
         CCNMN78PolicySummaryMayUninstallKey: @(normalDefault),
+        CCNMN78PolicySummaryCleanupCheckpointRecoverableKey: @NO,
         @"baselinePresent": @(baselinePresent),
         @"baselineValid": @(baselineValid),
         @"transitionPresent": @(transitionPresent),
@@ -746,6 +762,14 @@ static NSDictionary *CCNMReadPolicyStateInternal(void) {
             @"Policy evidence exists without its state record.");
         return CCNMSummaryFromState(synthetic, NO, @"read",
             CCNMN78PolicyErrorInvalidRecords, synthetic[@"error"], nil);
+    }
+    if (!baselineExists && !intentExists && !inFlightExists &&
+        CCNMBootRelationForRecord(state) == CCNMBootRelationEarlier &&
+        CCNMIsVerifiedRestoreCleanupCheckpoint(state)) {
+        return CCNMSummaryFromState(state, NO, @"read",
+            CCNMN78PolicyErrorRecoveryRequired,
+            @"The modem restore was verified; durable cleanup remains pending.",
+            @{CCNMN78PolicySummaryCleanupCheckpointRecoverableKey: @YES});
     }
     if ([state[@"recoveryState"] isEqual:CCNMRecoveryStateCarrierResetPending] ||
         [state[@"recoveryState"] isEqual:CCNMRecoveryStateCarrierResetFailed]) {

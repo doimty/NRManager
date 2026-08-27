@@ -25,6 +25,10 @@ typedef struct {
     bool operationInProgress;
     bool verificationPending;
     bool attemptUsedForDrop;
+    /// A read-only daemon already recorded this exact non-target RAT+band as a
+    /// correction candidate. This is not a consumed attempt and not verification:
+    /// no setter has run.
+    bool dropRecordedForCurrentSample;
     bool unsafeOutstanding;
     /// The NR bands the policy pinned, as an ascending set. Any band in this set
     /// is a legitimate place for the device to rest: the policy narrowed the
@@ -46,6 +50,7 @@ typedef enum {
     CCNMAutomaticMaintenanceDeferBusy,
     CCNMAutomaticMaintenanceDeferCooldown,
     CCNMAutomaticMaintenanceVerificationPending,
+    CCNMAutomaticMaintenanceDropRecorded,
     CCNMAutomaticMaintenanceCorrectOnce,
     CCNMAutomaticMaintenanceStopAttemptExhausted,
     CCNMAutomaticMaintenanceStopIncompatible,

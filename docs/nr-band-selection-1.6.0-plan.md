@@ -118,7 +118,12 @@ Because editing is a toggle round-trip, an enable always starts from the off sta
 
 ## Records
 
-No schema bump. No migration code. No `schemaVersion: 2`. No new operation.
+No policy-record schema bump. No migration code for `baseline`, `intent`,
+`inFlight` or `state`; those records remain at their existing shape and there is
+no new policy operation. The separate read-only automatic-maintenance observation
+record is a different owner and schema: 1.6.2 uses `schemaVersion: 2` to stop
+encoding a read-only drop observation as post-setter verification. That schema
+change does not alter policy evidence or the modem write contract.
 
 | Record | Change |
 | --- | --- |

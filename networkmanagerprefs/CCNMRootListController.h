@@ -25,6 +25,7 @@ typedef void (^CCNMSettingsActionHandler)(void);
 - (void)updateRecoveryStateWithLocalizationKey:(NSString *)localizationKey
                                        visible:(BOOL)visible
                         hasRecoverableBaseline:(BOOL)hasRecoverableBaseline
+                  cleanupCheckpointRecoverable:(BOOL)cleanupCheckpointRecoverable
                                 requiresReboot:(BOOL)requiresReboot;
 
 @end
