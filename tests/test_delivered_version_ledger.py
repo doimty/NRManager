@@ -9,14 +9,14 @@ the release version against the record of what has already been delivered.
 The rule is not "never reuse a delivered number". Immediately after a delivery the
 tree legitimately holds the number it just shipped, and failing there would leave
 the suite red for an ordinary reason, which is how a gate gets ignored. The rule is
-that a delivered number must still point at the commit it was delivered from.
+that a delivered number must still describe the same shipping source, so prose and
+test commits are free and a source change is not.
 """
 
 from __future__ import annotations
 
 import json
 import re
-import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -26,6 +26,7 @@ REPO = Path(__file__).resolve().parents[1]
 LEDGER = REPO / "docs/delivered-packages.json"
 sys.path.insert(0, str(REPO / "scripts"))
 
+import shipping_digest  # noqa: E402
 import verify_release_source  # noqa: E402
 
 
@@ -41,31 +42,10 @@ def version_tuple(version: str) -> tuple:
     return tuple(int(piece) for piece in version.split("."))
 
 
-def head_commit() -> str:
-    """The commit under test, or "" when git cannot answer.
-
-    An unavailable git is reported as a skip rather than a pass: silently
-    succeeding is the exact failure mode this file exists to remove.
-    """
-    try:
-        completed = subprocess.run(
-            ["git", "-C", str(REPO), "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return ""
-    if completed.returncode != 0:
-        return ""
-    return completed.stdout.strip()
-
-
 class DeliveredVersionLedgerTests(unittest.TestCase):
     def test_the_ledger_is_well_formed(self) -> None:
         data = ledger()
-        self.assertEqual(data["schemaVersion"], 1)
+        self.assertEqual(data["schemaVersion"], 2)
         entries = data["delivered"]
         self.assertIsInstance(entries, list)
         self.assertTrue(entries, "an empty ledger silently disables this gate")
@@ -79,34 +59,33 @@ class DeliveredVersionLedgerTests(unittest.TestCase):
             self.assertNotIn(version, seen, f"{version} is listed twice")
             seen.add(version)
             self.assertRegex(entry["sourceSha"], r"^[0-9a-f]{40}$", entry)
+            self.assertRegex(entry["shippingDigest"], r"^[0-9a-f]{64}$", entry)
             self.assertRegex(entry["sha256"], r"^[0-9a-f]{64}$", entry)
             self.assertRegex(entry["runId"], r"^\d+$", entry)
             self.assertIsInstance(entry["sizeBytes"], int)
             self.assertGreater(entry["sizeBytes"], 0, entry)
 
-    def test_a_delivered_version_still_points_at_its_delivered_commit(self) -> None:
+    def test_a_delivered_version_still_describes_its_delivered_source(self) -> None:
         current = verify_release_source.RELEASE_VERSION
         entry = delivered_by_version().get(current)
         if entry is None:
             self.skipTest(f"{current} has not been delivered")
 
-        head = head_commit()
-        if not head:
-            self.skipTest("git could not report HEAD")
-
+        actual = shipping_digest.digest(shipping_digest.shipping_files())
         self.assertEqual(
-            head,
-            entry["sourceSha"],
-            "version {0} was delivered from {1} (run {2}, package {3}), but HEAD is "
-            "{4}. Two packages with different contents under one version number "
-            "cannot be told apart on the device: the About row shows the same string "
-            "for both, so device feedback cannot be attributed to a build. Bump the "
-            "version.".format(
+            actual,
+            entry["shippingDigest"],
+            "version {0} was delivered from shipping source {1} (commit {2}, run "
+            "{3}, package {4}), but the tree now hashes to {5}. Two packages with "
+            "different contents under one version number cannot be told apart on "
+            "the device: the About row shows the same string for both, so device "
+            "feedback cannot be attributed to a build. Bump the version.".format(
                 current,
+                entry["shippingDigest"][:12],
                 entry["sourceSha"][:12],
                 entry["runId"],
                 entry["sha256"][:12],
-                head[:12],
+                actual[:12],
             ),
         )
 
@@ -120,6 +99,47 @@ class DeliveredVersionLedgerTests(unittest.TestCase):
             highest,
             "the release version must not be below any delivered version",
         )
+
+    def test_the_shipping_digest_covers_what_reaches_the_package(self) -> None:
+        # The digest is only meaningful if its scope is right. Excluding a source
+        # directory would silently let a delivered version cover changed bytes.
+        paths = set(shipping_digest.shipping_paths())
+        for required in (
+            "control",
+            "Makefile",
+            "CCNetworkManager.x",
+            "layout/Library/LaunchDaemons/me.nixuge.networkmanager.maintenance.plist",
+            "networkmanagerprefs/Resources/Root.plist",
+            "networkmanagerprefs/CCNMRootListController.m",
+            "networkmanagerprefs/Resources/en.lproj/NetworkManagerPrefs.strings",
+            "networkmanagerprefs/Resources/zh-Hans.lproj/NetworkManagerPrefs.strings",
+            "maintenance-daemon/main.m",
+            "package-actions/postinst.sh.in",
+            "package-actions/prerm.sh.in",
+            # The workflow selects the toolchain, so it changes the built bytes.
+            ".github/workflows/build.yml",
+        ):
+            self.assertIn(required, paths, f"{required} must feed the digest")
+
+        for excluded in (
+            "progress.md",
+            "README.md",
+            "docs/delivered-packages.json",
+            "tests/test_delivered_version_ledger.py",
+            "scripts/verify_release_source.py",
+            # A nested test tree is matched by shape, not by being listed.
+            "livecc/tests/test_livecc_prototype.py",
+        ):
+            self.assertNotIn(excluded, paths, f"{excluded} must not feed the digest")
+
+        # Inclusion is the default: a hypothetical new source path is covered
+        # without editing the exclusion list.
+        self.assertTrue(shipping_digest.is_shipping("newmodule/CCNMNewThing.m"))
+        self.assertTrue(shipping_digest.is_shipping("newmodule/Makefile"))
+        self.assertFalse(shipping_digest.is_shipping("docs/whatever.md"))
+        self.assertFalse(shipping_digest.is_shipping("anywhere/tests/test_thing.py"))
+        # A source file whose name merely contains "tests" is not a test tree.
+        self.assertTrue(shipping_digest.is_shipping("networkmanagerprefs/CCNMTests.m"))
 
     def test_the_three_version_literals_still_agree(self) -> None:
         # The pre-existing invariant, asserted here too so this file fails as a
