@@ -1,0 +1,42 @@
+{
+  "_comment": [
+    "Versions whose package was actually handed to the user. A build that was made",
+    "but not delivered does not belong here.",
+    "",
+    "This exists because 1.6.2 was delivered twice with different contents. fa8b305",
+    "was built, verified and sent; fe581b8 then fixed three review findings and was",
+    "built and verified under the same version number. Both are 1.6.2, so the About",
+    "row in Settings shows the same number for either, and device feedback on the",
+    "three fixes could not be attributed to a build. Nothing failed at the time:",
+    "every gate compared the three in-repo version literals against each other, and",
+    "they agreed.",
+    "",
+    "The gate this file feeds asks a question those checks cannot: has this number",
+    "already left the building? Deliberately reusing a delivered number therefore",
+    "requires editing this ledger, which is a reviewable act.",
+    "",
+    "Limitation, stated rather than waived: an entry that is never added leaves the",
+    "gate inert for that number. The ledger starts at 1.6.1 because those are the",
+    "packages whose bytes are still on hand to hash; earlier releases are not",
+    "reconstructed from memory.",
+    "",
+    "sha256 is the roothide package, which is the lane that gets delivered."
+  ],
+  "schemaVersion": 1,
+  "delivered": [
+    {
+      "version": "1.6.1",
+      "sourceSha": "a954ce44c9882c53c6d04959f0aa21ade29f2724",
+      "runId": "32956038466",
+      "sha256": "91090641077ead1401476f08a147d887403621375d908248779aa7c4878c37d2",
+      "sizeBytes": 266090
+    },
+    {
+      "version": "1.6.2",
+      "sourceSha": "fa8b305cad2fe3761b8c1257d75773e515c10e42",
+      "runId": "33000013301",
+      "sha256": "d6c99f45e78a7bf1c95404d5b216d223de189d50ebdd8192a955d607daa84628",
+      "sizeBytes": 266692
+    }
+  ]
+}

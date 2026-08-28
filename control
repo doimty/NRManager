@@ -1,7 +1,7 @@
 Package: me.nixuge.networkmanager
 Name: NetworkManagerReborn
 Depends: mobilesubstrate, com.opa334.ccsupport
-Version: 1.6.2
+Version: 1.6.3
 Architecture: iphoneos-arm64
 Description: Control Center network selection with an NR band restriction
 Maintainer: Nixuge, 灰灰
