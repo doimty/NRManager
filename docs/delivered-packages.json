@@ -75,6 +75,14 @@
       "runId": "33303936965",
       "sha256": "427d42675958fcda47601cf117a84eab2f40fea6d6321e1657f135397e9e6614",
       "sizeBytes": 270792
+    },
+    {
+      "version": "1.6.6",
+      "sourceSha": "9d9e77f006fe51ef532b41a114465dad1f982efd",
+      "shippingDigest": "f891959b7225d5430dea5eae36f2f62361312f3bf4b3f56681a541ff87ffbbe8",
+      "runId": "33307904870",
+      "sha256": "3ed5ed82df233c0ba63bcb1492351224c4a450aebd6a33964a06208e4a25f488",
+      "sizeBytes": 273124
     }
   ]
 }

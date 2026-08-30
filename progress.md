@@ -549,3 +549,41 @@ to memory-safety-critical code.
 - No device claim. Nothing here reproduces on demand: the lock defect needs a callback
   that never fires, and the orphan lookup needs the framework to discard the model at a
   particular moment.
+
+### Delivery
+
+- Built by run `33307904870` from `9d9e77f`, both lanes `status: passed` with empty
+  `failures`, `forbidden_diagnostics`, `legacy_assets` and `maintainer_forbidden_diagnostics`.
+  roothide arm64e sha256 `3ed5ed82df233c0ba63bcb1492351224c4a450aebd6a33964a06208e4a25f488`,
+  273124 bytes; rootless arm64 sha256 `5e405d26f64d49eb147830e60890e6ae979171334eca39bc8e855d02f0b0e6ee`,
+  253686 bytes. The package file, `SHA256SUMS` and `verification-report.json` agree on
+  both digests, and each `provenance.txt` names the same source sha and run id.
+- Toolchain read from the job logs rather than assumed: `Xcode 15.4`, `Build version 15F31d`,
+  `Apple clang version 15.0.0 (clang-1500.3.9.4)`, ld `1053.12`. roothide builds against the
+  Xcode system `iPhoneOS17.5.sdk` with no explicit sysroot; rootless uses the pinned Theos
+  `iPhoneOS16.5.sdk` because it needs private ControlCenterUIKit and Preferences headers.
+  Zero `incompatible arm64e` and zero `error:` across both 2.4k-line job logs. The only
+  linker diagnostics are the established `-multiply_defined is obsolete` and
+  `-undefined dynamic_lookup is deprecated on iOS` notes.
+- All four binaries per lane are arm64+arm64e `ARM64 E USR00`, minos 14.0. The load-command
+  split holds: on roothide the two bundles carry `LC_DYLD_INFO_ONLY` and the two libexec
+  tools `LC_DYLD_CHAINED_FIXUPS`; neither tool links libroothide, and the launchd plist
+  ships the bare program path.
+- Package self-check for this release's changes, verified inside the deb rather than from
+  the source tree: `abandonedOutstandingSampler` 6 hits, `liveSpecifierForID` 2,
+  `commitRecoverySpecifiers` 2, `applicationWillEnterForeground` 2. `Refreshing…` appears
+  only as UTF-16 (2 hits) because a literal with a non-ASCII character is emitted as a
+  UTF-16 CFString -- an ASCII `grep` for it returns 0 and would read as a missing string.
+  The zh-Hans table is a binary plist with 112 keys and maps `Refreshing…` to `正在刷新…`;
+  it is the only table, since `733186e` made the English text the key and deleted
+  `en.lproj`.
+- Published to `doimty/doimty.github.io` for both architectures, then verified from outside
+  the publish script: both debs re-downloaded from the live Pages CDN hash to the same
+  digests as the build artifacts, and the two `Packages` stanzas carry the right
+  architecture, size and SHA256.
+- The publish script needed a fix to get here. `gh api --field content="$(base64 -w0 < deb)"`
+  fails with `Argument list too long` for any file over roughly 96 KiB: Linux caps a single
+  argv entry at `MAX_ARG_STRLEN` (128 KiB) independently of the much larger total `ARG_MAX`,
+  and base64 inflates by 4/3. Every Contents API upload now goes through one `put_contents`
+  helper that writes the JSON body to a file and uses `gh api --input`. Recorded in
+  `TOOLS.md` and the skill.
