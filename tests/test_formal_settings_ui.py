@@ -225,10 +225,15 @@ class FormalSettingsUITests(unittest.TestCase):
     def test_applied_policy_row_recomputes_when_live_capability_changes(self):
         apply_policy = method_body(self.controller, "- (void)applyPolicySummary:")
         apply_serving = method_body(self.controller, "- (void)applyServingSummary:")
-        refresh = method_body(self.controller, "- (void)beginServingRefresh {")
-        for body in (apply_policy, apply_serving, refresh):
+        for body in (apply_policy, apply_serving):
             self.assertIn("appliedPolicyDisplayValue", body)
             self.assertIn("self.servingSummary", body)
+        # Starting a refresh redraws the row too, but through the render path above
+        # rather than by composing its own values: the row reports how the recorded
+        # target compares with the live capability, and two renderers computing that
+        # separately is how they come to disagree.
+        refresh = method_body(self.controller, "- (void)beginServingRefresh {")
+        self.assertIn("[self applyServingSummary:self.servingSummary]", refresh)
         self.assertNotIn("CCNMAReadStatus", self.controller)
 
     def test_pull_over_inspired_header_is_compact_and_independent(self):
@@ -435,17 +440,103 @@ class FormalSettingsUITests(unittest.TestCase):
         self.assertIn("self.repopulatingRebuiltSpecifiers = YES", repopulate)
         self.assertIn("self.repopulatingRebuiltSpecifiers = NO", repopulate)
 
-        # Every reload reachable from the re-apply must honour the guard.
+        # Every reload reachable from the re-apply must consult the guard. The form
+        # differs by call site -- three of these skip the reload with a negation, and
+        # the commit takes an early return -- so what is pinned is that the guard is
+        # read at all, not the spelling.
         for signature in (
             "- (void)setDisplayValue:",
             "- (void)updateN78PreferenceEnabled:",
             "- (void)updateCurrentStateWithRequestedValue:",
-            "- (void)rebuildRecoverySection",
+            "- (void)commitRecoverySpecifiers:",
         ):
             body = method_body(self.controller, signature)
             self.assertIn(
-                "!self.repopulatingRebuiltSpecifiers", body,
+                "self.repopulatingRebuiltSpecifiers", body,
                 f"{signature} reloads during a rebuild without the guard")
+
+        # -rebuildRecoverySection is reachable from the re-apply too, but it holds
+        # the guard indirectly: it must not touch the table or the model itself,
+        # because the choice between the framework setter and a direct assignment
+        # is exactly what the guard decides.
+        rebuild = method_body(self.controller, "- (void)rebuildRecoverySection")
+        self.assertIn("[self commitRecoverySpecifiers:updatedSpecifiers]", rebuild)
+        self.assertNotIn("reloadData", rebuild)
+        self.assertNotIn("_specifiers =", rebuild)
+
+    def test_replacing_the_model_goes_through_the_framework_setter(self):
+        """The recovery section changes the row count, so metadata must be rebuilt.
+
+        PSListController answers its section and row counts from a group index array
+        that only -prepareSpecifiersMetadata rebuilds, and -setSpecifiers: is what
+        triggers that. Assigning _specifiers directly leaves the previous build's
+        counts in place: when the recovery section disappears the table asks for rows
+        the array no longer has. The band pane has the same rule for the same reason.
+
+        Two direct assignments are legitimate. The -specifiers getter runs while the
+        framework is collecting the model and will build the metadata itself from what
+        the getter returns, and a pane whose view has not loaded has no table to
+        reload. Both live behind the repopulation guard inside
+        -commitRecoverySpecifiers, so the count is pinned here rather than the shape.
+        """
+        commit = method_body(self.controller, "- (void)commitRecoverySpecifiers:")
+        self.assertIn("[self setSpecifiers:updatedSpecifiers]", commit)
+        self.assertEqual(
+            self.controller.count("_specifiers = "), 2,
+            "only the -specifiers getter and the pre-load commit may assign the "
+            "model directly; every other path must go through -setSpecifiers:")
+
+    def test_rows_are_resolved_against_the_live_model_not_the_id_map(self):
+        """-specifierForID: can answer with an orphan from the previous build.
+
+        It reads _specifiersByID, which only -prepareSpecifiersMetadata rebuilds, and
+        that runs after the -specifiers getter returns. Repopulating from inside the
+        getter is therefore the one moment when the map is guaranteed to describe a
+        different build than the array being handed over: the lookup returns an object
+        the table does not hold, -setProperty: writes into it, and -reloadSpecifier:
+        drops the reload because it matches by pointer. The symptom is the bug this
+        repopulation exists to fix -- rows stuck on their fail-closed values -- so it
+        would look like the repopulation ran and changed nothing.
+        """
+        self.assertNotIn(
+            "[self specifierForID:", self.controller,
+            "resolve rows with -liveSpecifierForID:, which scans the model itself")
+        live = method_body(self.controller, "- (PSSpecifier *)liveSpecifierForID:")
+        self.assertIn("for (PSSpecifier *specifier in _specifiers)", live)
+        # Rows of a hidden recovery section are held aside, not in the model.
+        self.assertIn("[self recoverySpecifierForID:identifier]", live)
+
+    def test_a_refresh_in_flight_is_reported_by_every_row_it_affects(self):
+        """The three rows fed by one sample must not disagree about it.
+
+        During a refresh the sample on hand is the one being replaced, and the provider
+        correctly refuses to present an expired reading: state and success are blanked,
+        so each row falls to its "Unknown" branch. Only the freshness row used to say a
+        read was in progress, which made the other two look like a fault that then
+        fixed itself -- the "it shows unknown first, then the real value" report.
+
+        The check is that the renderers own this, not the call sites. A refresh is not
+        the only thing that draws these rows: a foreground return and a rebuild from
+        the -specifiers getter both re-render while one is in flight, and a call site
+        that spells out its own values is free to disagree with them.
+        """
+        for signature in (
+            "- (NSString *)servingDisplayValue:",
+            "- (NSString *)dataLineDisplayValue:",
+            "- (NSString *)freshnessDisplayValue:",
+        ):
+            body = method_body(self.controller, signature)
+            self.assertIn("self.servingRefreshInProgress", body, f"{signature} ignores an in-flight refresh")
+            self.assertIn('CCNMPreferencesLocalizedString(@"Refreshing…")', body)
+
+        begin = method_body(self.controller, "- (void)beginServingRefresh")
+        self.assertIn("self.servingRefreshInProgress = YES", begin)
+        self.assertIn("[self applyServingSummary:self.servingSummary]", begin)
+        self.assertNotIn("forSpecifierID:CCNMFreshnessSpecifierID", begin)
+        self.assertNotIn("updateCurrentStateWithRequestedValue:", begin)
+
+        # Refreshing… is a status any locale has to be able to say.
+        self.assertIn("Refreshing…", self.chinese)
 
     def test_foreground_return_refreshes_and_is_unregistered(self):
         # A pane already on screen gets no appearance callback when the app

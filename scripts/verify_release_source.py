@@ -14,7 +14,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 PACKAGE_ID = "com.doimty.nrmanager"
 PACKAGE_NAME = "NR Manager"
-RELEASE_VERSION = "1.6.4"
+RELEASE_VERSION = "1.6.6"
 
 # These names belong to the discarded diagnostic UI and write experiments. n78,
 # BandInfo, and serving-state terms are intentionally not blocked: they are part

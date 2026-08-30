@@ -753,6 +753,18 @@ static NSDictionary *CCNMServingSummaryFromReport(NSDictionary *report,
 @property (nonatomic, assign) int retainedSamplerLockDescriptor;
 @property (nonatomic, strong) id retainedSamplerClient;
 @property (nonatomic, strong) id retainedSamplerContext;
+// Bound for the wait below, counted in polls rather than in clock time.
+//
+// A wall clock can step under NTP or a manual date change, and a monotonic clock
+// read can fail -- and a failed read that falls back to a constant would silently
+// restore the unbounded wait this bound exists to remove. The poll cadence is what
+// actually paces the wait, so counting polls cannot be fooled by either.
+@property (nonatomic, assign) NSUInteger retainedSamplerLockPolls;
+// Set when the deadline expired and the shared lock was handed back while the
+// private callback was still outstanding. The retained client and context stay
+// alive forever in that case, so this is what keeps this process from starting
+// another sampler run; the lock descriptor can no longer answer that question.
+@property (nonatomic, assign) BOOL abandonedOutstandingSampler;
 @end
 
 @implementation CCNMServingStatusProvider
@@ -841,16 +853,41 @@ static NSDictionary *CCNMServingSummaryFromReport(NSDictionary *report,
     });
 }
 
+// Waits for an outstanding private callback to resolve, then hands back the shared
+// modem lock.
+//
+// The latch this polls is only cleared by the callback itself, and two paths arm it
+// without any guarantee that the callback will ever run: the attempt timeout, and an
+// exception raised by the CoreTelephony call. The exception case cannot be told apart
+// from "the block was already handed over and will fire later", so the latch has to
+// stay armed there -- disarming it would trade a stuck lock for a late callback
+// writing into a freed client. What must not persist is the unbounded wait: this lock
+// is the shared modem lock, taken with LOCK_EX, so holding it forever blocks every
+// policy operation and every serving refresh in every process until Settings is
+// killed.
+//
+// So the wait is bounded, and on expiry only the lock is handed back. The retained
+// client and context are deliberately kept alive, because that is what a late
+// callback would write into. This process gives up refreshing until it is relaunched;
+// every other process gets the modem back.
+static const NSUInteger CCNMServingRetainedLockWaitPollLimit = 120;
+
 - (void)releaseRetainedSamplerLockWhenSafe {
     if (self.retainedSamplerLockDescriptor < 0) {
         return;
     }
     if (CCNMServingCellSamplerHasUnsafeOutstandingAttempt()) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), self.operationQueue, ^{
-            [self releaseRetainedSamplerLockWhenSafe];
-        });
+        self.retainedSamplerLockPolls++;
+        if (self.retainedSamplerLockPolls < CCNMServingRetainedLockWaitPollLimit) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), self.operationQueue, ^{
+                [self releaseRetainedSamplerLockWhenSafe];
+            });
+            return;
+        }
+        [self abandonOutstandingSamplerAndReleaseLock];
         return;
     }
+    self.retainedSamplerLockPolls = 0;
     NSMutableDictionary *resolved = nil;
     @synchronized(self) {
         resolved = [self.lastSummary mutableCopy] ?: [CCNMServingStatusEmptySummary() mutableCopy];
@@ -869,14 +906,49 @@ static NSDictionary *CCNMServingSummaryFromReport(NSDictionary *report,
     self.retainedSamplerContext = nil;
 }
 
+// Gives the shared modem lock back to the rest of the system while the private
+// callback is still outstanding.
+//
+// The client and context are intentionally not released. Freeing them is the one
+// thing the latch exists to prevent, and the deadline expiring is not evidence that
+// the callback will never arrive -- it is the admission that we cannot find out.
+// Leaking them for the remaining lifetime of this process is the cost of handing the
+// lock back safely.
+- (void)abandonOutstandingSamplerAndReleaseLock {
+    self.abandonedOutstandingSampler = YES;
+    self.retainedSamplerLockPolls = 0;
+    CCNMReleaseServingSamplerLock(self.retainedSamplerLockDescriptor);
+    self.retainedSamplerLockDescriptor = -1;
+
+    NSMutableDictionary *abandoned = nil;
+    @synchronized(self) {
+        abandoned = [self.lastSummary mutableCopy] ?: [CCNMServingStatusEmptySummary() mutableCopy];
+    }
+    abandoned[CCNMServingSummarySampledAtMillisecondsKey] = @0;
+    abandoned[CCNMServingSummaryUnsafeOutstandingKey] = @YES;
+    abandoned[CCNMServingSummarySuccessKey] = @NO;
+    abandoned[CCNMServingSummaryStateKey] = CCNMServingStateUnknown;
+    abandoned[CCNMServingSummaryStaleKey] = @YES;
+    abandoned[CCNMServingSummaryErrorKey] =
+        @"A Cell Monitor callback never resolved; restart Settings before another modem operation.";
+    [self publishSummary:abandoned evidence:self.lastSupportEvidence];
+}
+
 - (void)refreshWithCompletion:(void (^)(NSDictionary<NSString *, id> *))completion {
     dispatch_async(self.operationQueue, ^{
         @autoreleasepool {
             NSString *failure = nil;
-            if (self.retainedSamplerLockDescriptor >= 0) {
+            // Both halves matter. The descriptor covers the ordinary case, where the
+            // wait is still running; the abandoned flag covers the case where the
+            // deadline expired and the lock was handed back with the callback still
+            // outstanding. Keying this on the descriptor alone would let the expiry
+            // open the door to a second sampler run sharing the retained client.
+            if (self.retainedSamplerLockDescriptor >= 0 || self.abandonedOutstandingSampler) {
                 NSMutableDictionary *summary = [CCNMServingStatusEmptySummary() mutableCopy];
                 summary[CCNMServingSummaryUnsafeOutstandingKey] = @YES;
-                summary[CCNMServingSummaryErrorKey] = @"A previous Cell Monitor callback is still outstanding.";
+                summary[CCNMServingSummaryErrorKey] = self.abandonedOutstandingSampler
+                    ? @"A Cell Monitor callback never resolved; restart Settings before another modem operation."
+                    : @"A previous Cell Monitor callback is still outstanding.";
                 [self publishSummary:summary evidence:self.lastSupportEvidence];
                 [self deliverCompletion:completion];
                 return;

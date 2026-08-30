@@ -449,3 +449,103 @@ Cloud gate complete: release run `32688526055`, final source SHA `e233deb986b798
 - Updated package descriptions to describe the current product as selectable NR-band management with live serving status. The old package ID and internal state paths remain unchanged intentionally for upgrade and recovery compatibility.
 - Updated the stale 1.5.0 planning/release documents to identify them as historical and to distinguish the old n78 default from the current selectable-band product.
 - Validation: 427 host tests passed before the final localization/scanner corrections; final focused and source-verification checks are rerun after those corrections.
+
+## 2026-08-30 1.6.6: the rest of the family the background-return bug belonged to
+
+1.6.4 fixed one instance of a shape: state that is correct only because some callback
+fired or some cache was rebuilt. This entry closes the other instances found by an
+audit of that shape. The 1.6.4 delivery is also now recorded in the ledger, which was
+inert for that number until it was.
+
+**The shared modem lock could be held forever (the only cross-process defect here).**
+`-releaseRetainedSamplerLockWhenSafe` polled a latch at 1 Hz with no bound. The latch
+is cleared only by the private Cell Monitor callback, and two sampler paths arm it
+with no guarantee the callback will ever run: the attempt timeout, and an exception
+raised by the CoreTelephony call itself. That lock is `CCNMN78PolicyLockPath` taken
+`LOCK_EX`, shared with the policy writer, the Control Center sampler and the
+maintenance daemon, so an unresolved callback blocks every policy operation and every
+serving refresh in every process until Settings is killed.
+
+The audit's proposed fix was to stop arming the latch on the exception path, on the
+reasoning that a call which threw never handed its block over. Rejected: the throw can
+happen after CoreTelephony has retained the block and dispatched, so "it threw" and
+"it will call back later" are indistinguishable from the caller. Disarming there trades
+a stuck lock for a late callback writing into a freed client, which is the failure the
+latch exists to prevent.
+
+What is bounded instead is the wait: 120 polls, then `-abandonOutstandingSamplerAndReleaseLock`
+hands the lock back and nothing else. The retained client and context are kept alive on
+purpose -- the deadline expiring is not evidence the callback will not arrive, it is the
+admission that we cannot find out -- so this process leaks them and stops sampling,
+while every other process gets the modem back. `abandonedOutstandingSampler` is what
+keeps the next refresh out, because once the lock is handed back the descriptor no
+longer answers "is a callback outstanding".
+
+The bound is counted in polls, not clock time. A wall clock steps under NTP or a manual
+date change, and a monotonic read can fail -- a failed read falling back to a constant
+would silently restore the unbounded wait. A poll counter cannot fail. `CCNMServingMonotonicSeconds`
+was written and then removed for exactly this reason.
+
+**The 1.6.4 repopulation could have silently done nothing.** It located rows with
+`-specifierForID:`, which answers from `_specifiersByID`, rebuilt only by
+`-prepareSpecifiersMetadata`, which runs *after* the `-specifiers` getter returns.
+Repopulating from inside that getter is therefore the one moment the ID map is
+guaranteed to describe a different build than the array being handed over: the lookup
+returns an orphan, `-setProperty:` writes into an object the table does not hold, and
+`-reloadSpecifier:` drops the reload because `PSSpecifier` has no `-isEqual:` and the
+match is by pointer. The symptom would have been the original bug, so the fix would
+have looked like it ran and changed nothing. Device feedback says the common timing did
+not hit this, which is luck, not a guarantee. `-liveSpecifierForID:` scans `_specifiers`
+directly and falls back to the held-aside recovery rows; the array is the model, so it
+cannot go stale.
+
+**`-rebuildRecoverySection` replaced the model behind the framework's back.** Group
+indices and row counts come from the metadata only `-setSpecifiers:` rebuilds, and this
+pane's row count changes with the recovery section, so a direct assignment leaves a
+larger cached count behind a shrunken array -- an out-of-range read on the next table
+query. It survived because the recovery section only appears when policy state is not
+clean, which most users never see. `-commitRecoverySpecifiers:` now owns the choice:
+direct assignment inside the getter (the framework is about to build that metadata
+itself) and before the view loads (no table to reload), `-setSpecifiers:` everywhere
+else. The band pane already had this rule; the Root pane now matches it.
+
+**The band pane had no foreground recovery.** Everything it shows is derived: the
+availability gate reads live policy, the selectable domain comes from the cached
+capability sample, and the connection warning names the measured band. `-viewWillAppear:`
+is the only thing that rebuilds them and an app-level foreground transition does not call
+it. Not a correctness hole -- staleness is handled fail-closed further in, so an expired
+sample drops the band rather than naming the wrong one -- but the pane could describe a
+world minutes old, and the domain is what a save is checked against.
+
+**"Unknown" during a refresh was the display layer disagreeing with itself.** The
+provider correctly refuses to present an expired sample, so all three status rows fell
+to their Unknown branch while only the freshness row said a read was in progress. That
+is the "it shows unknown first, then the real value" report: the same truth, told in a
+way that reads as a fault. The three renderers now report `Refreshing…` themselves
+rather than each call site spelling out its own values, because a refresh is not the only
+thing that draws these rows -- a foreground return and a getter rebuild both re-render
+mid-flight, and that freedom to disagree is what produced the mismatch.
+
+**Deferred, with reasons rather than silence.** Dual-clock freshness (`mach_continuous_time`
+alongside the wall clock) would close a window where a backward date step makes an expired
+sample read as fresh for the step size plus 30s. It needs a persistence schema change and
+cross-process semantics for a cache shared with the Control Center module and the daemon,
+and getting it wrong spins the Control Center label forever. The forward direction is
+already fail-closed (`age < 0` is stale). Event-driven sampler completion and exponential
+backoff change no outcome -- a callback that never arrives still never releases -- for edits
+to memory-safety-critical code.
+
+- Red/green: every new assertion verified failing against the pre-fix sources at `3d44db0`
+  and passing after. 436 host tests pass with 4 skips (434 before this entry's last two
+  additions), `scripts/verify_release_source.py` returns `status: passed` with empty
+  `failures`/`forbidden` at version 1.6.6, and the three edited translation units pass
+  `clang -fsyntax-only -Wall -Wextra -Werror` for `arm64-apple-ios14.0`.
+- Ledger: 1.6.4 recorded (source `3d44db0`, run `33303936965`, roothide sha256
+  `427d4267…`, 270792 bytes). It was delivered and never written down, which left the
+  digest gate inert for that number.
+- Version is 1.6.6, not 1.6.5. 1.6.4 shipped five separate packages under one number
+  during the rebrand; skipping a number is cheaper than any chance of that ambiguity
+  recurring.
+- No device claim. Nothing here reproduces on demand: the lock defect needs a callback
+  that never fires, and the orphan lookup needs the framework to discard the model at a
+  particular moment.

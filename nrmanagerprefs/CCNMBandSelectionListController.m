@@ -116,6 +116,8 @@ typedef NS_ENUM(NSInteger, CCNMBandSelectionAvailability) {
 @property (nonatomic, weak, nullable) PSSpecifier *currentStatusSpecifier;
 @property (nonatomic, weak, nullable) PSSpecifier *currentSaveSpecifier;
 
+- (void)applicationWillEnterForeground:(NSNotification *)notification;
+
 @end
 
 @implementation CCNMBandSelectionListController
@@ -481,6 +483,39 @@ typedef NS_ENUM(NSInteger, CCNMBandSelectionAvailability) {
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = CCNMPreferencesLocalizedString(@"NR Bands");
+
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                            selector:@selector(applicationWillEnterForeground:)
+                                                name:UIApplicationWillEnterForegroundNotification
+                                              object:nil];
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self
+                                                   name:UIApplicationWillEnterForegroundNotification
+                                                 object:nil];
+}
+
+// Returning from the background produces no appearance callback for a pane that
+// never left the screen, so -viewWillAppear: cannot notice that the world moved on.
+// Everything shown here is derived state: the availability gate reads live policy,
+// the selectable domain comes from the cached capability sample, and the warning
+// about losing the current connection names the band the modem was measured on. All
+// three can be minutes old after a foreground return, and the domain is what a save
+// is checked against.
+//
+// Staleness is already handled correctly further in -- an expired sample drops the
+// serving band rather than naming the wrong one -- so this is not a correctness fix
+// but the difference between a pane that silently describes an old world and one that
+// describes the current one. The rebuild is the same work every appearance already
+// does: it reads a cached file and a small plist, never the modem.
+- (void)applicationWillEnterForeground:(NSNotification *)notification {
+    (void)notification;
+    if (!self.isViewLoaded || self.view.window == nil) {
+        // Off screen: -viewWillAppear: rebuilds when this pane comes back.
+        return;
+    }
+    [self rebuildFromWorld];
 }
 
 // The parent pane can change policy state or refresh capability evidence while

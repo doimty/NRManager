@@ -45,6 +45,8 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
 - (void)localizeSpecifiers:(NSArray<PSSpecifier *> *)specifiers;
 - (NSArray<PSSpecifier *> *)recoverySpecifiersFromArray:(NSArray<PSSpecifier *> *)specifiers;
 - (PSSpecifier *)recoverySpecifierForID:(NSString *)identifier;
+- (PSSpecifier *)liveSpecifierForID:(NSString *)identifier;
+- (void)commitRecoverySpecifiers:(NSMutableArray<PSSpecifier *> *)updatedSpecifiers;
 - (void)setDisplayValue:(NSString *)valueOrLocalizationKey forSpecifierID:(NSString *)identifier;
 - (id)readN78PreferenceValue:(PSSpecifier *)specifier;
 - (void)setN78PreferenceValue:(id)value specifier:(PSSpecifier *)specifier;
@@ -378,7 +380,24 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
                                   requiresReboot:[summary[CCNMN78PolicySummaryRequiresRebootKey] boolValue]];
 }
 
+// The three rows below are all derived from one sample, so they answer as one.
+//
+// While a refresh is in flight the sample on hand is the one being replaced, and a
+// stale sample is deliberately not shown: the provider blanks state and success
+// rather than let an expired reading stand, which is the right call and is why every
+// status row reads some form of "Unknown" during those few seconds. Reporting that a
+// read is in progress is the same truth without the alarm -- a user who sees
+// "Unknown" and then a real value reasonably reads the first as a fault.
+//
+// The gate lives in the renderers rather than at the call sites because a refresh is
+// not the only thing that draws these rows. A foreground return and a rebuild from
+// the -specifiers getter both re-render mid-flight, and each one that spelled out its
+// own values would be free to disagree -- which is what happened: the freshness row
+// said it was refreshing while the two rows beside it said the data was unknown.
 - (NSString *)servingDisplayValue:(NSDictionary *)summary {
+    if (self.servingRefreshInProgress) {
+        return CCNMPreferencesLocalizedString(@"Refreshing…");
+    }
     if ([summary[CCNMServingSummaryUnsafeOutstandingKey] boolValue]) {
         return CCNMPreferencesLocalizedString(@"Unknown (restart Settings before another modem operation)");
     }
@@ -410,6 +429,9 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
 }
 
 - (NSString *)freshnessDisplayValue:(NSDictionary *)summary {
+    if (self.servingRefreshInProgress) {
+        return CCNMPreferencesLocalizedString(@"Refreshing…");
+    }
     long long milliseconds = [summary[CCNMServingSummarySampledAtMillisecondsKey] longLongValue];
     if (milliseconds <= 0) {
         return CCNMPreferencesLocalizedString(@"Unknown");
@@ -427,6 +449,9 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
 // The read path supports any slot, so the row must report which subscription was
 // actually sampled rather than assuming slot 1.
 - (NSString *)dataLineDisplayValue:(NSDictionary *)summary {
+    if (self.servingRefreshInProgress) {
+        return CCNMPreferencesLocalizedString(@"Refreshing…");
+    }
     NSString *dataLine = [summary[CCNMServingSummaryDataLineKey] isKindOfClass:NSString.class]
         ? summary[CCNMServingSummaryDataLineKey] : @"";
     if ([dataLine isEqualToString:@"slot1"]) {
@@ -451,14 +476,10 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
     [self rebuildRecoverySection];
     [self updateN78PreferenceEnabled:[self.policySummary[CCNMN78PolicySummaryRequestedModeKey]
         isEqual:CCNMRequestedModeN78Preferred] controlAvailable:NO];
-    [self setDisplayValue:@"Refreshing…" forSpecifierID:CCNMFreshnessSpecifierID];
-    [self updateCurrentStateWithRequestedValue:[self requestedPolicyDisplayValue:self.policySummary]
-                                  appliedValue:[self appliedPolicyDisplayValue:self.policySummary
-                                                               servingSummary:self.servingSummary]
-                                  servingValue:[self servingDisplayValue:self.servingSummary]
-                                 dataLineValue:[self dataLineDisplayValue:self.servingSummary]
-                                freshnessValue:CCNMPreferencesLocalizedString(@"Refreshing…")
-                              refreshAvailable:NO];
+    // Re-render through the one path that renders these rows. The flag is already
+    // set, so the renderers report the read in progress and the refresh row disables
+    // itself; spelling the values out again here is what let the rows disagree.
+    [self applyServingSummary:self.servingSummary];
 
     __weak typeof(self) weakSelf = self;
     [[CCNMServingStatusProvider sharedProvider] refreshWithCompletion:^(NSDictionary<NSString *,id> *summary) {
@@ -599,14 +620,60 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
     return nil;
 }
 
+// Resolves a row against the model this pane is holding right now.
+//
+// Deliberately not -specifierForID:. That answers from PSListController's
+// _specifiersByID, which only -prepareSpecifiersMetadata rebuilds, and that runs
+// after the -specifiers getter returns. Repopulating from inside the getter is
+// therefore the one moment when the ID map is guaranteed to describe a different
+// build than the array being handed over: the lookup answers with an orphan from
+// the previous build, -setProperty: writes into an object the table does not hold,
+// and the reload is dropped because -reloadSpecifier: matches by pointer. The
+// symptom is the original bug -- a row that never receives its value -- so the
+// repopulation would have looked like it ran and changed nothing.
+//
+// A linear scan of the array cannot go stale, because the array is the model.
+- (PSSpecifier *)liveSpecifierForID:(NSString *)identifier {
+    for (PSSpecifier *specifier in _specifiers) {
+        if ([specifier.identifier isEqualToString:identifier]) {
+            return specifier;
+        }
+    }
+    // Rows in a hidden recovery section are held aside rather than in the model.
+    return [self recoverySpecifierForID:identifier];
+}
+
+// Installs a rebuilt model, choosing between the setter and a direct assignment.
+//
+// -setSpecifiers: is what rebuilds _specifiersByID and the group index array, and
+// PSListController computes its section and row counts from the latter. This pane's
+// row count changes with the recovery section, so a direct assignment is not a
+// cosmetic shortcut: leaving a larger cached count behind a shrunken array is an
+// out-of-range read on the next table query. The band pane commits through the
+// setter for the same reason.
+//
+// The direct assignment is correct in exactly two places. Inside the -specifiers
+// getter the framework is about to build that metadata itself from the value being
+// returned, and calling the setter there would hand it a model it is already in the
+// middle of collecting. Before the view loads there is no table to reload.
+//
+// The reload is kept explicit rather than assumed: whether -setSpecifiers: reloads
+// on its own is not part of the declared interface, and a redundant reload costs a
+// frame while a missing one leaves the old rows on screen.
+- (void)commitRecoverySpecifiers:(NSMutableArray<PSSpecifier *> *)updatedSpecifiers {
+    if (!self.isViewLoaded || self.repopulatingRebuiltSpecifiers) {
+        _specifiers = updatedSpecifiers;
+        return;
+    }
+    [self setSpecifiers:updatedSpecifiers];
+    [self.table reloadData];
+}
+
 - (void)setDisplayValue:(NSString *)valueOrLocalizationKey forSpecifierID:(NSString *)identifier {
     NSString *displayValue = valueOrLocalizationKey.length > 0
         ? CCNMPreferencesLocalizedString(valueOrLocalizationKey)
         : CCNMPreferencesLocalizedString(@"Unknown");
-    PSSpecifier *specifier = [self specifierForID:identifier];
-    if (!specifier) {
-        specifier = [self recoverySpecifierForID:identifier];
-    }
+    PSSpecifier *specifier = [self liveSpecifierForID:identifier];
     if (!specifier) {
         return;
     }
@@ -720,7 +787,7 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
     self.n78PreferenceEnabled = enabled;
     self.n78PreferenceControlAvailable = available && self.n78PreferenceRequestHandler != nil;
 
-    PSSpecifier *specifier = [self specifierForID:CCNMN78PreferenceSpecifierID];
+    PSSpecifier *specifier = [self liveSpecifierForID:CCNMN78PreferenceSpecifierID];
     if (!specifier) {
         return;
     }
@@ -748,7 +815,7 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
     [self setDisplayValue:dataLineValue forSpecifierID:CCNMDataLineSpecifierID];
     [self setDisplayValue:freshnessValue forSpecifierID:CCNMFreshnessSpecifierID];
 
-    PSSpecifier *refreshSpecifier = [self specifierForID:CCNMRefreshSpecifierID];
+    PSSpecifier *refreshSpecifier = [self liveSpecifierForID:CCNMRefreshSpecifierID];
     if (!refreshSpecifier) {
         return;
     }
@@ -822,10 +889,7 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
         [updatedSpecifiers insertObjects:visibleMaintenanceSpecifiers atIndexes:indexes];
     }
 
-    _specifiers = updatedSpecifiers;
-    if (self.isViewLoaded && !self.repopulatingRebuiltSpecifiers) {
-        [self.table reloadData];
-    }
+    [self commitRecoverySpecifiers:updatedSpecifiers];
 }
 
 @end

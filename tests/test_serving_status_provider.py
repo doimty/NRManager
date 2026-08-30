@@ -58,6 +58,35 @@ def code_only(text):
     return "".join(out)
 
 
+def method_body(source: str, signature: str) -> str:
+    """The body of the method whose implementation starts with `signature`.
+
+    Skips a forward declaration: a private @interface repeats the signature and is
+    terminated by `;`, so taking the first occurrence would slice the class body
+    instead of the method and every assertion would silently check unrelated code.
+    """
+    start = 0
+    while True:
+        index = source.find(signature, start)
+        if index < 0:
+            raise AssertionError(f"no implementation of {signature}")
+        brace = source.find("{", index)
+        semicolon = source.find(";", index)
+        if brace >= 0 and (semicolon < 0 or brace < semicolon):
+            break
+        start = index + len(signature)
+
+    depth = 0
+    for offset in range(brace, len(source)):
+        if source[offset] == "{":
+            depth += 1
+        elif source[offset] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[brace:offset + 1]
+    raise AssertionError(f"unterminated body for {signature}")
+
+
 class ServingStatusProviderTests(unittest.TestCase):
     def test_nr_arfcn_frequency_conversion_matches_3gpp_ranges(self):
         self.assertTrue(SUPPORT.exists())
@@ -119,6 +148,60 @@ int main(void) {
         self.assertIn("retainedSamplerClient", source)
         self.assertIn("retainedSamplerContext", source)
         self.assertNotIn("dlclose", source)
+
+    def test_the_wait_for_a_late_private_callback_is_bounded(self):
+        """The shared modem lock must not be held forever by an unresolved callback.
+
+        The latch this wait polls is cleared only by the callback itself, and two
+        sampler paths arm it with no guarantee the callback will ever run: the attempt
+        timeout, and an exception raised by the CoreTelephony call. An exception is
+        indistinguishable from "the block was handed over and will fire later", so the
+        latch has to stay armed -- disarming it would trade a stuck lock for a late
+        callback writing into a freed client.
+
+        What must not be unbounded is the wait. This is the same flock the policy
+        controller takes with LOCK_EX, so holding it forever blocks every policy
+        operation and every serving refresh in every process until Settings is killed.
+        On expiry the lock goes back and nothing else does.
+        """
+        source = code_only(SOURCE.read_text())
+        wait = method_body(source, "- (void)releaseRetainedSamplerLockWhenSafe")
+        self.assertIn("CCNMServingRetainedLockWaitPollLimit", wait)
+        self.assertIn("[self abandonOutstandingSamplerAndReleaseLock]", wait)
+
+        # Counted in polls, not clock time: a wall clock can step, and a monotonic
+        # read can fail -- and a failed read falling back to a constant would restore
+        # the unbounded wait this bound exists to remove.
+        self.assertNotIn("NSDate", wait)
+        self.assertNotIn("clock_gettime", wait)
+        self.assertRegex(
+            source,
+            r"static const NSUInteger CCNMServingRetainedLockWaitPollLimit = \d+;",
+        )
+
+        # Expiry hands back the lock and keeps the CoreTelephony objects alive,
+        # because a late callback would write into them and the deadline passing is
+        # not evidence that it will not arrive.
+        abandon = method_body(source, "- (void)abandonOutstandingSamplerAndReleaseLock")
+        self.assertIn("CCNMReleaseServingSamplerLock", abandon)
+        self.assertIn("self.retainedSamplerLockDescriptor = -1", abandon)
+        self.assertNotIn("self.retainedSamplerClient = nil", abandon)
+        self.assertNotIn("self.retainedSamplerContext = nil", abandon)
+        self.assertIn("self.abandonedOutstandingSampler = YES", abandon)
+
+    def test_an_abandoned_callback_still_blocks_another_sampler_run(self):
+        """The released descriptor must not be read as permission to sample again.
+
+        Once the bounded wait expires the lock is gone, so the descriptor no longer
+        answers "is a callback outstanding". Keying the refresh guard on it alone
+        would let a second run share the retained client with a callback that may
+        still arrive -- exactly what the latch exists to prevent.
+        """
+        source = code_only(SOURCE.read_text())
+        refresh = method_body(source, "- (void)refreshWithCompletion:")
+        self.assertIn("self.retainedSamplerLockDescriptor >= 0", refresh)
+        self.assertIn("self.abandonedOutstandingSampler", refresh)
+        self.assertIn("CCNMServingSummaryUnsafeOutstandingKey", refresh)
 
     def test_reading_and_writing_use_runtime_checks_not_a_device_allowlist(self):
         """Neither path relies on the old model/version allowlist.

@@ -635,6 +635,37 @@ class PaneCellTests(unittest.TestCase):
         self.assertIn("CCNMPreferenceValueKey", refresh)
         self.assertIn("PSEnabledKey", refresh)
 
+    def test_a_foreground_return_rebuilds_the_pane_and_is_unregistered(self):
+        """A pane already on screen gets no appearance callback when the app returns.
+
+        Every row here is derived from state that can move while Settings is in the
+        background: the availability gate reads live policy, the selectable domain
+        comes from the cached capability sample, and the connection warning names the
+        band the modem was measured on. -viewWillAppear: is the only thing that
+        rebuilds them, and an app-level foreground transition does not call it.
+
+        The rebuild has to be the full one. Re-reading the model without committing
+        would leave the old rows on screen describing new state, which is worse than
+        stale rows that at least agree with each other.
+        """
+        pane = code_only(PANE.read_text())
+        bodies = method_bodies(pane)
+        self.assertIn("UIApplicationWillEnterForegroundNotification", bodies["viewDidLoad"])
+        self.assertIn("@selector(applicationWillEnterForeground:)", bodies["viewDidLoad"])
+
+        handler = bodies["applicationWillEnterForeground"]
+        self.assertIn("[self rebuildFromWorld]", handler)
+        # Off screen there is nothing to update and -viewWillAppear: will run anyway.
+        self.assertIn("self.view.window == nil", handler)
+
+        # Reads only. A foreground return must not become a modem operation that
+        # entering the pane would not have performed.
+        for entry_point in POLICY_WRITE_ENTRY_POINTS:
+            self.assertNotIn(entry_point, handler)
+
+        self.assertIn("removeObserver:self", bodies["dealloc"])
+        self.assertIn("UIApplicationWillEnterForegroundNotification", bodies["dealloc"])
+
     def test_an_untouched_factory_default_does_not_claim_to_be_unsaved(self):
         """Three states, because the save button has three.
 
