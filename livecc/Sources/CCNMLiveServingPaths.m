@@ -3,13 +3,13 @@
 #import "CCNMN78PolicyReader.h"
 
 #if CCNM_LIVE_MAIN_BUNDLE
-static NSString *const CCNMLiveModuleClassName = @"CCNetworkManager";
+static NSString *const CCNMLiveModuleClassName = @"CCNRManager";
 static NSString *const CCNMLiveBundleMarker =
-    @"/Library/ControlCenter/Bundles/NetworkManager.bundle";
+    @"/Library/ControlCenter/Bundles/NRManager.bundle";
 #else
-static NSString *const CCNMLiveModuleClassName = @"NetworkManagerLiveModule";
+static NSString *const CCNMLiveModuleClassName = @"NRManagerLiveModule";
 static NSString *const CCNMLiveBundleMarker =
-    @"/Library/ControlCenter/Bundles/NetworkManagerLive.bundle";
+    @"/Library/ControlCenter/Bundles/NRManagerLive.bundle";
 #endif
 
 static NSString *CCNMLiveResolvedPath(NSString *suffix) {
@@ -20,7 +20,7 @@ static NSString *CCNMLiveResolvedPath(NSString *suffix) {
         options:NSBackwardsSearch];
     if (!bundlePath || markerRange.location == NSNotFound ||
         NSMaxRange(markerRange) != bundlePath.length || ![suffix hasPrefix:@"/"]) {
-        return [@"/nonexistent/networkmanager-live" stringByAppendingString:suffix ?: @""];
+        return [@"/nonexistent/nrmanager-live" stringByAppendingString:suffix ?: @""];
     }
     NSString *prefix = [bundlePath substringToIndex:markerRange.location];
     return [prefix stringByAppendingString:suffix];

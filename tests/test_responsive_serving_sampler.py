@@ -10,10 +10,10 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SUPPORT = ROOT / "networkmanagerprefs/CCNMServingCellProbeSupport.h"
-SAMPLER = ROOT / "networkmanagerprefs/CCNMServingCellSampler.m"
-PROVIDER = ROOT / "networkmanagerprefs/CCNMServingStatusProvider.m"
-LIVECC = ROOT / "livecc/Sources/NetworkManagerLiveModule.m"
+SUPPORT = ROOT / "nrmanagerprefs/CCNMServingCellProbeSupport.h"
+SAMPLER = ROOT / "nrmanagerprefs/CCNMServingCellSampler.m"
+PROVIDER = ROOT / "nrmanagerprefs/CCNMServingStatusProvider.m"
+LIVECC = ROOT / "livecc/Sources/NRManagerLiveModule.m"
 WORKFLOW = ROOT / ".github/workflows/livecc-prototype.yml"
 
 
@@ -22,7 +22,7 @@ class ResponsiveServingSamplerTests(unittest.TestCase):
         compiler = shutil.which("cc")
         self.assertIsNotNone(compiler)
         program = r'''
-#include "networkmanagerprefs/CCNMServingCellProbeSupport.h"
+#include "nrmanagerprefs/CCNMServingCellProbeSupport.h"
 
 int main(void) {
     CCNMAdaptiveSamplerState stable = CCNMAdaptiveSamplerStartWithPolicy(
@@ -96,7 +96,7 @@ int main(void) {
         sampler = SAMPLER.read_text()
         provider = PROVIDER.read_text()
         workflow = WORKFLOW.read_text()
-        self.assertGreaterEqual(workflow.count("networkmanagerprefs/CCNMServingCellProbeSupport.h"), 2)
+        self.assertGreaterEqual(workflow.count("nrmanagerprefs/CCNMServingCellProbeSupport.h"), 2)
         self.assertIn("CCNMServingCellResponsiveInterSampleDelayMicroseconds = 0", sampler)
         self.assertIn("CCNMRunResponsiveServingCellSampler", sampler)
         self.assertIn("CCNMRunResponsiveServingCellSampler", provider)

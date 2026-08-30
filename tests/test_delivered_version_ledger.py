@@ -107,12 +107,12 @@ class DeliveredVersionLedgerTests(unittest.TestCase):
         for required in (
             "control",
             "Makefile",
-            "CCNetworkManager.x",
+            "CCNRManager.x",
             "layout/Library/LaunchDaemons/com.doimty.nrmanager.maintenance.plist",
-            "networkmanagerprefs/Resources/Root.plist",
-            "networkmanagerprefs/CCNMRootListController.m",
-            "networkmanagerprefs/Resources/en.lproj/NetworkManagerPrefs.strings",
-            "networkmanagerprefs/Resources/zh-Hans.lproj/NetworkManagerPrefs.strings",
+            "nrmanagerprefs/Resources/Root.plist",
+            "nrmanagerprefs/CCNMRootListController.m",
+            "nrmanagerprefs/Resources/en.lproj/NRManagerPrefs.strings",
+            "nrmanagerprefs/Resources/zh-Hans.lproj/NRManagerPrefs.strings",
             "maintenance-daemon/main.m",
             "package-actions/postinst.sh.in",
             "package-actions/prerm.sh.in",
@@ -139,7 +139,7 @@ class DeliveredVersionLedgerTests(unittest.TestCase):
         self.assertFalse(shipping_digest.is_shipping("docs/whatever.md"))
         self.assertFalse(shipping_digest.is_shipping("anywhere/tests/test_thing.py"))
         # A source file whose name merely contains "tests" is not a test tree.
-        self.assertTrue(shipping_digest.is_shipping("networkmanagerprefs/CCNMTests.m"))
+        self.assertTrue(shipping_digest.is_shipping("nrmanagerprefs/CCNMTests.m"))
 
     def test_the_three_version_literals_still_agree(self) -> None:
         # The pre-existing invariant, asserted here too so this file fails as a
@@ -149,7 +149,7 @@ class DeliveredVersionLedgerTests(unittest.TestCase):
         control = verify_release_source.read_control(REPO / "control")
         self.assertEqual(control["version"], expected)
 
-        root_plist = (REPO / "networkmanagerprefs/Resources/Root.plist").read_text(
+        root_plist = (REPO / "nrmanagerprefs/Resources/Root.plist").read_text(
             encoding="utf-8"
         )
         match = re.search(

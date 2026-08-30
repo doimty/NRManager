@@ -93,7 +93,7 @@ class ReleaseMetadataTests(unittest.TestCase):
 
 class BuildConfigurationTests(unittest.TestCase):
     def test_all_product_and_maintainer_targets_use_ios_14_minimum(self) -> None:
-        for relative in ("Makefile", "networkmanagerprefs/Makefile", "package-actions/Makefile"):
+        for relative in ("Makefile", "nrmanagerprefs/Makefile", "package-actions/Makefile"):
             text = (REPO / relative).read_text(encoding="utf-8")
             self.assertIn("export TARGET = iphone:clang:latest:14.0", text, relative)
             self.assertNotIn("iphone:clang:latest:11.0", text, relative)
@@ -198,7 +198,7 @@ class VerificationHelperTests(unittest.TestCase):
             self.assertTrue(verify_build_log.verify_log(empty))
 
             clean = root / "clean.log"
-            clean.write_text("Compiling CCNetworkManager.x\nLinking NetworkManager\n", encoding="utf-8")
+            clean.write_text("Compiling CCNRManager.x\nLinking NRManager\n", encoding="utf-8")
             self.assertEqual(verify_build_log.verify_log(clean), [])
 
             bad = root / "bad.log"
@@ -226,15 +226,15 @@ Load command 1
         for binary in verify_release_package.BINARY_PAYLOAD_FILES:
             self.assertIn(binary, required)
         self.assertIn(
-            "Library/PreferenceLoader/Preferences/NetworkManagerPrefs.plist",
+            "Library/PreferenceLoader/Preferences/NRManagerPrefs.plist",
             required,
         )
         self.assertIn(
-            "Library/PreferenceBundles/NetworkManagerPrefs.bundle/en.lproj/NetworkManagerPrefs.strings",
+            "Library/PreferenceBundles/NRManagerPrefs.bundle/en.lproj/NRManagerPrefs.strings",
             required,
         )
         self.assertIn(
-            "Library/PreferenceBundles/NetworkManagerPrefs.bundle/zh-Hans.lproj/NetworkManagerPrefs.strings",
+            "Library/PreferenceBundles/NRManagerPrefs.bundle/zh-Hans.lproj/NRManagerPrefs.strings",
             required,
         )
         self.assertIn("telegram@2x.png", verify_release_package.FORBIDDEN_LEGACY_PAYLOAD_BASENAMES)
@@ -252,15 +252,15 @@ Load command 1
         )
 
     def test_fat_otool_dependencies_exclude_headers_and_bundle_install_id(self) -> None:
-        output = """/tmp/NetworkManager (architecture arm64):
-\t/Library/ControlCenter/Bundles/NetworkManager.bundle/NetworkManager (compatibility version 0.0.0, current version 0.0.0)
+        output = """/tmp/NRManager (architecture arm64):
+\t/Library/ControlCenter/Bundles/NRManager.bundle/NRManager (compatibility version 0.0.0, current version 0.0.0)
 \t/usr/lib/libobjc.A.dylib (compatibility version 1.0.0, current version 228.0.0)
-/tmp/NetworkManager (architecture arm64e):
-\t/Library/ControlCenter/Bundles/NetworkManager.bundle/NetworkManager (compatibility version 0.0.0, current version 0.0.0)
+/tmp/NRManager (architecture arm64e):
+\t/Library/ControlCenter/Bundles/NRManager.bundle/NRManager (compatibility version 0.0.0, current version 0.0.0)
 \t/usr/lib/libobjc.A.dylib (compatibility version 1.0.0, current version 228.0.0)
 """
         self.assertEqual(
-            verify_release_package.normalized_dependencies(output, "NetworkManager"),
+            verify_release_package.normalized_dependencies(output, "NRManager"),
             ["/usr/lib/libobjc.A.dylib"],
         )
 
@@ -270,7 +270,7 @@ Load command 1
         # child exec inside the jailbreak root, which is what broke installs.
         template = (
             "#!/bin/sh\n"
-            "GUARD=\"/usr/libexec/networkmanager-install-guard\"\n"
+            "GUARD=\"/usr/libexec/nrmanager-install-guard\"\n"
             "\"$GUARD\" \"$@\"\n"
         )
         # prerm delegates to nothing. Its privileged work is a carrier reset and a
@@ -298,14 +298,14 @@ Load command 1
             # gate back on an unconditionally non-blocking path.
             (root / "prerm").write_text(
                 "#!/bin/sh\n"
-                "GUARD=\"/usr/libexec/networkmanager-removal-guard\"\n"
+                "GUARD=\"/usr/libexec/nrmanager-removal-guard\"\n"
                 "\"$GUARD\" \"$@\"\n"
             )
             (root / "prerm").chmod(0o755)
             failures = []
             verify_release_package.verify_maintainer_scripts(root, failures)
             self.assertTrue(
-                any("retired networkmanager-removal-guard" in failure
+                any("retired nrmanager-removal-guard" in failure
                     for failure in failures), failures)
             (root / "prerm").write_text(removal)
             (root / "prerm").chmod(0o755)
@@ -328,7 +328,7 @@ Load command 1
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "postinst").write_text(
-                "#!/bin/sh\nPREFIX='@PREFIX@'\nnetworkmanager-install-guard\n"
+                "#!/bin/sh\nPREFIX='@PREFIX@'\nnrmanager-install-guard\n"
             )
             (root / "prerm").write_text("#!/bin/sh\nexit 0\n")
             for name in ("postinst", "prerm"):
@@ -358,13 +358,13 @@ Load command 1
 
     def test_the_guards_and_the_launchd_plist_are_required_payload(self) -> None:
         required = verify_release_package.REQUIRED_PAYLOAD_FILES
-        self.assertIn("usr/libexec/networkmanager-install-guard", required)
-        self.assertIn("usr/libexec/networkmanager-maintenance", required)
+        self.assertIn("usr/libexec/nrmanager-install-guard", required)
+        self.assertIn("usr/libexec/nrmanager-maintenance", required)
         # The removal guard is required to be *absent*, not merely unlisted: it is
         # a fail-closed gate on a path that no longer has anything to refuse.
-        self.assertNotIn("usr/libexec/networkmanager-removal-guard", required)
+        self.assertNotIn("usr/libexec/nrmanager-removal-guard", required)
         self.assertIn(
-            "networkmanager-removal-guard",
+            "nrmanager-removal-guard",
             verify_release_package.FORBIDDEN_LEGACY_PAYLOAD_BASENAMES,
         )
         self.assertIn(
@@ -372,14 +372,14 @@ Load command 1
         )
         # The guards are verified as Mach-O in the payload now, not in DEBIAN/.
         self.assertIn(
-            "usr/libexec/networkmanager-install-guard",
+            "usr/libexec/nrmanager-install-guard",
             verify_release_package.BINARY_PAYLOAD_FILES,
         )
         # The daemon joins the install guard: neither may link libroothide,
         # because neither runs with a bootstrap or a .jbroot beside it.
         self.assertEqual(
             verify_release_package.UNLINKED_ROOTHIDE_TOOLS,
-            ("networkmanager-install-guard", "networkmanager-maintenance"),
+            ("nrmanager-install-guard", "nrmanager-maintenance"),
         )
         # Same membership, different question, and the lists must stay separate.
         # LC_DYLD_INFO_ONLY is pinned for the two injected bundles, where a
@@ -389,14 +389,14 @@ Load command 1
         # then, and it is their output that redesigned this release.
         self.assertEqual(
             verify_release_package.CHAINED_FIXUPS_ALLOWED_TOOLS,
-            ("networkmanager-install-guard", "networkmanager-maintenance"),
+            ("nrmanager-install-guard", "nrmanager-maintenance"),
         )
         self.assertIsNot(
             verify_release_package.CHAINED_FIXUPS_ALLOWED_TOOLS,
             verify_release_package.UNLINKED_ROOTHIDE_TOOLS,
             "the two lists answer different questions and must not be aliased",
         )
-        for bundle in ("NetworkManager", "NetworkManagerPrefs"):
+        for bundle in ("NRManager", "NRManagerPrefs"):
             self.assertNotIn(
                 bundle, verify_release_package.CHAINED_FIXUPS_ALLOWED_TOOLS)
         # Absence of the library is asserted for those binaries, not merely
@@ -411,7 +411,7 @@ Load command 1
         self.assertNotIn(
             verify_release_package.ROOTHIDE_DYLIB,
             verify_release_package.ROOTHIDE_RELEASE_DEPENDENCIES[
-                "networkmanager-maintenance"],
+                "nrmanager-maintenance"],
         )
 
 
@@ -516,7 +516,7 @@ class PreferenceCellClassGateTests(unittest.TestCase):
     def test_the_watched_names_are_classes_the_bundle_actually_has(self) -> None:
         """The two halves of the fix must not drift apart: a name that no longer
         exists would make the gate quietly stop protecting that cell."""
-        cells = (REPO / "networkmanagerprefs/CCNMPreferencesCells.h").read_text()
+        cells = (REPO / "nrmanagerprefs/CCNMPreferencesCells.h").read_text()
         for name in verify_release_package.PREFERENCE_CELL_CLASS_NAMES:
             self.assertIn("@interface " + name, cells, name)
 
@@ -687,7 +687,7 @@ class PackageLaneMetadataTests(unittest.TestCase):
             "@loader_path/.jbroot/usr/lib/libroothide.dylib",
         )
         self.assertEqual(
-            verify_release_package.ROOTHIDE_BASELINE_DEPENDENCIES["NetworkManagerPrefs"],
+            verify_release_package.ROOTHIDE_BASELINE_DEPENDENCIES["NRManagerPrefs"],
             {
                 "/usr/lib/libobjc.A.dylib",
                 "/System/Library/Frameworks/Foundation.framework/Foundation",
@@ -703,7 +703,7 @@ class PackageLaneMetadataTests(unittest.TestCase):
         self.assertNotIn("LC_VERSION_MIN_IPHONEOS", verify_release_package.ROOTHIDE_RELEASE_LOAD_COMMANDS)
         self.assertIn(
             "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics",
-            verify_release_package.ROOTHIDE_RELEASE_DEPENDENCIES["NetworkManagerPrefs"],
+            verify_release_package.ROOTHIDE_RELEASE_DEPENDENCIES["NRManagerPrefs"],
         )
 
 

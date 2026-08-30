@@ -8,10 +8,10 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PREFS = ROOT / "networkmanagerprefs"
+PREFS = ROOT / "nrmanagerprefs"
 ROOT_PLIST = PREFS / "Resources/Root.plist"
-ENGLISH = PREFS / "Resources/en.lproj/NetworkManagerPrefs.strings"
-CHINESE = PREFS / "Resources/zh-Hans.lproj/NetworkManagerPrefs.strings"
+ENGLISH = PREFS / "Resources/en.lproj/NRManagerPrefs.strings"
+CHINESE = PREFS / "Resources/zh-Hans.lproj/NRManagerPrefs.strings"
 CELLS = PREFS / "CCNMPreferencesCells.m"
 CONTROLLER = PREFS / "CCNMRootListController.m"
 CONTROL = ROOT / "control"

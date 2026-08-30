@@ -24,7 +24,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PREFS = ROOT / "networkmanagerprefs"
+PREFS = ROOT / "nrmanagerprefs"
 CONTROLLER = (PREFS / "CCNMN78PolicyController.m").read_text()
 READER = (PREFS / "CCNMN78PolicyReader.m").read_text()
 ROOT_CONTROLLER = (PREFS / "CCNMRootListController.m").read_text()
@@ -32,8 +32,8 @@ ROOT_HEADER = (PREFS / "CCNMRootListController.h").read_text()
 SUPPORT_HEADER = (PREFS / "CCNMN78PolicySupport.h").read_text()
 SUPPORT_SOURCE = (PREFS / "CCNMN78PolicySupport.m").read_text()
 ROOT_PLIST = (PREFS / "Resources/Root.plist").read_text()
-ENGLISH_STRINGS = (PREFS / "Resources/en.lproj/NetworkManagerPrefs.strings").read_text()
-CHINESE_STRINGS = (PREFS / "Resources/zh-Hans.lproj/NetworkManagerPrefs.strings").read_text()
+ENGLISH_STRINGS = (PREFS / "Resources/en.lproj/NRManagerPrefs.strings").read_text()
+CHINESE_STRINGS = (PREFS / "Resources/zh-Hans.lproj/NRManagerPrefs.strings").read_text()
 PRERM = (ROOT / "package-actions/prerm.sh.in").read_text()
 POSTINST = (ROOT / "package-actions/postinst.sh.in").read_text()
 POLICY_SHELL = (ROOT / "package-actions/policy-records.sh.inc").read_text()
@@ -418,7 +418,7 @@ class MaintainerScriptTests(unittest.TestCase):
         self.assertIn("only turning the preference off in Settings", PRERM)
         self.assertNotIn("CCNMN78PolicyController", code)
         self.assertNotIn("CoreTelephony", code)
-        self.assertNotIn("networkmanager-removal-guard", code)
+        self.assertNotIn("nrmanager-removal-guard", code)
         self.assertIn("exit 0", code)
 
     def test_the_baseline_is_never_discarded_while_it_describes_something(self):
@@ -497,8 +497,8 @@ class MaintainerScriptTests(unittest.TestCase):
         self.assertNotIn("CARRIER_RESET_FLOOR =", code_lines(PATCHER))
 
     def test_the_guards_do_not_link_the_policy_controller(self):
-        self.assertIn("TOOL_NAME = networkmanager-install-guard", ACTIONS_MAKEFILE)
-        self.assertNotIn("networkmanager-removal-guard", ACTIONS_MAKEFILE)
+        self.assertIn("TOOL_NAME = nrmanager-install-guard", ACTIONS_MAKEFILE)
+        self.assertNotIn("nrmanager-removal-guard", ACTIONS_MAKEFILE)
         self.assertNotIn("CCNMN78PolicyController.m", ACTIONS_MAKEFILE)
 
 

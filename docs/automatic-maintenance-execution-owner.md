@@ -79,12 +79,12 @@ The daemon persists attempt intent before calling the setter. Timeout, exception
 - Confirm enable, disable, upgrade, downgrade, uninstall, reboot, and crash lifecycle.
 - Measure idle memory, wakeups, sampler duration, and battery impact before choosing a periodic interval.
 
-The source/package contract is already enforced: rootless staging emits `/var/jb/usr/libexec/networkmanager-maintenance` and `/var/jb/var/mobile/...baseline.plist`; roothide staging emits the same two paths **bare**, with no prefix at all. The shell `postinst` does not touch the plist. It resolves the two prefixes and hands them to the guard through `NETWORKMANAGER_INSTALL_PREFIX` and `NETWORKMANAGER_LAUNCHD_PREFIX`, and the guard verifies the shipped plist rather than writing it.
+The source/package contract is already enforced: rootless staging emits `/var/jb/usr/libexec/nrmanager-maintenance` and `/var/jb/var/mobile/...baseline.plist`; roothide staging emits the same two paths **bare**, with no prefix at all. The shell `postinst` does not touch the plist. It resolves the two prefixes and hands them to the guard through `NETWORKMANAGER_INSTALL_PREFIX` and `NETWORKMANAGER_LAUNCHD_PREFIX`, and the guard verifies the shipped plist rather than writing it.
 
 The roothide prefix is empty because its `launchctl` is itself a redirected binary that rewrites the plist on load. `_patch_plist` in `<jbroot>/usr/bin/launchctl` walks `Program`, `ProgramArguments[0]`, `RootDirectory`, `WorkingDirectory`, `Standard{In,Out,Error}Path`, `WatchPaths`, `QueueDirectories`, `KeepAlive/PathState` keys, `Sockets` and `LaunchEvents`, replaces every value beginning with `/` with `jbroot(value)`, and stores `__Patched=true` back into the file. Re-entry is guarded solely by that marker; the value is never inspected for a jailbreak root it already carries, and the only opt-out is a value already prefixed with `/rootfs/`. A plist staged with a jbroot-absolute path therefore gets a second one. The reporting device showed exactly that, on disk, after `launchctl` had written it back:
 
 ```
-ProgramArguments[0] = <jbroot>/<jbroot>/usr/libexec/networkmanager-maintenance
+ProgramArguments[0] = <jbroot>/<jbroot>/usr/libexec/nrmanager-maintenance
 ```
 
 which then failed in `dyld`, because `@loader_path` resolved into a directory that does not exist so `libroothide.dylib` could not be found beside it. One mechanism, both symptoms.
@@ -110,7 +110,7 @@ The policy reader/controller use the same convention, so launchd and the daemon 
 
 ## Current boundary
 
-The read-only monitor builds as `/usr/libexec/networkmanager-maintenance` relative to the active jailbreak root. It requires `--daemon`, reads the existing validated policy summary, samples only under the exact stable-enabled predicate, retains two independent summaries, and evaluates the shared pure decision module. Its entry source contains no enable, disable, recover, durable policy-record writer, or active-band setter call. The separate observation record is fed back only when boot, policy generation, baseline creation identity, device, SIM and complete capability snapshot match; an identical candidate then reports `DropRecorded` without incrementing `dropGeneration`.
+The read-only monitor builds as `/usr/libexec/nrmanager-maintenance` relative to the active jailbreak root. It requires `--daemon`, reads the existing validated policy summary, samples only under the exact stable-enabled predicate, retains two independent summaries, and evaluates the shared pure decision module. Its entry source contains no enable, disable, recover, durable policy-record writer, or active-band setter call. The separate observation record is fed back only when boot, policy generation, baseline creation identity, device, SIM and complete capability snapshot match; an identical candidate then reports `DropRecorded` without incrementing `dropGeneration`.
 
 A root launchd plist is now packaged with one `KeepAlive/PathState` baseline condition. The shell `postinst` hands the jailbreak root to the guards, the install guard validates the contract, and the shell bootstraps the job after removal-guard cleanup; `prerm` stops and verifies it before any restore work. A failure to register is a warning, not an install failure: the daemon owns no policy or modem state, so band policy changes keep working without it. What a failed registration does **not** buy is a free retry at the next boot — see below. Baseline retirement explicitly stops the daemon run loop because `PathState` alone does not terminate an already-running process. The read-only daemon persists its maintenance record and bounded status plist after each refresh. `CorrectOnce` remains disconnected from every setter, so this activation adds observation only.
 

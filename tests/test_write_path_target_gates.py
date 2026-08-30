@@ -35,8 +35,8 @@ from pathlib import Path
 
 
 REPO = Path(__file__).resolve().parents[1]
-POLICY = REPO / "networkmanagerprefs/CCNMN78PolicyController.m"
-READER = REPO / "networkmanagerprefs/CCNMN78PolicyReader.m"
+POLICY = REPO / "nrmanagerprefs/CCNMN78PolicyController.m"
+READER = REPO / "nrmanagerprefs/CCNMN78PolicyReader.m"
 # Real BandInfo captured from the device the known-orphan path was written for.
 # The replay is gone, but the evidence still says something the validators depend
 # on: see test_a_baselines_active_nr_is_not_required_to_be_supported_nr.
@@ -275,7 +275,7 @@ class WritePathTargetGateTests(unittest.TestCase):
         for name in ("CCNMValidateBaselineCompatibility", "CCNMBaselineNRBandsFitCurrentCapability"):
             with self.subTest(symbol=name):
                 self.assertNotIn(name, self.reader)
-        header = (REPO / "networkmanagerprefs/CCNMN78PolicyReader.h").read_text(encoding="utf-8")
+        header = (REPO / "nrmanagerprefs/CCNMN78PolicyReader.h").read_text(encoding="utf-8")
         self.assertNotIn("CCNMValidateBaselineCompatibility", header)
         # Its one caller is the restore, and it runs before the payload is built.
         self.assertEqual(gate_call_sites(self.source, "CCNMValidateBaselineCompatibility"),
@@ -312,14 +312,14 @@ class WritePathTargetGateTests(unittest.TestCase):
         rather than merely historical -- both halves are asserted here so neither
         can be removed as dead on the assumption that the other went with it.
         """
-        ui = (REPO / "networkmanagerprefs/CCNMRootListController.m").read_text(encoding="utf-8")
-        support = (REPO / "networkmanagerprefs/CCNMN78PolicySupport.h").read_text(encoding="utf-8")
-        implementation = (REPO / "networkmanagerprefs/CCNMN78PolicySupport.m").read_text(encoding="utf-8")
+        ui = (REPO / "nrmanagerprefs/CCNMRootListController.m").read_text(encoding="utf-8")
+        support = (REPO / "nrmanagerprefs/CCNMN78PolicySupport.h").read_text(encoding="utf-8")
+        implementation = (REPO / "nrmanagerprefs/CCNMN78PolicySupport.m").read_text(encoding="utf-8")
         for text in (support, implementation, ui, self.source):
             self.assertIn("CCNMN78PolicyErrorBaselineIncompatible", text)
         self.assertIn("POLICY_ERROR_BASELINE_INCOMPATIBLE", ui)
         for lproj in ("en", "zh-Hans"):
-            strings = (REPO / f"networkmanagerprefs/Resources/{lproj}.lproj/NetworkManagerPrefs.strings")
+            strings = (REPO / f"nrmanagerprefs/Resources/{lproj}.lproj/NRManagerPrefs.strings")
             with self.subTest(lproj=lproj):
                 self.assertIn("POLICY_ERROR_BASELINE_INCOMPATIBLE", strings.read_text(encoding="utf-8"))
 

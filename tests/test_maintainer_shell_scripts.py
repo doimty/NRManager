@@ -146,7 +146,7 @@ def staged_plist(prefix):
 
 class ShellScriptBase(unittest.TestCase):
     template = POSTINST_TEMPLATE
-    guard_name = "networkmanager-install-guard"
+    guard_name = "nrmanager-install-guard"
     scheme = "roothide"
 
     def setUp(self):
@@ -946,7 +946,7 @@ class PostinstLaunchdLoadTests(ShellScriptBase):
                         result.stderr)
 
         # An early exit: no guard at all, which returns before any launchd work.
-        (self.prefix / "usr/libexec/networkmanager-install-guard").unlink()
+        (self.prefix / "usr/libexec/nrmanager-install-guard").unlink()
         result = self.run_script("configure")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(result.stderr.rstrip().endswith("setup finished."),
@@ -1185,7 +1185,7 @@ class PrermPolicyRecordTests(ShellScriptBase):
         # A guard binary is no longer installed by prerm's fixture, and its
         # absence must not matter. Removing the one ShellScriptBase created keeps
         # every test here honest about that.
-        guard = self.prefix / "usr/libexec/networkmanager-removal-guard"
+        guard = self.prefix / "usr/libexec/nrmanager-removal-guard"
         if guard.exists():
             guard.unlink()
 
@@ -1436,7 +1436,7 @@ class PrermTests(ShellScriptBase):
         # The retired mechanism. Asserted at the rendered-script level so it
         # cannot come back through the template or through the include.
         text = self.render().read_text()
-        self.assertNotIn("networkmanager-removal-guard", text)
+        self.assertNotIn("nrmanager-removal-guard", text)
         self.assertNotIn("removal blocked", text)
         self.assertNotIn("to override", text)
 

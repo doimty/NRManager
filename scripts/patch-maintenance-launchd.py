@@ -30,7 +30,7 @@ marker; the value is never inspected for a jbroot component it already carries.
 So a roothide plist holding a jbroot-absolute path gets a second jbroot
 prepended, and the reporting device showed exactly that:
 
-    program = <jbroot>/<jbroot>/usr/libexec/networkmanager-maintenance
+    program = <jbroot>/<jbroot>/usr/libexec/nrmanager-maintenance
 
 which then failed in dyld, because @loader_path resolved into a directory that
 does not exist, so libroothide.dylib could not be found beside it. One
@@ -74,7 +74,7 @@ from pathlib import Path
 
 LABEL = "com.doimty.nrmanager.maintenance"
 PLIST_RELATIVE = Path("Library/LaunchDaemons") / f"{LABEL}.plist"
-PROGRAM_RELATIVE = "/usr/libexec/networkmanager-maintenance"
+PROGRAM_RELATIVE = "/usr/libexec/nrmanager-maintenance"
 BASELINE_RELATIVE = (
     "/var/mobile/Library/Preferences/"
     "com.doimty.nrmanager.n78-policy.baseline.plist"

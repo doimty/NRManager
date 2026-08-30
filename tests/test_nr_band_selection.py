@@ -13,8 +13,8 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CONTROLLER = ROOT / "networkmanagerprefs/CCNMN78PolicyController.m"
-READER = ROOT / "networkmanagerprefs/CCNMN78PolicyReader.m"
+CONTROLLER = ROOT / "nrmanagerprefs/CCNMN78PolicyController.m"
+READER = ROOT / "nrmanagerprefs/CCNMN78PolicyReader.m"
 DAEMON = ROOT / "maintenance-daemon/main.m"
 # BandInfo captured from a real modem. It used to be compiled into the controller
 # as a pair of constants, for a replay path that has since been retired; the

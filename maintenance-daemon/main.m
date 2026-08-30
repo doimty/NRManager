@@ -4,10 +4,10 @@
 #include <limits.h>
 #include <stddef.h>
 
-#import "../networkmanagerprefs/CCNMAutomaticMaintenanceDecision.h"
-#import "../networkmanagerprefs/CCNMAutomaticMaintenanceRecord.h"
-#import "../networkmanagerprefs/CCNMN78PolicyReader.h"
-#import "../networkmanagerprefs/CCNMServingStatusProvider.h"
+#import "../nrmanagerprefs/CCNMAutomaticMaintenanceDecision.h"
+#import "../nrmanagerprefs/CCNMAutomaticMaintenanceRecord.h"
+#import "../nrmanagerprefs/CCNMN78PolicyReader.h"
+#import "../nrmanagerprefs/CCNMServingStatusProvider.h"
 
 static const NSTimeInterval CCNMMaintenancePrototypeRefreshSeconds = 30.0;
 

@@ -63,32 +63,32 @@ FAKE_MACHO = machofixtures.preference_bundle_binary(
 )
 
 BINARY_PAYLOAD = (
-    "Library/ControlCenter/Bundles/NetworkManager.bundle/NetworkManager",
-    "Library/PreferenceBundles/NetworkManagerPrefs.bundle/NetworkManagerPrefs",
+    "Library/ControlCenter/Bundles/NRManager.bundle/NRManager",
+    "Library/PreferenceBundles/NRManagerPrefs.bundle/NRManagerPrefs",
     verifier.INSTALL_GUARD_RELATIVE,
     verifier.MAINTENANCE_HELPER_RELATIVE,
 )
 
 TEXT_PAYLOAD = {
-    "Library/ControlCenter/Bundles/NetworkManager.bundle/Info.plist":
+    "Library/ControlCenter/Bundles/NRManager.bundle/Info.plist":
         plistlib.dumps({"CFBundleIdentifier": "com.doimty.nrmanager",
-                        "CFBundleExecutable": "NetworkManager"}),
-    "Library/PreferenceBundles/NetworkManagerPrefs.bundle/Info.plist":
+                        "CFBundleExecutable": "NRManager"}),
+    "Library/PreferenceBundles/NRManagerPrefs.bundle/Info.plist":
         plistlib.dumps({"CFBundleIdentifier": "com.doimty.nrmanager.prefs",
-                        "CFBundleExecutable": "NetworkManagerPrefs"}),
-    "Library/PreferenceBundles/NetworkManagerPrefs.bundle/Root.plist":
+                        "CFBundleExecutable": "NRManagerPrefs"}),
+    "Library/PreferenceBundles/NRManagerPrefs.bundle/Root.plist":
         plistlib.dumps({"items": []}),
-    "Library/PreferenceBundles/NetworkManagerPrefs.bundle/defaults.plist":
+    "Library/PreferenceBundles/NRManagerPrefs.bundle/defaults.plist":
         plistlib.dumps({"n78PreferenceEnabled": False}),
-    "Library/PreferenceLoader/Preferences/NetworkManagerPrefs.plist":
+    "Library/PreferenceLoader/Preferences/NRManagerPrefs.plist":
         plistlib.dumps({"entry": {}}),
-    "Library/PreferenceBundles/NetworkManagerPrefs.bundle/"
-    "en.lproj/NetworkManagerPrefs.strings": b'"key" = "value";\n',
-    "Library/PreferenceBundles/NetworkManagerPrefs.bundle/"
-    "zh-Hans.lproj/NetworkManagerPrefs.strings": b'"key" = "value";\n',
-    "Library/ControlCenter/Bundles/NetworkManager.bundle/SettingsIcon@2x.png":
+    "Library/PreferenceBundles/NRManagerPrefs.bundle/"
+    "en.lproj/NRManagerPrefs.strings": b'"key" = "value";\n',
+    "Library/PreferenceBundles/NRManagerPrefs.bundle/"
+    "zh-Hans.lproj/NRManagerPrefs.strings": b'"key" = "value";\n',
+    "Library/ControlCenter/Bundles/NRManager.bundle/SettingsIcon@2x.png":
         b"\x89PNG\r\n\x1a\n",
-    "Library/ControlCenter/Bundles/NetworkManager.bundle/SettingsIcon@3x.png":
+    "Library/ControlCenter/Bundles/NRManager.bundle/SettingsIcon@3x.png":
         b"\x89PNG\r\n\x1a\n",
 }
 

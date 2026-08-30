@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>English</string>
 	<key>CFBundleExecutable</key>
-	<string>NetworkManagerPrefs</string>
+	<string>NRManagerPrefs</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.doimty.nrmanager.prefs</string>
 	<key>CFBundleInfoDictionaryVersion</key>

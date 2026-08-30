@@ -5,8 +5,8 @@ import textwrap
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-SOURCE = ROOT / "networkmanagerprefs" / "CCNMAutomaticMaintenanceDecision.c"
-HEADER_DIR = ROOT / "networkmanagerprefs"
+SOURCE = ROOT / "nrmanagerprefs" / "CCNMAutomaticMaintenanceDecision.c"
+HEADER_DIR = ROOT / "nrmanagerprefs"
 
 HARNESS = r'''
 #include <stdbool.h>
@@ -151,9 +151,9 @@ int main(void) {
 
 class AutomaticMaintenanceDecisionTests(unittest.TestCase):
     def test_decision_module_is_compiled_into_both_consumers(self):
-        source_name = "networkmanagerprefs/CCNMAutomaticMaintenanceDecision.c"
+        source_name = "nrmanagerprefs/CCNMAutomaticMaintenanceDecision.c"
         root_makefile = (ROOT / "Makefile").read_text()
-        prefs_makefile = (ROOT / "networkmanagerprefs" / "Makefile").read_text()
+        prefs_makefile = (ROOT / "nrmanagerprefs" / "Makefile").read_text()
         self.assertIn(source_name, root_makefile)
         self.assertIn("CCNMAutomaticMaintenanceDecision.c", prefs_makefile)
 
@@ -164,7 +164,7 @@ class AutomaticMaintenanceDecisionTests(unittest.TestCase):
         of the maintenance decision that has a harness, so moving the test into
         the Objective-C caller would move it out of coverage.
         """
-        header = (ROOT / "networkmanagerprefs" / "CCNMAutomaticMaintenanceDecision.h").read_text()
+        header = (ROOT / "nrmanagerprefs" / "CCNMAutomaticMaintenanceDecision.h").read_text()
         self.assertIn("const int *targetBands", header)
         self.assertIn("size_t targetBandCount", header)
         self.assertNotIn("int targetBand;", header)

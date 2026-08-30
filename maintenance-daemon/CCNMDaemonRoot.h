@@ -43,7 +43,7 @@ ssize_t CCNMDaemonPrefixLength(const char *executablePath);
 /// create a .jbroot beside an installed helper. The reporting device produced
 ///
 ///   dyld[2618]: Library not loaded: @loader_path/.jbroot/usr/lib/libroothide.dylib
-///     Referenced from: <jbroot>/usr/libexec/networkmanager-maintenance
+///     Referenced from: <jbroot>/usr/libexec/nrmanager-maintenance
 ///     Reason: tried: '<jbroot>/usr/libexec/.jbroot/usr/lib/libroothide.dylib'
 ///       (no such file), '/usr/local/lib/...' (no such file), '/usr/lib/...'
 ///       (no such file)

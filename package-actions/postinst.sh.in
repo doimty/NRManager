@@ -38,7 +38,7 @@
 # needs a real absolute path. That was wrong on roothide, and it was the cause of
 # the doubled path the reporting device showed:
 #
-#   program = <jbroot>/<jbroot>/usr/libexec/networkmanager-maintenance
+#   program = <jbroot>/<jbroot>/usr/libexec/nrmanager-maintenance
 #
 # roothide's launchctl is itself redirected and patches the plist on load. Its
 # _patch_plist walks every path-bearing key and rewrites each value that starts
@@ -75,7 +75,7 @@ NEEDS_JBROOT='@NEEDS_JBROOT@'
 # it can open anything -- see the export block at the bottom.
 LAUNCHD_PREFIX='@LAUNCHD_PREFIX@'
 
-GUARD_RELATIVE='/usr/libexec/networkmanager-install-guard'
+GUARD_RELATIVE='/usr/libexec/nrmanager-install-guard'
 # Rendered from the same constants the plist was patched with, so the script and
 # the file it loads cannot disagree about the label. A label copied by hand would
 # not be caught by the contract check either: launchctl would load the plist and

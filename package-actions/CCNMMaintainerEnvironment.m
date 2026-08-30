@@ -25,7 +25,7 @@ NSString *const CCNMMaintenanceLaunchdVerifiedSentinel =
 static NSString *const CCNMMaintenanceLaunchdRelativePath =
     @"/Library/LaunchDaemons/com.doimty.nrmanager.maintenance.plist";
 static NSString *const CCNMMaintenanceExecutableRelativePath =
-    @"/usr/libexec/networkmanager-maintenance";
+    @"/usr/libexec/nrmanager-maintenance";
 static NSString *const CCNMMaintenanceBaselineRelativePath =
     @"/var/mobile/Library/Preferences/"
      "com.doimty.nrmanager.n78-policy.baseline.plist";
@@ -64,7 +64,7 @@ static BOOL CCNMSetError(NSError **error,
 // flag it sets itself. A plist that already carries the jailbreak root therefore
 // gets a second one, which is what produced
 //
-//     program = <jbroot>/<jbroot>/usr/libexec/networkmanager-maintenance
+//     program = <jbroot>/<jbroot>/usr/libexec/nrmanager-maintenance
 //
 // on the reporting device, and then the dyld failure that followed from it:
 // @loader_path resolved into a directory that does not exist, so the daemon's

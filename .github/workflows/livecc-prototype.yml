@@ -5,11 +5,11 @@ on:
   push:
     paths:
       - livecc/**
-      - networkmanagerprefs/CCNMServingStatusProvider.h
-      - networkmanagerprefs/CCNMServingStatusProvider.m
-      - networkmanagerprefs/CCNMServingCellSampler.h
-      - networkmanagerprefs/CCNMServingCellSampler.m
-      - networkmanagerprefs/CCNMServingCellProbeSupport.h
+      - nrmanagerprefs/CCNMServingStatusProvider.h
+      - nrmanagerprefs/CCNMServingStatusProvider.m
+      - nrmanagerprefs/CCNMServingCellSampler.h
+      - nrmanagerprefs/CCNMServingCellSampler.m
+      - nrmanagerprefs/CCNMServingCellProbeSupport.h
       - tests/test_responsive_serving_sampler.py
       - tests/test_serving_status_provider.py
       - .github/workflows/livecc-prototype.yml
@@ -77,12 +77,12 @@ jobs:
             livecc/Sources/CCNMLiveBandText.c
             livecc/Sources/CCNMLiveBandText.h
             livecc/Sources/CCNMLiveServingPaths.m
-            livecc/Sources/NetworkManagerLiveModule.m
-            networkmanagerprefs/CCNMServingStatusProvider.h
-            networkmanagerprefs/CCNMServingStatusProvider.m
-            networkmanagerprefs/CCNMServingCellSampler.h
-            networkmanagerprefs/CCNMServingCellSampler.m
-            networkmanagerprefs/CCNMServingCellProbeSupport.h
+            livecc/Sources/NRManagerLiveModule.m
+            nrmanagerprefs/CCNMServingStatusProvider.h
+            nrmanagerprefs/CCNMServingStatusProvider.m
+            nrmanagerprefs/CCNMServingCellSampler.h
+            nrmanagerprefs/CCNMServingCellSampler.m
+            nrmanagerprefs/CCNMServingCellProbeSupport.h
           )
           forbidden='libroothide|jbroot[[:space:]]*\(|roothide\.h|CCNMEnableN78Preference|CCNMDisableN78Preference|CCNMRecoverN78Preference|enableWithCompletion:|disableWithCompletion:|recoverWithCompletion:|setActiveBandInfo|setRatSelection|_CTServerConnectionSetRATSelection|reconfigureView|refreshState|class_getInstanceVariable|object_getIvar|valueForKey:|setValue:forKey:'
           if grep -En "$forbidden" "${source_files[@]}"; then
@@ -217,18 +217,18 @@ jobs:
             cd "$payload_root"
             find . \( -type f -o -type l \) -print | LC_ALL=C sort
           )"
-          expected_files=$'./Library/ControlCenter/Bundles/NetworkManagerLive.bundle/Info.plist\n./Library/ControlCenter/Bundles/NetworkManagerLive.bundle/NetworkManagerLive'
+          expected_files=$'./Library/ControlCenter/Bundles/NRManagerLive.bundle/Info.plist\n./Library/ControlCenter/Bundles/NRManagerLive.bundle/NRManagerLive'
           if [[ "$payload_files" != "$expected_files" ]]; then
             echo "LiveCC package must contain exactly its Info.plist and executable" >&2
             printf 'payload:\n%s\n' "$payload_files" >&2
             exit 1
           fi
-          if find "$payload_root" -path '*/NetworkManager.bundle*' -print -quit | grep -q .; then
-            echo "LiveCC payload overlaps NetworkManager.bundle" >&2
+          if find "$payload_root" -path '*/NRManager.bundle*' -print -quit | grep -q .; then
+            echo "LiveCC payload overlaps NRManager.bundle" >&2
             exit 1
           fi
 
-          binary="$payload_root/Library/ControlCenter/Bundles/NetworkManagerLive.bundle/NetworkManagerLive"
+          binary="$payload_root/Library/ControlCenter/Bundles/NRManagerLive.bundle/NRManagerLive"
           test -x "$binary"
           read -r -a architectures <<< "$(xcrun lipo -archs "$binary")"
           test "${#architectures[@]}" -eq 2

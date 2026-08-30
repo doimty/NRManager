@@ -6,7 +6,7 @@ NSString * const CCNMPreferenceValueKey = @"value";
 NSString * const CCNMPreferenceURLKey = @"url";
 NSString * const CCNMPreferenceCheckedKey = @"checked";
 
-static NSString * const CCNMPreferencesStringsTable = @"NetworkManagerPrefs";
+static NSString * const CCNMPreferencesStringsTable = @"NRManagerPrefs";
 
 static UIColor *CCNMColorFromClassSelector(SEL selector, UIColor *fallback) {
     if (![UIColor respondsToSelector:selector]) {

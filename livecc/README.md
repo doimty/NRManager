@@ -1,7 +1,7 @@
 # NR Manager Live Control Center Preview
 
 This is an isolated, non-deliverable prototype for a read-only live serving-status
-Control Center module. It does not replace or extend the production NR Manager bundle (`NetworkManager.bundle`).
+Control Center module. It does not replace or extend the production NR Manager bundle (`NRManager.bundle`).
 
 This preview tests whether a standalone `CCUIContentModule` can own a
 `CCUIButtonModuleViewController`, refresh serving-band state while Control Center

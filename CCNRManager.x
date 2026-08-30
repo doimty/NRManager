@@ -16,9 +16,9 @@ static CGRect CCNMLiveFormalIntegralRect(CGRect rect) {
 }
 
 #define CGRectIntegral CCNMLiveFormalIntegralRect
-#define NetworkManagerLiveViewController CCNetworkManagerViewController
-#define NetworkManagerLiveModule CCNetworkManager
-#import "livecc/Sources/NetworkManagerLiveModule.m"
-#undef NetworkManagerLiveModule
-#undef NetworkManagerLiveViewController
+#define NRManagerLiveViewController CCNRManagerViewController
+#define NRManagerLiveModule CCNRManager
+#import "livecc/Sources/NRManagerLiveModule.m"
+#undef NRManagerLiveModule
+#undef NRManagerLiveViewController
 #undef CGRectIntegral

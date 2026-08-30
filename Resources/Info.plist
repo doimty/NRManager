@@ -7,7 +7,7 @@
 	<key>CFBundleDisplayName</key>
 	<string>NR Manager</string>
 	<key>CFBundleExecutable</key>
-	<string>NetworkManager</string>
+	<string>NRManager</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.doimty.nrmanager</string>
 	<key>CFBundleDevelopmentRegion</key>
@@ -28,7 +28,7 @@
 		<integer>2</integer>
 	</array>
 	<key>NSPrincipalClass</key>
-	<string>CCNetworkManager</string>
+	<string>CCNRManager</string>
 	<key>CFBundleSupportedPlatforms</key>
 	<array>
 		<string>iPhoneOS</string>

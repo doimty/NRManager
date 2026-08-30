@@ -10,12 +10,12 @@ import textwrap
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-SOURCE = ROOT / "networkmanagerprefs" / "CCNMAutomaticMaintenanceRecord.m"
-HEADER = ROOT / "networkmanagerprefs" / "CCNMAutomaticMaintenanceRecord.h"
-READER_SOURCE = ROOT / "networkmanagerprefs" / "CCNMN78PolicyReader.m"
-SUPPORT_SOURCE = ROOT / "networkmanagerprefs" / "CCNMN78PolicySupport.m"
-DECISION_SOURCE = ROOT / "networkmanagerprefs" / "CCNMAutomaticMaintenanceDecision.c"
-HEADER_DIR = ROOT / "networkmanagerprefs"
+SOURCE = ROOT / "nrmanagerprefs" / "CCNMAutomaticMaintenanceRecord.m"
+HEADER = ROOT / "nrmanagerprefs" / "CCNMAutomaticMaintenanceRecord.h"
+READER_SOURCE = ROOT / "nrmanagerprefs" / "CCNMN78PolicyReader.m"
+SUPPORT_SOURCE = ROOT / "nrmanagerprefs" / "CCNMN78PolicySupport.m"
+DECISION_SOURCE = ROOT / "nrmanagerprefs" / "CCNMAutomaticMaintenanceDecision.c"
+HEADER_DIR = ROOT / "nrmanagerprefs"
 
 # Check if Foundation is available on this host for ObjC compilation tests.
 # A bounded probe timeout means this host cannot provide a usable Foundation

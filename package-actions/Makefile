@@ -31,13 +31,13 @@ export ARCHS = arm64 arm64e
 # tried. The candidate list and the probe that went with it lived here and are
 # retired; the shell owns every launchctl invocation, in
 # package-actions/launchctl.sh.inc.
-TOOL_NAME = networkmanager-install-guard
+TOOL_NAME = nrmanager-install-guard
 
-networkmanager-install-guard_FILES = postinst.m CCNMMaintainerEnvironment.m
-networkmanager-install-guard_INSTALL_PATH = /usr/libexec
-networkmanager-install-guard_FRAMEWORKS = Foundation CoreFoundation
-networkmanager-install-guard_CFLAGS = -fobjc-arc -fvisibility=hidden -DCCNM_MAINTAINER_SCRIPT
-networkmanager-install-guard_OBJCFLAGS += -fno-modules -fno-implicit-modules
+nrmanager-install-guard_FILES = postinst.m CCNMMaintainerEnvironment.m
+nrmanager-install-guard_INSTALL_PATH = /usr/libexec
+nrmanager-install-guard_FRAMEWORKS = Foundation CoreFoundation
+nrmanager-install-guard_CFLAGS = -fobjc-arc -fvisibility=hidden -DCCNM_MAINTAINER_SCRIPT
+nrmanager-install-guard_OBJCFLAGS += -fno-modules -fno-implicit-modules
 
 # libroothide is still not linked. roothideinit.dylib derives the jbroot from its
 # own load path and asserts on @loader_path/.jbroot, which does not exist beside

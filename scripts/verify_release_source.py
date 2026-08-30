@@ -173,10 +173,10 @@ def scan_forbidden_strings(repo: Path) -> List[Dict[str, object]]:
 def validate_plists(repo: Path) -> List[str]:
     failures: List[str] = []
     required = {
-        Path("Resources/Info.plist"): (PACKAGE_ID, "NetworkManager"),
-        Path("networkmanagerprefs/Resources/Info.plist"): (
+        Path("Resources/Info.plist"): (PACKAGE_ID, "NRManager"),
+        Path("nrmanagerprefs/Resources/Info.plist"): (
             "com.doimty.nrmanager.prefs",
-            "NetworkManagerPrefs",
+            "NRManagerPrefs",
         ),
     }
     for relative, (bundle_id, executable) in required.items():

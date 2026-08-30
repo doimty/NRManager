@@ -10,7 +10,7 @@ import unittest
 
 LIVECC = Path(__file__).resolve().parents[1]
 ROOT = LIVECC.parent
-SOURCE = LIVECC / "Sources/NetworkManagerLiveModule.m"
+SOURCE = LIVECC / "Sources/NRManagerLiveModule.m"
 PATH_SHIM = LIVECC / "Sources/CCNMLiveServingPaths.m"
 FORMATTER = LIVECC / "Sources/CCNMLiveBandText.c"
 
@@ -26,14 +26,14 @@ class LiveCCPackagingTests(unittest.TestCase):
     def test_package_bundle_and_principal_class_are_separate(self):
         self.assertIn("Package: com.doimty.nrmanager.livecc", self.control)
         self.assertEqual(self.plist["CFBundleIdentifier"], "com.doimty.nrmanager.livecc")
-        self.assertEqual(self.plist["CFBundleExecutable"], "NetworkManagerLive")
-        self.assertEqual(self.plist["NSPrincipalClass"], "NetworkManagerLiveModule")
+        self.assertEqual(self.plist["CFBundleExecutable"], "NRManagerLive")
+        self.assertEqual(self.plist["NSPrincipalClass"], "NRManagerLiveModule")
         self.assertEqual(self.plist["CFBundleShortVersionString"], "0.0.5")
         self.assertEqual(self.plist["CFBundleVersion"], "5")
         self.assertIn("Version: 0.0.5", self.control)
-        self.assertIn("BUNDLE_NAME = NetworkManagerLive", self.makefile)
+        self.assertIn("BUNDLE_NAME = NRManagerLive", self.makefile)
         self.assertIn("TARGET := iphone:clang:latest:14.0", self.makefile)
-        self.assertNotIn("BUNDLE_NAME = NetworkManager\n", self.makefile)
+        self.assertNotIn("BUNDLE_NAME = NRManager\n", self.makefile)
 
     def test_local_build_does_not_modify_the_root_workflow(self):
         root_makefile = (ROOT / "Makefile").read_text()
@@ -42,16 +42,16 @@ class LiveCCPackagingTests(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/livecc-prototype.yml").read_text()
         # The formal bundle and this standalone package share the LiveCC source,
         # but remain separate installed bundles.
-        self.assertIn("BUNDLE_NAME = NetworkManager\n", root_makefile)
-        self.assertIn("NetworkManager_FILES", root_makefile)
+        self.assertIn("BUNDLE_NAME = NRManager\n", root_makefile)
+        self.assertIn("NRManager_FILES", root_makefile)
         self.assertIn("CCNM_SERVING_USE_LIVECC_NAMESPACE=1", root_makefile)
         self.assertIn("Package: com.doimty.nrmanager\n", root_control)
-        self.assertEqual(root_plist["CFBundleExecutable"], "NetworkManager")
-        self.assertEqual(root_plist["NSPrincipalClass"], "CCNetworkManager")
+        self.assertEqual(root_plist["CFBundleExecutable"], "NRManager")
+        self.assertEqual(root_plist["NSPrincipalClass"], "CCNRManager")
         self.assertIn('cd livecc && make clean package ARCHS="arm64 arm64e"', workflow)
         self.assertIn("THEOS_PACKAGE_SCHEME: roothide", workflow)
         self.assertIn(
-            "./Library/ControlCenter/Bundles/NetworkManagerLive.bundle/NetworkManagerLive",
+            "./Library/ControlCenter/Bundles/NRManagerLive.bundle/NRManagerLive",
             workflow,
         )
         self.assertNotIn("payload_root/var/jb/Library/ControlCenter", workflow)
@@ -61,8 +61,8 @@ class LiveCCPackagingTests(unittest.TestCase):
         self.assertNotIn("make -C .", workflow)
 
     def test_bundle_compiles_only_read_only_shared_dependencies(self):
-        self.assertIn("../networkmanagerprefs/CCNMServingStatusProvider.m", self.makefile)
-        self.assertIn("../networkmanagerprefs/CCNMServingCellSampler.m", self.makefile)
+        self.assertIn("../nrmanagerprefs/CCNMServingStatusProvider.m", self.makefile)
+        self.assertIn("../nrmanagerprefs/CCNMServingCellSampler.m", self.makefile)
         self.assertNotIn("CCNMN78PolicyController.m", self.makefile)
         self.assertIn("Sources/CCNMLiveServingPaths.m", self.makefile)
         self.assertIn(
@@ -75,23 +75,23 @@ class LiveCCPackagingTests(unittest.TestCase):
         self.assertIn("shouldBeginTransitionToExpandedContentModule", SOURCE.read_text())
         self.assertIn("return NO;", SOURCE.read_text())
         self.assertIn("ifneq ($(THEOS_PACKAGE_SCHEME),roothide)", self.makefile)
-        self.assertIn("NetworkManagerLive_PRIVATE_FRAMEWORKS = ControlCenterUIKit", self.makefile)
-        self.assertIn("NetworkManagerLive_LDFLAGS += -undefined dynamic_lookup", self.makefile)
-        self.assertNotIn("NetworkManagerLive_LIBRARIES = roothide", self.makefile)
+        self.assertIn("NRManagerLive_PRIVATE_FRAMEWORKS = ControlCenterUIKit", self.makefile)
+        self.assertIn("NRManagerLive_LDFLAGS += -undefined dynamic_lookup", self.makefile)
+        self.assertNotIn("NRManagerLive_LIBRARIES = roothide", self.makefile)
 
     def test_installed_bundle_files_do_not_overlap_the_main_package(self):
         install_root = "/Library/ControlCenter/Bundles"
         main_files = {
-            f"{install_root}/NetworkManager.bundle/Info.plist",
-            f"{install_root}/NetworkManager.bundle/NetworkManager",
+            f"{install_root}/NRManager.bundle/Info.plist",
+            f"{install_root}/NRManager.bundle/NRManager",
         }
         live_files = {
-            f"{install_root}/NetworkManagerLive.bundle/Info.plist",
-            f"{install_root}/NetworkManagerLive.bundle/NetworkManagerLive",
+            f"{install_root}/NRManagerLive.bundle/Info.plist",
+            f"{install_root}/NRManagerLive.bundle/NRManagerLive",
         }
         self.assertTrue(main_files.isdisjoint(live_files))
         self.assertIn(
-            "NetworkManagerLive_INSTALL_PATH = /Library/ControlCenter/Bundles",
+            "NRManagerLive_INSTALL_PATH = /Library/ControlCenter/Bundles",
             self.makefile,
         )
         self.assertNotIn("SUBPROJECTS", self.makefile)
@@ -108,11 +108,11 @@ class LiveCCStaticSafetyTests(unittest.TestCase):
 
     def test_uses_owned_button_controller_not_toggle_module(self):
         self.assertIn(
-            "NetworkManagerLiveViewController : CCUIButtonModuleViewController", self.source
+            "NRManagerLiveViewController : CCUIButtonModuleViewController", self.source
         )
-        self.assertIn("NetworkManagerLiveModule : NSObject <CCUIContentModule>", self.source)
+        self.assertIn("NRManagerLiveModule : NSObject <CCUIContentModule>", self.source)
         self.assertIn(
-            "_contentViewController = [[NetworkManagerLiveViewController alloc] init]",
+            "_contentViewController = [[NRManagerLiveViewController alloc] init]",
             self.source,
         )
         self.assertNotIn("CCUIToggleModule", self.all_live_sources)
@@ -147,9 +147,9 @@ class LiveCCStaticSafetyTests(unittest.TestCase):
             self.assertNotIn(forbidden, self.all_live_sources)
         self.assertIn("CCNMN78PolicyStatePath", self.path_shim)
         self.assertIn("CCNMN78PolicyLockPath", self.path_shim)
-        self.assertIn("NetworkManagerLive.bundle", self.path_shim)
+        self.assertIn("NRManagerLive.bundle", self.path_shim)
         self.assertIn("bundleForClass", self.path_shim)
-        self.assertIn("/nonexistent/networkmanager-live", self.path_shim)
+        self.assertIn("/nonexistent/nrmanager-live", self.path_shim)
         for forbidden in ("jbroot(", "libroothide", "roothide.h"):
             self.assertNotIn(forbidden, self.path_shim)
 
@@ -210,7 +210,7 @@ class LiveCCStaticSafetyTests(unittest.TestCase):
         self.assertIn("glyphColor = UIColor.whiteColor", self.source)
 
     def test_refresh_has_one_in_flight_guard_and_button_is_read_only(self):
-        implementation = self.source.index("@implementation NetworkManagerLiveViewController")
+        implementation = self.source.index("@implementation NRManagerLiveViewController")
         refresh_start = self.source.index("- (void)requestBoundedServingRefresh", implementation)
         refresh_end = self.source.index("- (void)applyNewerCachedSummary", refresh_start)
         refresh = self.source[refresh_start:refresh_end]
@@ -235,7 +235,7 @@ class LiveCCStaticSafetyTests(unittest.TestCase):
         callback_start = self.source.index(
             "static void CCNMLiveServingStatusDidChangeCallback(", implementation_end
         )
-        callback_end = self.source.index("@interface NetworkManagerLiveModule", callback_start)
+        callback_end = self.source.index("@interface NRManagerLiveModule", callback_start)
         callback = self.source[callback_start:callback_end]
         self.assertIn("applyNewerCachedSummary", callback)
         self.assertNotIn("requestBoundedServingRefresh", callback)

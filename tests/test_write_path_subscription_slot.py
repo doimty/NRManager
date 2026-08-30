@@ -6,12 +6,12 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CONTROLLER = ROOT / "networkmanagerprefs/CCNMN78PolicyController.m"
-READER = ROOT / "networkmanagerprefs/CCNMN78PolicyReader.m"
-PROVIDER_H = ROOT / "networkmanagerprefs/CCNMServingStatusProvider.h"
-PROVIDER_M = ROOT / "networkmanagerprefs/CCNMServingStatusProvider.m"
+CONTROLLER = ROOT / "nrmanagerprefs/CCNMN78PolicyController.m"
+READER = ROOT / "nrmanagerprefs/CCNMN78PolicyReader.m"
+PROVIDER_H = ROOT / "nrmanagerprefs/CCNMServingStatusProvider.h"
+PROVIDER_M = ROOT / "nrmanagerprefs/CCNMServingStatusProvider.m"
 DAEMON = ROOT / "maintenance-daemon/main.m"
-AUTOMATIC_RECORD = ROOT / "networkmanagerprefs/CCNMAutomaticMaintenanceRecord.m"
+AUTOMATIC_RECORD = ROOT / "nrmanagerprefs/CCNMAutomaticMaintenanceRecord.m"
 
 
 def select_target(subscriptions, required_uuid=None, required_slot=None,

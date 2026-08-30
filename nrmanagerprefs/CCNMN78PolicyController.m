@@ -36,7 +36,7 @@ static NSString *CCNMPolicyRootForMaintainer(NSString *path) {
         // policy read that silently targets the wrong root would be reported as
         // a clean state and could authorize removal of a package that still
         // holds a forced band configuration.
-        return [@"/.networkmanager-unresolved-install-prefix" stringByAppendingString:path];
+        return [@"/.nrmanager-unresolved-install-prefix" stringByAppendingString:path];
     }
     // Plain concatenation, so an empty prefix yields the original absolute path.
     return [prefix stringByAppendingString:path];

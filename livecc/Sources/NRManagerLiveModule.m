@@ -113,7 +113,7 @@ static UIImage *CCNMLiveSearchingGlyphImageWithColor(UIColor *tintColor) {
         CCNMLiveGlyphImageWithColor(@"...", tintColor);
 }
 
-@class NetworkManagerLiveViewController;
+@class NRManagerLiveViewController;
 
 static void CCNMLiveServingStatusDidChangeCallback(
     CFNotificationCenterRef center,
@@ -131,7 +131,7 @@ static void CCNMLivePolicyDidChangeCallback(
     CFDictionaryRef userInfo);
 #endif
 
-@interface NetworkManagerLiveViewController : CCUIButtonModuleViewController
+@interface NRManagerLiveViewController : CCUIButtonModuleViewController
 
 @property (nonatomic, strong) NSTimer *refreshTimer;
 @property (nonatomic, strong) NSTimer *ratDebounceTimer;
@@ -151,7 +151,7 @@ static void CCNMLivePolicyDidChangeCallback(
 
 @end
 
-@implementation NetworkManagerLiveViewController
+@implementation NRManagerLiveViewController
 
 - (instancetype)init {
     self = [super initWithNibName:nil bundle:nil];
@@ -437,8 +437,8 @@ static void CCNMLiveServingStatusDidChangeCallback(
     (void)name;
     (void)object;
     (void)userInfo;
-    NetworkManagerLiveViewController *viewController =
-        (__bridge NetworkManagerLiveViewController *)observer;
+    NRManagerLiveViewController *viewController =
+        (__bridge NRManagerLiveViewController *)observer;
     dispatch_async(dispatch_get_main_queue(), ^{
         [viewController applyNewerCachedSummary];
     });
@@ -455,15 +455,15 @@ static void CCNMLivePolicyDidChangeCallback(
     (void)name;
     (void)object;
     (void)userInfo;
-    NetworkManagerLiveViewController *viewController =
-        (__bridge NetworkManagerLiveViewController *)observer;
+    NRManagerLiveViewController *viewController =
+        (__bridge NRManagerLiveViewController *)observer;
     dispatch_async(dispatch_get_main_queue(), ^{
         [viewController applyPolicyPresentation];
     });
 }
 #endif
 
-@interface NetworkManagerLiveModule : NSObject <CCUIContentModule>
+@interface NRManagerLiveModule : NSObject <CCUIContentModule>
 
 @property (nonatomic, strong, readonly)
     UIViewController<CCUIContentModuleContentViewController> *contentViewController;
@@ -471,14 +471,14 @@ static void CCNMLivePolicyDidChangeCallback(
 
 @end
 
-@implementation NetworkManagerLiveModule
+@implementation NRManagerLiveModule
 
 @synthesize backgroundViewController;
 
 - (instancetype)init {
     self = [super init];
     if (self) {
-        _contentViewController = [[NetworkManagerLiveViewController alloc] init];
+        _contentViewController = [[NRManagerLiveViewController alloc] init];
     }
     return self;
 }

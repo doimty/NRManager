@@ -3,41 +3,41 @@ include $(THEOS)/makefiles/common.mk
 export TARGET = iphone:clang:latest:14.0
 export ARCHS = arm64 arm64e
 
-BUNDLE_NAME = NetworkManager
-NetworkManager_BUNDLE_EXTENSION = bundle
-NetworkManager_FILES = CCNetworkManager.x \
+BUNDLE_NAME = NRManager
+NRManager_BUNDLE_EXTENSION = bundle
+NRManager_FILES = CCNRManager.x \
 	livecc/Sources/CCNMLiveBandText.c \
 	livecc/Sources/CCNMLiveServingPaths.m \
-	networkmanagerprefs/CCNMServingStatusProvider.m \
-	networkmanagerprefs/CCNMServingCellSampler.m \
-	networkmanagerprefs/CCNMAutomaticMaintenanceDecision.c
-NetworkManager_FRAMEWORKS = CoreFoundation CoreTelephony Foundation UIKit
-NetworkManager_INSTALL_PATH = /Library/ControlCenter/Bundles
+	nrmanagerprefs/CCNMServingStatusProvider.m \
+	nrmanagerprefs/CCNMServingCellSampler.m \
+	nrmanagerprefs/CCNMAutomaticMaintenanceDecision.c
+NRManager_FRAMEWORKS = CoreFoundation CoreTelephony Foundation UIKit
+NRManager_INSTALL_PATH = /Library/ControlCenter/Bundles
 
-NetworkManager_CFLAGS += -fobjc-arc
-NetworkManager_CFLAGS += "-Wno-error=objc-method-access"
-NetworkManager_CFLAGS += -Ilivecc/include -Inetworkmanagerprefs
-NetworkManager_CFLAGS += -DCCNMServingStatusProvider=CCNMLiveServingStatusProvider
-NetworkManager_CFLAGS += -DCCNMCellMonitorAsyncState=CCNMLiveCellMonitorAsyncState
-NetworkManager_CFLAGS += -DCCNM_SERVING_USE_LIVECC_NAMESPACE=1
-NetworkManager_CFLAGS += -DCCNM_LIVE_MAIN_BUNDLE=1
-NetworkManager_CFLAGS += -DNetworkManagerLiveViewController=CCNetworkManagerViewController
-NetworkManager_CFLAGS += -DNetworkManagerLiveModule=CCNetworkManager
+NRManager_CFLAGS += -fobjc-arc
+NRManager_CFLAGS += "-Wno-error=objc-method-access"
+NRManager_CFLAGS += -Ilivecc/include -Inrmanagerprefs
+NRManager_CFLAGS += -DCCNMServingStatusProvider=CCNMLiveServingStatusProvider
+NRManager_CFLAGS += -DCCNMCellMonitorAsyncState=CCNMLiveCellMonitorAsyncState
+NRManager_CFLAGS += -DCCNM_SERVING_USE_LIVECC_NAMESPACE=1
+NRManager_CFLAGS += -DCCNM_LIVE_MAIN_BUNDLE=1
+NRManager_CFLAGS += -DNRManagerLiveViewController=CCNRManagerViewController
+NRManager_CFLAGS += -DNRManagerLiveModule=CCNRManager
 
 # Resolve ControlCenterUIKit at runtime on roothide and use the private
 # framework only on the rootless lane.
 ifneq ($(THEOS_PACKAGE_SCHEME),roothide)
-NetworkManager_PRIVATE_FRAMEWORKS = ControlCenterUIKit
+NRManager_PRIVATE_FRAMEWORKS = ControlCenterUIKit
 else
-NetworkManager_LIBRARIES = roothide
-NetworkManager_LDFLAGS += -undefined dynamic_lookup
+NRManager_LIBRARIES = roothide
+NRManager_LDFLAGS += -undefined dynamic_lookup
 endif
 
 after-install::
 	install.exec "killall -9 SpringBoard"
 
 include $(THEOS_MAKE_PATH)/bundle.mk
-SUBPROJECTS += networkmanagerprefs
+SUBPROJECTS += nrmanagerprefs
 SUBPROJECTS += maintenance-daemon
 SUBPROJECTS += package-actions
 include $(THEOS_MAKE_PATH)/aggregate.mk

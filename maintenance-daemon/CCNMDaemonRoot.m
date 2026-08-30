@@ -54,7 +54,7 @@ NSString *CCNMDaemonInstallPrefix(void) {
 NSString *CCNMDaemonRootedPath(NSString *path) {
     NSString *prefix = CCNMDaemonInstallPrefix();
     if (!prefix) {
-        return [@"/.networkmanager-unresolved-install-prefix"
+        return [@"/.nrmanager-unresolved-install-prefix"
             stringByAppendingString:path];
     }
     // Plain concatenation, so an empty prefix yields the original path.

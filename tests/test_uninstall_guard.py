@@ -33,7 +33,7 @@ POSTINST_TEMPLATE = ROOT / "package-actions/postinst.sh.in"
 PRERM_TEMPLATE = ROOT / "package-actions/prerm.sh.in"
 POLICY_SUPPORT = ROOT / "package-actions/policy-records.sh.inc"
 RETIRED_CARRIER_SUPPORT = ROOT / "package-actions/carrier-reset.sh.inc"
-POLICY_SOURCE = ROOT / "networkmanagerprefs/CCNMN78PolicyController.m"
+POLICY_SOURCE = ROOT / "nrmanagerprefs/CCNMN78PolicyController.m"
 MAINTAINER_SOURCE = ROOT / "package-actions/CCNMMaintainerEnvironment.m"
 PATCHER_PATH = ROOT / "scripts/patch-maintenance-launchd.py"
 SCRIPTS = ROOT / "scripts"
@@ -76,23 +76,23 @@ class UninstallGuardTests(unittest.TestCase):
         self.assertFalse((ROOT / "package-actions/prerm.m").exists())
         self.assertNotIn("CCNMDpkgVersion", makefile)
         self.assertNotIn("prerm.m", makefile)
-        self.assertIn("TOOL_NAME = networkmanager-install-guard", makefile)
-        self.assertNotIn("networkmanager-removal-guard", makefile)
-        self.assertIn("networkmanager-install-guard_FILES = postinst.m", makefile)
-        self.assertIn("networkmanager-install-guard_INSTALL_PATH = /usr/libexec", makefile)
+        self.assertIn("TOOL_NAME = nrmanager-install-guard", makefile)
+        self.assertNotIn("nrmanager-removal-guard", makefile)
+        self.assertIn("nrmanager-install-guard_FILES = postinst.m", makefile)
+        self.assertIn("nrmanager-install-guard_INSTALL_PATH = /usr/libexec", makefile)
         self.assertNotIn("/DEBIAN", makefile)
         self.assertIn("-DCCNM_MAINTAINER_SCRIPT", makefile)
 
-        self.assertIn("usr/libexec/networkmanager-install-guard",
+        self.assertIn("usr/libexec/nrmanager-install-guard",
                       verify_release_package.REQUIRED_PAYLOAD_FILES)
-        self.assertNotIn("usr/libexec/networkmanager-removal-guard",
+        self.assertNotIn("usr/libexec/nrmanager-removal-guard",
                          verify_release_package.REQUIRED_PAYLOAD_FILES)
         self.assertEqual(
             verify_release_package.UNLINKED_ROOTHIDE_TOOLS,
-            ("networkmanager-install-guard", "networkmanager-maintenance"),
+            ("nrmanager-install-guard", "nrmanager-maintenance"),
         )
         self.assertIn(
-            "networkmanager-removal-guard",
+            "nrmanager-removal-guard",
             verify_release_package.FORBIDDEN_LEGACY_PAYLOAD_BASENAMES,
         )
 
@@ -111,8 +111,8 @@ class UninstallGuardTests(unittest.TestCase):
                     )
         postinst = shell_code(POSTINST_TEMPLATE.read_text())
         prerm = shell_code(PRERM_TEMPLATE.read_text())
-        self.assertIn("networkmanager-install-guard", postinst)
-        self.assertNotIn("networkmanager-removal-guard", prerm)
+        self.assertIn("nrmanager-install-guard", postinst)
+        self.assertNotIn("nrmanager-removal-guard", prerm)
         self.assertIn("@POLICY_RECORD_SUPPORT@", prerm)
         # postinst has no reason to know these paths: it neither inspects nor
         # deletes policy records, and the include's only job is removal cleanup.
@@ -147,7 +147,7 @@ class UninstallGuardTests(unittest.TestCase):
         self.assertIn("removal continues", source)
         self.assertTrue(re.search(r"\nexit 0\s*$", source))
         for forbidden in (
-            "CoreTelephony", "CCNMN78PolicyController", "networkmanager-removal-guard",
+            "CoreTelephony", "CCNMN78PolicyController", "nrmanager-removal-guard",
             "CCNMRecoverN78Preference", "CCNMArmN78PolicyRemovalGuard",
             "CCNMPrermBlocked", "exit 73",
             # The retired reload, and the success signal that made it dangerous.
@@ -283,10 +283,10 @@ class UninstallGuardTests(unittest.TestCase):
         # And the reload is gone from the bundle: adapter, states and source file.
         self.assertNotIn("performCarrierReset", policy)
         self.assertNotIn("CCNMResetCarrierConfiguration", policy)
-        self.assertFalse((ROOT / "networkmanagerprefs/CCNMCarrierReset.m").exists())
-        self.assertFalse((ROOT / "networkmanagerprefs/CCNMCarrierReset.h").exists())
+        self.assertFalse((ROOT / "nrmanagerprefs/CCNMCarrierReset.m").exists())
+        self.assertFalse((ROOT / "nrmanagerprefs/CCNMCarrierReset.h").exists())
         self.assertNotIn("CCNMCarrierReset.m",
-                         (ROOT / "networkmanagerprefs/Makefile").read_text())
+                         (ROOT / "nrmanagerprefs/Makefile").read_text())
 
     def test_prefix_resolution_stays_process_specific(self):
         maintainer = MAINTAINER_SOURCE.read_text()
@@ -313,7 +313,7 @@ class UninstallGuardTests(unittest.TestCase):
             control = Path(directory)
             (control / "postinst").write_text(
                 "#!/bin/sh\n"
-                "/usr/libexec/networkmanager-install-guard \"$@\"\n"
+                "/usr/libexec/nrmanager-install-guard \"$@\"\n"
                 "exit 0\n"
             )
             (control / "prerm").write_text("#!/bin/sh\nexit 0\n")
@@ -328,9 +328,9 @@ class UninstallGuardTests(unittest.TestCase):
         combined = "\n".join(
             (ROOT / path).read_text()
             for path in (
-                "networkmanagerprefs/CCNMRootListController.m",
-                "networkmanagerprefs/CCNMRootListController.h",
-                "networkmanagerprefs/Resources/Root.plist",
+                "nrmanagerprefs/CCNMRootListController.m",
+                "nrmanagerprefs/CCNMRootListController.h",
+                "nrmanagerprefs/Resources/Root.plist",
             )
         )
         for token in (

@@ -19,7 +19,7 @@ import unittest
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-PREFS = ROOT / "networkmanagerprefs"
+PREFS = ROOT / "nrmanagerprefs"
 PANE = PREFS / "CCNMBandSelectionListController.m"
 PANE_HEADER = PREFS / "CCNMBandSelectionListController.h"
 BAND_SUPPORT = PREFS / "CCNMNRBandSupport.h"
@@ -29,8 +29,8 @@ CONTROLLER = PREFS / "CCNMN78PolicyController.m"
 READER = PREFS / "CCNMN78PolicyReader.m"
 POLICY_HEADER = PREFS / "CCNMN78PolicyController.h"
 ROOT_PLIST = PREFS / "Resources/Root.plist"
-ENGLISH = PREFS / "Resources/en.lproj/NetworkManagerPrefs.strings"
-CHINESE = PREFS / "Resources/zh-Hans.lproj/NetworkManagerPrefs.strings"
+ENGLISH = PREFS / "Resources/en.lproj/NRManagerPrefs.strings"
+CHINESE = PREFS / "Resources/zh-Hans.lproj/NRManagerPrefs.strings"
 
 # Every entry point that can reach the modem or the durable policy records.
 # A row tap must reach none of them.

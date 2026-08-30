@@ -7,27 +7,27 @@ ARCHS := arm64
 
 include $(THEOS)/makefiles/common.mk
 
-BUNDLE_NAME = NetworkManagerLive
+BUNDLE_NAME = NRManagerLive
 
-NetworkManagerLive_BUNDLE_EXTENSION = bundle
-NetworkManagerLive_FILES = \
-	Sources/NetworkManagerLiveModule.m \
+NRManagerLive_BUNDLE_EXTENSION = bundle
+NRManagerLive_FILES = \
+	Sources/NRManagerLiveModule.m \
 	Sources/CCNMLiveBandText.c \
 	Sources/CCNMLiveServingPaths.m \
-	../networkmanagerprefs/CCNMServingStatusProvider.m \
-	../networkmanagerprefs/CCNMServingCellSampler.m
-NetworkManagerLive_INSTALL_PATH = /Library/ControlCenter/Bundles
-NetworkManagerLive_RESOURCE_DIRS = Resources
-NetworkManagerLive_CFLAGS = -fobjc-arc -Iinclude -I../networkmanagerprefs
-NetworkManagerLive_CFLAGS += -DCCNMServingStatusProvider=CCNMLiveServingStatusProvider
-NetworkManagerLive_CFLAGS += -DCCNMCellMonitorAsyncState=CCNMLiveCellMonitorAsyncState
-NetworkManagerLive_CFLAGS += -DCCNM_SERVING_USE_LIVECC_NAMESPACE=1
-NetworkManagerLive_CFLAGS += -Wno-error=objc-method-access
-NetworkManagerLive_FRAMEWORKS = CoreFoundation CoreTelephony Foundation QuartzCore UIKit
+	../nrmanagerprefs/CCNMServingStatusProvider.m \
+	../nrmanagerprefs/CCNMServingCellSampler.m
+NRManagerLive_INSTALL_PATH = /Library/ControlCenter/Bundles
+NRManagerLive_RESOURCE_DIRS = Resources
+NRManagerLive_CFLAGS = -fobjc-arc -Iinclude -I../nrmanagerprefs
+NRManagerLive_CFLAGS += -DCCNMServingStatusProvider=CCNMLiveServingStatusProvider
+NRManagerLive_CFLAGS += -DCCNMCellMonitorAsyncState=CCNMLiveCellMonitorAsyncState
+NRManagerLive_CFLAGS += -DCCNM_SERVING_USE_LIVECC_NAMESPACE=1
+NRManagerLive_CFLAGS += -Wno-error=objc-method-access
+NRManagerLive_FRAMEWORKS = CoreFoundation CoreTelephony Foundation QuartzCore UIKit
 ifneq ($(THEOS_PACKAGE_SCHEME),roothide)
-NetworkManagerLive_PRIVATE_FRAMEWORKS = ControlCenterUIKit
+NRManagerLive_PRIVATE_FRAMEWORKS = ControlCenterUIKit
 else
-NetworkManagerLive_LDFLAGS += -undefined dynamic_lookup
+NRManagerLive_LDFLAGS += -undefined dynamic_lookup
 endif
 
 include $(THEOS_MAKE_PATH)/bundle.mk

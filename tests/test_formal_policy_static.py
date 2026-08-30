@@ -6,10 +6,10 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-HEADER = ROOT / "networkmanagerprefs/CCNMN78PolicyController.h"
-SOURCE = ROOT / "networkmanagerprefs/CCNMN78PolicyController.m"
-SUPPORT = ROOT / "networkmanagerprefs/CCNMN78PolicySupport.h"
-CC_SOURCE = ROOT / "CCNetworkManager.x"
+HEADER = ROOT / "nrmanagerprefs/CCNMN78PolicyController.h"
+SOURCE = ROOT / "nrmanagerprefs/CCNMN78PolicyController.m"
+SUPPORT = ROOT / "nrmanagerprefs/CCNMN78PolicySupport.h"
+CC_SOURCE = ROOT / "CCNRManager.x"
 
 
 class FormalPolicyStaticTests(unittest.TestCase):
@@ -20,7 +20,7 @@ class FormalPolicyStaticTests(unittest.TestCase):
         self.header = HEADER.read_text()
         self.source = SOURCE.read_text()
         self.support = SUPPORT.read_text()
-        self.cc_source = CC_SOURCE.read_text() + "\n" + (ROOT / "livecc/Sources/NetworkManagerLiveModule.m").read_text()
+        self.cc_source = CC_SOURCE.read_text() + "\n" + (ROOT / "livecc/Sources/NRManagerLiveModule.m").read_text()
 
     def test_requested_applied_serving_and_recovery_domains_are_distinct(self):
         for token in (

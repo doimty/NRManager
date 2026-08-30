@@ -3,20 +3,20 @@ include $(THEOS)/makefiles/common.mk
 export TARGET = iphone:clang:latest:14.0
 export ARCHS = arm64 arm64e
 
-TOOL_NAME = networkmanager-maintenance
+TOOL_NAME = nrmanager-maintenance
 
-networkmanager-maintenance_FILES = main.m \
+nrmanager-maintenance_FILES = main.m \
 	CCNMDaemonRoot.c \
 	CCNMDaemonRoot.m \
-	../networkmanagerprefs/CCNMN78PolicySupport.m \
-	../networkmanagerprefs/CCNMN78PolicyReader.m \
-	../networkmanagerprefs/CCNMServingStatusProvider.m \
-	../networkmanagerprefs/CCNMServingCellSampler.m \
-	../networkmanagerprefs/CCNMAutomaticMaintenanceDecision.c \
-	../networkmanagerprefs/CCNMAutomaticMaintenanceRecord.m
-networkmanager-maintenance_FRAMEWORKS = CoreTelephony Foundation
-networkmanager-maintenance_CFLAGS = -fobjc-arc -DCCNM_MAINTENANCE_DAEMON
-networkmanager-maintenance_INSTALL_PATH = /usr/libexec
+	../nrmanagerprefs/CCNMN78PolicySupport.m \
+	../nrmanagerprefs/CCNMN78PolicyReader.m \
+	../nrmanagerprefs/CCNMServingStatusProvider.m \
+	../nrmanagerprefs/CCNMServingCellSampler.m \
+	../nrmanagerprefs/CCNMAutomaticMaintenanceDecision.c \
+	../nrmanagerprefs/CCNMAutomaticMaintenanceRecord.m
+nrmanager-maintenance_FRAMEWORKS = CoreTelephony Foundation
+nrmanager-maintenance_CFLAGS = -fobjc-arc -DCCNM_MAINTENANCE_DAEMON
+nrmanager-maintenance_INSTALL_PATH = /usr/libexec
 
 # libroothide is deliberately not linked, on any lane.
 #

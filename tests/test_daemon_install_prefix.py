@@ -10,7 +10,7 @@ The daemon had never started once. launchd reported
 and running it by hand with a cleaned environment printed the cause:
 
     dyld: Library not loaded: @loader_path/.jbroot/usr/lib/libroothide.dylib
-      Referenced from: <jbroot>/usr/libexec/networkmanager-maintenance
+      Referenced from: <jbroot>/usr/libexec/nrmanager-maintenance
       Reason: tried: '<jbroot>/usr/libexec/.jbroot/usr/lib/libroothide.dylib'
         (no such file), '/usr/local/lib/libroothide.dylib' (no such file),
         '/usr/lib/libroothide.dylib' (no such file)
@@ -43,9 +43,9 @@ SOURCE = DAEMON / "CCNMDaemonRoot.c"
 OBJC_SOURCE = DAEMON / "CCNMDaemonRoot.m"
 HEADER = DAEMON / "CCNMDaemonRoot.h"
 MAKEFILE = DAEMON / "Makefile"
-READER = ROOT / "networkmanagerprefs" / "CCNMN78PolicyReader.m"
-RECORD = ROOT / "networkmanagerprefs" / "CCNMAutomaticMaintenanceRecord.m"
-INSTALLED = "/usr/libexec/networkmanager-maintenance"
+READER = ROOT / "nrmanagerprefs" / "CCNMN78PolicyReader.m"
+RECORD = ROOT / "nrmanagerprefs" / "CCNMAutomaticMaintenanceRecord.m"
+INSTALLED = "/usr/libexec/nrmanager-maintenance"
 
 # The jbroot on the reporting device, in both spellings it appeared in. dyld named
 # the /private form while launchctl and the user's shell used the short one.
@@ -124,12 +124,12 @@ class PrefixRecoveryTests(unittest.TestCase):
     def test_a_relative_path_is_refused(self):
         # It resolves against a working directory launchd does not guarantee, so
         # it cannot identify a root.
-        self.assertIsNone(self.prefix("usr/libexec/networkmanager-maintenance"))
-        self.assertIsNone(self.prefix("./usr/libexec/networkmanager-maintenance"))
+        self.assertIsNone(self.prefix("usr/libexec/nrmanager-maintenance"))
+        self.assertIsNone(self.prefix("./usr/libexec/nrmanager-maintenance"))
 
     def test_a_different_executable_is_refused(self):
         self.assertIsNone(self.prefix("/usr/libexec/some-other-tool"))
-        self.assertIsNone(self.prefix("/usr/bin/networkmanager-maintenance"))
+        self.assertIsNone(self.prefix("/usr/bin/nrmanager-maintenance"))
 
     def test_an_empty_or_root_path_is_refused(self):
         self.assertIsNone(self.prefix(""))
@@ -144,14 +144,14 @@ class PrefixRecoveryTests(unittest.TestCase):
     def test_a_near_miss_suffix_is_refused(self):
         # Guards against matching on something that is not a component boundary.
         self.assertIsNone(
-            self.prefix("/var/jb/usr/libexec/networkmanager-maintenance-old"))
+            self.prefix("/var/jb/usr/libexec/nrmanager-maintenance-old"))
         self.assertIsNone(
-            self.prefix("/var/jb/usr/libexec/xnetworkmanager-maintenance"))
+            self.prefix("/var/jb/usr/libexec/xnrmanager-maintenance"))
 
     def test_a_path_shorter_than_the_suffix_is_refused_without_reading_past_it(self):
         # The length guard, exercised directly. Built with -Werror, and a missing
         # guard here is an out-of-bounds read rather than a wrong answer.
-        for short in ("/usr", "/usr/libexec", "/networkmanager-maintenance"):
+        for short in ("/usr", "/usr/libexec", "/nrmanager-maintenance"):
             with self.subTest(path=short):
                 self.assertIsNone(self.prefix(short))
 
@@ -226,7 +226,7 @@ class DaemonRootSourceTests(unittest.TestCase):
         # is what authorises removing a package that still holds a forced band
         # configuration.
         source = OBJC_SOURCE.read_text()
-        self.assertIn("networkmanager-unresolved-install-prefix", source)
+        self.assertIn("nrmanager-unresolved-install-prefix", source)
         rooted = source[source.index("NSString *CCNMDaemonRootedPath"):]
         self.assertIn("if (!prefix)", rooted)
 

@@ -13,9 +13,9 @@ MAKEFILE = DAEMON / "Makefile"
 ROOT_MAKEFILE = ROOT / "Makefile"
 LAUNCHD = ROOT / "layout" / "Library" / "LaunchDaemons" / "com.doimty.nrmanager.maintenance.plist"
 PATCHER = ROOT / "scripts" / "patch-maintenance-launchd.py"
-READER = ROOT / "networkmanagerprefs" / "CCNMN78PolicyReader.m"
-READER_H = ROOT / "networkmanagerprefs" / "CCNMN78PolicyReader.h"
-PROGRAM = "/usr/libexec/networkmanager-maintenance"
+READER = ROOT / "nrmanagerprefs" / "CCNMN78PolicyReader.m"
+READER_H = ROOT / "nrmanagerprefs" / "CCNMN78PolicyReader.h"
+PROGRAM = "/usr/libexec/nrmanager-maintenance"
 BASELINE = (
     "/var/mobile/Library/Preferences/"
     "com.doimty.nrmanager.n78-policy.baseline.plist"
@@ -32,14 +32,14 @@ class MaintenanceDaemonSkeletonTests(unittest.TestCase):
         root_makefile = ROOT_MAKEFILE.read_text()
         makefile = MAKEFILE.read_text()
         self.assertIn("SUBPROJECTS += maintenance-daemon", root_makefile)
-        self.assertIn("TOOL_NAME = networkmanager-maintenance", makefile)
+        self.assertIn("TOOL_NAME = nrmanager-maintenance", makefile)
         self.assertIn("CCNMServingStatusProvider.m", makefile)
         self.assertIn("CCNMN78PolicySupport.m", makefile)
         self.assertIn("CCNMN78PolicyReader.m", makefile)
         self.assertIn("CCNMAutomaticMaintenanceDecision.c", makefile)
         self.assertIn("CCNMAutomaticMaintenanceRecord.m", makefile)
-        self.assertIn("networkmanager-maintenance_INSTALL_PATH = /usr/libexec", makefile)
-        prefs_makefile = (ROOT / "networkmanagerprefs" / "Makefile").read_text()
+        self.assertIn("nrmanager-maintenance_INSTALL_PATH = /usr/libexec", makefile)
+        prefs_makefile = (ROOT / "nrmanagerprefs" / "Makefile").read_text()
         self.assertIn("CCNMN78PolicySupport.m", prefs_makefile)
 
     def test_daemon_imports_reader_not_controller(self):

@@ -24,13 +24,13 @@
 	<key>CFBundleDisplayName</key>
 	<string>NR Manager</string>
 	<key>CFBundleExecutable</key>
-	<string>NetworkManagerLive</string>
+	<string>NRManagerLive</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.doimty.nrmanager.livecc</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>NetworkManagerLive</string>
+	<string>NRManagerLive</string>
 	<key>CFBundlePackageType</key>
 	<string>BNDL</string>
 	<key>CFBundleShortVersionString</key>
@@ -44,7 +44,7 @@
 	<key>MinimumOSVersion</key>
 	<string>14.0</string>
 	<key>NSPrincipalClass</key>
-	<string>NetworkManagerLiveModule</string>
+	<string>NRManagerLiveModule</string>
 	<key>UIDeviceFamily</key>
 	<array>
 		<integer>1</integer>

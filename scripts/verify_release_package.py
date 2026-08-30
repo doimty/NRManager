@@ -51,7 +51,7 @@ ROOTHIDE_DYLIB = "@loader_path/.jbroot/usr/lib/libroothide.dylib"
 # Named here rather than derived from MAINTENANCE_HELPER_RELATIVE below, because
 # the dependency and load-command tables are keyed by Mach-O basename and are
 # declared before the payload paths.
-MAINTENANCE_HELPER_NAME = "networkmanager-maintenance"
+MAINTENANCE_HELPER_NAME = "nrmanager-maintenance"
 # Device-working dependency/load-command shape from Xcode 15.4 baseline
 # 2947f98 / run 30166854314, later reconfirmed by the accepted Cell Monitor build.
 ROOTHIDE_BASELINE_LOAD_COMMANDS = {
@@ -75,7 +75,7 @@ ROOTHIDE_BASELINE_LOAD_COMMANDS = {
 # remains pinned to the device-working baseline.
 ROOTHIDE_RELEASE_LOAD_COMMANDS = ROOTHIDE_BASELINE_LOAD_COMMANDS - {"LC_VERSION_MIN_IPHONEOS"}
 ROOTHIDE_BASELINE_DEPENDENCIES = {
-    "NetworkManager": {
+    "NRManager": {
         "/usr/lib/libobjc.A.dylib",
         "/System/Library/Frameworks/Foundation.framework/Foundation",
         "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation",
@@ -84,7 +84,7 @@ ROOTHIDE_BASELINE_DEPENDENCIES = {
         "/usr/lib/libSystem.B.dylib",
         "/System/Library/Frameworks/UIKit.framework/UIKit",
     },
-    "NetworkManagerPrefs": {
+    "NRManagerPrefs": {
         "/usr/lib/libobjc.A.dylib",
         "/System/Library/Frameworks/Foundation.framework/Foundation",
         "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation",
@@ -99,7 +99,7 @@ ROOTHIDE_BASELINE_DEPENDENCIES = {
 ROOTHIDE_RELEASE_DEPENDENCIES = {
     name: set(dependencies) for name, dependencies in ROOTHIDE_BASELINE_DEPENDENCIES.items()
 }
-ROOTHIDE_RELEASE_DEPENDENCIES["NetworkManagerPrefs"].add(
+ROOTHIDE_RELEASE_DEPENDENCIES["NRManagerPrefs"].add(
     "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics"
 )
 # The maintenance daemon's dependency set is pinned positively, and libroothide
@@ -123,7 +123,7 @@ ROOTHIDE_RELEASE_DEPENDENCIES[MAINTENANCE_HELPER_NAME] = {
 # redirection and no sandbox exemption, so it cannot write or exec inside the
 # jailbreak root. The shell postinst owns the privileged work and delegates the
 # launchd-contract verdict to this binary.
-INSTALL_GUARD_RELATIVE = "usr/libexec/networkmanager-install-guard"
+INSTALL_GUARD_RELATIVE = "usr/libexec/nrmanager-install-guard"
 # Retired, and asserted absent rather than simply unlisted. The removal guard
 # existed to decide whether the package still held a band configuration that had
 # to be restored before it could be removed, and to block removal until the user
@@ -131,27 +131,27 @@ INSTALL_GUARD_RELATIVE = "usr/libexec/networkmanager-install-guard"
 # restore anything, so it says so, keeps the records that let the Settings route
 # still work after the package is gone, and lets dpkg finish. Shipping the old
 # binary alongside the new prerm would put a fail-closed gate back on that path.
-RETIRED_REMOVAL_GUARD_RELATIVE = "usr/libexec/networkmanager-removal-guard"
+RETIRED_REMOVAL_GUARD_RELATIVE = "usr/libexec/nrmanager-removal-guard"
 MAINTENANCE_HELPER_RELATIVE = "usr/libexec/" + MAINTENANCE_HELPER_NAME
 REQUIRED_PAYLOAD_FILES = {
-    "Library/ControlCenter/Bundles/NetworkManager.bundle/Info.plist",
-    "Library/ControlCenter/Bundles/NetworkManager.bundle/NetworkManager",
-    "Library/ControlCenter/Bundles/NetworkManager.bundle/SettingsIcon@2x.png",
-    "Library/ControlCenter/Bundles/NetworkManager.bundle/SettingsIcon@3x.png",
+    "Library/ControlCenter/Bundles/NRManager.bundle/Info.plist",
+    "Library/ControlCenter/Bundles/NRManager.bundle/NRManager",
+    "Library/ControlCenter/Bundles/NRManager.bundle/SettingsIcon@2x.png",
+    "Library/ControlCenter/Bundles/NRManager.bundle/SettingsIcon@3x.png",
     "Library/LaunchDaemons/com.doimty.nrmanager.maintenance.plist",
-    "Library/PreferenceBundles/NetworkManagerPrefs.bundle/Info.plist",
-    "Library/PreferenceBundles/NetworkManagerPrefs.bundle/NetworkManagerPrefs",
-    "Library/PreferenceBundles/NetworkManagerPrefs.bundle/Root.plist",
-    "Library/PreferenceBundles/NetworkManagerPrefs.bundle/defaults.plist",
-    "Library/PreferenceBundles/NetworkManagerPrefs.bundle/en.lproj/NetworkManagerPrefs.strings",
-    "Library/PreferenceBundles/NetworkManagerPrefs.bundle/zh-Hans.lproj/NetworkManagerPrefs.strings",
-    "Library/PreferenceLoader/Preferences/NetworkManagerPrefs.plist",
+    "Library/PreferenceBundles/NRManagerPrefs.bundle/Info.plist",
+    "Library/PreferenceBundles/NRManagerPrefs.bundle/NRManagerPrefs",
+    "Library/PreferenceBundles/NRManagerPrefs.bundle/Root.plist",
+    "Library/PreferenceBundles/NRManagerPrefs.bundle/defaults.plist",
+    "Library/PreferenceBundles/NRManagerPrefs.bundle/en.lproj/NRManagerPrefs.strings",
+    "Library/PreferenceBundles/NRManagerPrefs.bundle/zh-Hans.lproj/NRManagerPrefs.strings",
+    "Library/PreferenceLoader/Preferences/NRManagerPrefs.plist",
     INSTALL_GUARD_RELATIVE,
     MAINTENANCE_HELPER_RELATIVE,
 }
 BINARY_PAYLOAD_FILES = (
-    "Library/ControlCenter/Bundles/NetworkManager.bundle/NetworkManager",
-    "Library/PreferenceBundles/NetworkManagerPrefs.bundle/NetworkManagerPrefs",
+    "Library/ControlCenter/Bundles/NRManager.bundle/NRManager",
+    "Library/PreferenceBundles/NRManagerPrefs.bundle/NRManagerPrefs",
     INSTALL_GUARD_RELATIVE,
     MAINTENANCE_HELPER_RELATIVE,
 )
@@ -169,7 +169,7 @@ REQUIRED_MAINTAINER_FILES = {"postinst", "prerm"}
 #
 # Absence is asserted, not merely tolerated -- see verify_macho.
 UNLINKED_ROOTHIDE_TOOLS = (
-    "networkmanager-install-guard",
+    "nrmanager-install-guard",
     MAINTENANCE_HELPER_NAME,
 )
 # A separate and deliberately narrower question: which roothide binaries may carry
@@ -193,7 +193,7 @@ UNLINKED_ROOTHIDE_TOOLS = (
 # Membership coinciding with UNLINKED_ROOTHIDE_TOOLS is a coincidence of this
 # release, not a shared rule; see the test that pins both.
 CHAINED_FIXUPS_ALLOWED_TOOLS = (
-    "networkmanager-install-guard",
+    "nrmanager-install-guard",
     MAINTENANCE_HELPER_NAME,
 )
 FORBIDDEN_LEGACY_PAYLOAD_BASENAMES = {
@@ -208,13 +208,13 @@ FORBIDDEN_LEGACY_PAYLOAD_BASENAMES = {
     "twitter@3x.png",
 }
 PLIST_IDENTITIES = {
-    "Library/ControlCenter/Bundles/NetworkManager.bundle/Info.plist": (
+    "Library/ControlCenter/Bundles/NRManager.bundle/Info.plist": (
         PACKAGE_ID,
-        "NetworkManager",
+        "NRManager",
     ),
-    "Library/PreferenceBundles/NetworkManagerPrefs.bundle/Info.plist": (
+    "Library/PreferenceBundles/NRManagerPrefs.bundle/Info.plist": (
         "com.doimty.nrmanager.prefs",
-        "NetworkManagerPrefs",
+        "NRManagerPrefs",
     ),
 }
 
@@ -225,13 +225,13 @@ ROOTLESS_PREFIX = "/var/jb"
 # The token the repo template carries where a prefix belongs. Invalid on both
 # lanes by design, so a before-package patcher that never ran fails both.
 TEMPLATE_SENTINEL = "@PLIST_PREFIX@"
-MAINTENANCE_PROGRAM_RELATIVE = "/usr/libexec/networkmanager-maintenance"
+MAINTENANCE_PROGRAM_RELATIVE = "/usr/libexec/nrmanager-maintenance"
 MAINTENANCE_BASELINE_RELATIVE = (
     "/var/mobile/Library/Preferences/"
     "com.doimty.nrmanager.n78-policy.baseline.plist"
 )
 PREFERENCE_BUNDLE_BINARY_RELATIVE = (
-    "Library/PreferenceBundles/NetworkManagerPrefs.bundle/NetworkManagerPrefs"
+    "Library/PreferenceBundles/NRManagerPrefs.bundle/NRManagerPrefs"
 )
 # Cell classes the preference bundle defines. A specifier built in code must be
 # handed the Class; only Root.plist may name one as a string, because Preferences'
@@ -586,7 +586,7 @@ def verify_launchd_plist(payload_root: Path, lane: str, failures: List[str]) -> 
     __Patched flag it sets itself. A plist already holding the jailbreak root gets
     a second one, which the reporting device showed as
 
-        program = <jbroot>/<jbroot>/usr/libexec/networkmanager-maintenance
+        program = <jbroot>/<jbroot>/usr/libexec/nrmanager-maintenance
 
     followed by a dyld failure, because @loader_path then resolved into a
     directory that does not exist. Rootless is the opposite: nothing rewrites

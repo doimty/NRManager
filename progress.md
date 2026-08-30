@@ -4,6 +4,8 @@ Baseline: `2947f98ffb2665b000afab2c4db3ae843866d4da`
 Branch: `prototype/livecc-readonly`
 Target: iPhone14,3 / iOS 15.1.1 (19B81), slot 1, one present and good SIM
 
+- Follow-up (same day): the user required that every remaining old product name be removed, not just the package ID and URL. Renamed the remaining user-visible and repository-visible identifiers: bundle names (`NRManager`/`NRManagerPrefs`/`NRManagerLive`), executable names, `nrmanagerprefs/` source directory (was `networkmanagerprefs/`), `CCNRManager`/`CCNRManagerViewController` module classes (was `CCNetworkManager*`), `NRManagerLiveModule`/`NRManagerLiveViewController` (was `NetworkManagerLive*`), source files (`CCNRManager.x/.h`, `livecc/Sources/NRManagerLiveModule.m`, `include/NRManagerControlCenterUIKitPrivate.h`, `NRManagerPrefs.strings`), libexec tools (`nrmanager-maintenance`, `nrmanager-install-guard`, `nrmanager-removal-guard`), and every path/notification/dispatch-queue reference in sources, scripts, workflows and tests. 427 host tests still pass; verify_release_source passed with empty failures; no `NetworkManager`/`networkmanager` remains anywhere in tracked source outside this changelog and the historical 1.5.0 plan.
+
 ## 2026-08-30 NR Manager rebrand completion: package ID and repository identity
 
 - The earlier rebrand pass (same date) renamed the product and removed original-author attribution from user-facing text but deliberately kept `Package: me.nixuge.networkmanager` for upgrade compatibility. The user explicitly overrode that decision: the package ID and every internal state path must be rebranded too, and the latest source uploaded to the repository.

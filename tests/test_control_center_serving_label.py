@@ -6,29 +6,29 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CC_SOURCE = ROOT / "CCNetworkManager.x"
-CC_HEADER = ROOT / "CCNetworkManager.h"
-PRIVATE_HEADER = ROOT / "include/NetworkManagerControlCenterUIKitPrivate.h"
+CC_SOURCE = ROOT / "CCNRManager.x"
+CC_HEADER = ROOT / "CCNRManager.h"
+PRIVATE_HEADER = ROOT / "include/NRManagerControlCenterUIKitPrivate.h"
 MAKEFILE = ROOT / "Makefile"
-PROVIDER = ROOT / "networkmanagerprefs/CCNMServingStatusProvider.m"
+PROVIDER = ROOT / "nrmanagerprefs/CCNMServingStatusProvider.m"
 
 
 class ControlCenterServingLabelTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.wrapper = CC_SOURCE.read_text()
-        cls.live_source = (ROOT / "livecc/Sources/NetworkManagerLiveModule.m").read_text()
+        cls.live_source = (ROOT / "livecc/Sources/NRManagerLiveModule.m").read_text()
         cls.source = cls.wrapper + "\n" + cls.live_source
         cls.header = CC_HEADER.read_text()
         cls.makefile = MAKEFILE.read_text()
         cls.provider = PROVIDER.read_text()
 
     def test_formal_bundle_keeps_the_button_and_reads_policy_without_writing(self):
-        self.assertIn("BUNDLE_NAME = NetworkManager", self.makefile)
-        self.assertIn("NetworkManager_FILES", self.makefile)
-        self.assertIn("NetworkManager_INSTALL_PATH = /Library/ControlCenter/Bundles", self.makefile)
-        self.assertNotIn("networkmanagerprefs/CCNMN78PolicyReader.m", self.makefile)
-        self.assertNotIn("networkmanagerprefs/CCNMN78PolicySupport.m", self.makefile)
+        self.assertIn("BUNDLE_NAME = NRManager", self.makefile)
+        self.assertIn("NRManager_FILES", self.makefile)
+        self.assertIn("NRManager_INSTALL_PATH = /Library/ControlCenter/Bundles", self.makefile)
+        self.assertNotIn("nrmanagerprefs/CCNMN78PolicyReader.m", self.makefile)
+        self.assertNotIn("nrmanagerprefs/CCNMN78PolicySupport.m", self.makefile)
         self.assertIn("CCNM_LIVE_MAIN_BUNDLE=1", self.makefile)
         self.assertIn("CCNMN78PolicyStatePath", self.source)
         self.assertIn("CCNMLivePolicyDidChangeCallback", self.source)
@@ -38,7 +38,7 @@ class ControlCenterServingLabelTests(unittest.TestCase):
         for text in (self.header, PRIVATE_HEADER.read_text()):
             self.assertNotIn("#import <ControlCenterUIKit/", text)
             self.assertNotIn('#import "ControlCenterUIKit/', text)
-        self.assertIn('#import "NetworkManagerControlCenterUIKitPrivate.h"', self.header)
+        self.assertIn('#import "NRManagerControlCenterUIKitPrivate.h"', self.header)
         private_header = PRIVATE_HEADER.read_text()
         for declaration in (
             "@protocol CCUIContentModuleContentViewController <NSObject>",

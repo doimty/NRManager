@@ -9,12 +9,12 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SUPPORT = ROOT / "networkmanagerprefs/CCNMServingStatusSupport.h"
-HEADER = ROOT / "networkmanagerprefs/CCNMServingStatusProvider.h"
-SOURCE = ROOT / "networkmanagerprefs/CCNMServingStatusProvider.m"
-SAMPLER = ROOT / "networkmanagerprefs/CCNMServingCellSampler.m"
-POLICY = ROOT / "networkmanagerprefs/CCNMN78PolicyController.m"
-MAKEFILE = ROOT / "networkmanagerprefs/Makefile"
+SUPPORT = ROOT / "nrmanagerprefs/CCNMServingStatusSupport.h"
+HEADER = ROOT / "nrmanagerprefs/CCNMServingStatusProvider.h"
+SOURCE = ROOT / "nrmanagerprefs/CCNMServingStatusProvider.m"
+SAMPLER = ROOT / "nrmanagerprefs/CCNMServingCellSampler.m"
+POLICY = ROOT / "nrmanagerprefs/CCNMN78PolicyController.m"
+MAKEFILE = ROOT / "nrmanagerprefs/Makefile"
 
 
 def code_only(text):
@@ -65,7 +65,7 @@ class ServingStatusProviderTests(unittest.TestCase):
         self.assertIsNotNone(compiler)
         program = r'''
 #include <math.h>
-#include "networkmanagerprefs/CCNMServingStatusSupport.h"
+#include "nrmanagerprefs/CCNMServingStatusSupport.h"
 
 static int near(double a, double b) { return fabs(a - b) < 0.0001; }
 int main(void) {
@@ -223,19 +223,19 @@ int main(void) {
         self.assertNotIn('CCNMServingSummaryDataLineKey: @"slot1"', source)
         self.assertNotIn('summary[CCNMServingSummaryDataLineKey] = @"slot1";', source)
         self.assertIn('[NSString stringWithFormat:@"slot%lld", slotID.longLongValue]', source)
-        controller = (ROOT / "networkmanagerprefs/CCNMRootListController.m").read_text()
+        controller = (ROOT / "nrmanagerprefs/CCNMRootListController.m").read_text()
         self.assertIn("dataLineDisplayValue:", controller)
         self.assertNotIn(
             'dataLineValue:CCNMPreferencesLocalizedString(@"DATA_LINE_SLOT_1")', controller
         )
         for language in ("en", "zh-Hans"):
-            strings = (ROOT / f"networkmanagerprefs/Resources/{language}.lproj"
-                       / "NetworkManagerPrefs.strings").read_text()
+            strings = (ROOT / f"nrmanagerprefs/Resources/{language}.lproj"
+                       / "NRManagerPrefs.strings").read_text()
             self.assertIn('"DATA_LINE_SLOT_2"', strings)
             self.assertIn('"DATA_LINE_FORMAT"', strings)
 
     def test_unsupported_target_alert_reports_what_it_measured(self):
-        controller = (ROOT / "networkmanagerprefs/CCNMRootListController.m").read_text()
+        controller = (ROOT / "nrmanagerprefs/CCNMRootListController.m").read_text()
         self.assertIn("measuredDeviceDescription:", controller)
         self.assertIn('POLICY_ERROR_MEASURED_DEVICE_FORMAT', controller)
         # A summary that never reached the target check has no identity to show,
@@ -245,8 +245,8 @@ int main(void) {
         measured = controller[start:end]
         self.assertIn("return @\"\";", measured)
         for language in ("en", "zh-Hans"):
-            strings = (ROOT / f"networkmanagerprefs/Resources/{language}.lproj"
-                       / "NetworkManagerPrefs.strings").read_text()
+            strings = (ROOT / f"nrmanagerprefs/Resources/{language}.lproj"
+                       / "NRManagerPrefs.strings").read_text()
             self.assertIn('"POLICY_ERROR_MEASURED_DEVICE_FORMAT"', strings)
 
     def test_provider_never_writes_modem_or_infers_from_policy(self):

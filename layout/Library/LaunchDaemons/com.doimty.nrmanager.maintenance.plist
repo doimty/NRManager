@@ -22,7 +22,7 @@
   <string>Background</string>
   <key>ProgramArguments</key>
   <array>
-    <string>@PLIST_PREFIX@/usr/libexec/networkmanager-maintenance</string>
+    <string>@PLIST_PREFIX@/usr/libexec/nrmanager-maintenance</string>
     <string>--daemon</string>
   </array>
   <key>StandardErrorPath</key>
