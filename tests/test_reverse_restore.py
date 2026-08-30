@@ -32,7 +32,7 @@ ROOT_HEADER = (PREFS / "CCNMRootListController.h").read_text()
 SUPPORT_HEADER = (PREFS / "CCNMN78PolicySupport.h").read_text()
 SUPPORT_SOURCE = (PREFS / "CCNMN78PolicySupport.m").read_text()
 ROOT_PLIST = (PREFS / "Resources/Root.plist").read_text()
-ENGLISH_STRINGS = (PREFS / "Resources/en.lproj/NRManagerPrefs.strings").read_text()
+ENGLISH_STRINGS = None  # removed: English text is inline now (no en.lproj)
 CHINESE_STRINGS = (PREFS / "Resources/zh-Hans.lproj/NRManagerPrefs.strings").read_text()
 PRERM = (ROOT / "package-actions/prerm.sh.in").read_text()
 POSTINST = (ROOT / "package-actions/postinst.sh.in").read_text()
@@ -372,19 +372,18 @@ class SettingsRestoreActionTests(unittest.TestCase):
         action = function_body(
             ROOT_CONTROLLER, "- (void)restoreSavedConfiguration:(PSSpecifier *)specifier {")
         self.assertIn("self.cleanupCheckpointRecoverable", action)
-        self.assertIn("FINISH_VERIFIED_RESTORE_CLEANUP", action)
-        self.assertIn("CLEANUP_ALERT_MESSAGE", action)
+        self.assertIn("Finish verified restore", action)
+        self.assertIn("The modem already matched the saved configuration. Settings will recheck the live complete band configuration and finish the durable policy cleanup. No modem write is issued.", action)
 
-        for table in (ENGLISH_STRINGS, CHINESE_STRINGS):
-            self.assertIn('"RECOVERY_STATE_CLEANUP_PENDING"', table)
-            self.assertIn('"FINISH_VERIFIED_RESTORE_CLEANUP"', table)
-            self.assertIn('"CLEANUP_ALERT_MESSAGE"', table)
+        self.assertIn('"Modem restore verified; cleanup pending"', CHINESE_STRINGS)
+        self.assertIn('"Finish verified restore"', CHINESE_STRINGS)
+        self.assertIn('"The modem already matched the saved configuration. Settings will recheck the live complete band configuration and finish the durable policy cleanup. No modem write is issued."', CHINESE_STRINGS)
 
     def test_settings_exposes_one_restore_action(self):
         self.assertIn("restoreSavedConfigurationHandler", ROOT_HEADER)
         self.assertIn("restoreSavedConfiguration:", ROOT_CONTROLLER)
         self.assertIn("restoreSavedConfiguration:", ROOT_PLIST)
-        self.assertIn("RESTORE_SAVED_CONFIGURATION", ROOT_PLIST)
+        self.assertIn("Restore saved configuration", ROOT_PLIST)
         for retired in ("resetCarrierConfigurationHandler", "reloadCarrierDefaults",
                         "RESET_CARRIER_DEFAULTS", "restoreOriginalBands"):
             self.assertNotIn(retired, ROOT_CONTROLLER + ROOT_HEADER + ROOT_PLIST)

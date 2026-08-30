@@ -14,20 +14,19 @@
 			<key>id</key>
 			<string>productHeader</string>
 			<key>label</key>
-			<string>HEADER_TITLE</string>
+			<string>NR Manager</string>
 			<key>subtitle</key>
-			<string>HEADER_SUBTITLE</string>
+			<string>NR band management and actual serving status</string>
 		</dict>
-
 		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>N78_PREFERENCE_FOOTER</string>
+			<string>When enabled, NR allows only the selected bands. LTE bands remain unchanged and can be used when 5G is unavailable.</string>
 			<key>id</key>
 			<string>n78PreferenceGroup</string>
 			<key>label</key>
-			<string>GROUP_N78_PREFERENCE</string>
+			<string>NR Band Management</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -41,7 +40,7 @@
 			<key>id</key>
 			<string>n78Preference</string>
 			<key>label</key>
-			<string>TOGGLE_N78_PREFERENCE</string>
+			<string>Enable NR band management</string>
 			<key>set</key>
 			<string>setN78PreferenceValue:specifier:</string>
 		</dict>
@@ -55,20 +54,19 @@
 			<key>id</key>
 			<string>transitionState</string>
 			<key>label</key>
-			<string>ROW_TRANSITION_STATE</string>
+			<string>Transition state</string>
 			<key>value</key>
-			<string>VALUE_UNKNOWN</string>
+			<string>Unknown</string>
 		</dict>
-
 		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>BAND_SELECTION_LINK_FOOTER</string>
+			<string>Choose which of the NR bands your system already allows should remain enabled. The selection is applied by the switch above; changing it requires turning the switch off first.</string>
 			<key>id</key>
 			<string>bandSelectionGroup</string>
 			<key>label</key>
-			<string>GROUP_BAND_SELECTION_LINK</string>
+			<string>NR Band Selection</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -78,18 +76,17 @@
 			<key>id</key>
 			<string>bandSelection</string>
 			<key>label</key>
-			<string>ROW_BAND_SELECTION</string>
+			<string>Bands to keep enabled</string>
 		</dict>
-
 		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>CURRENT_STATE_FOOTER</string>
+			<string>Requested policy, verified applied policy, and the actual serving network are shown independently.</string>
 			<key>id</key>
 			<string>currentStateGroup</string>
 			<key>label</key>
-			<string>GROUP_CURRENT_STATE</string>
+			<string>Current State</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -101,9 +98,9 @@
 			<key>id</key>
 			<string>requestedPolicy</string>
 			<key>label</key>
-			<string>ROW_REQUESTED_POLICY</string>
+			<string>Requested policy</string>
 			<key>value</key>
-			<string>VALUE_UNKNOWN</string>
+			<string>Unknown</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -115,9 +112,9 @@
 			<key>id</key>
 			<string>appliedPolicy</string>
 			<key>label</key>
-			<string>ROW_APPLIED_POLICY</string>
+			<string>Applied policy</string>
 			<key>value</key>
-			<string>VALUE_UNKNOWN</string>
+			<string>Unknown</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -129,9 +126,9 @@
 			<key>id</key>
 			<string>servingState</string>
 			<key>label</key>
-			<string>ROW_SERVING_NETWORK</string>
+			<string>Current serving network</string>
 			<key>value</key>
-			<string>VALUE_UNKNOWN</string>
+			<string>Unknown</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -143,9 +140,9 @@
 			<key>id</key>
 			<string>dataLine</string>
 			<key>label</key>
-			<string>ROW_DATA_LINE</string>
+			<string>Data line</string>
 			<key>value</key>
-			<string>VALUE_UNKNOWN</string>
+			<string>Unknown</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -157,9 +154,9 @@
 			<key>id</key>
 			<string>freshness</string>
 			<key>label</key>
-			<string>ROW_FRESHNESS</string>
+			<string>Updated</string>
 			<key>value</key>
-			<string>VALUE_UNKNOWN</string>
+			<string>Unknown</string>
 		</dict>
 		<dict>
 			<key>action</key>
@@ -171,18 +168,17 @@
 			<key>id</key>
 			<string>refreshServingStatus</string>
 			<key>label</key>
-			<string>REFRESH_SERVING_STATUS</string>
+			<string>Refresh serving status</string>
 		</dict>
-
 		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>RECOVERY_FOOTER</string>
+			<string>Shown whenever validated policy evidence needs attention. A saved baseline reverses the NR restriction with a verified modem write. If that restore was already verified, Settings only rechecks the live bands and finishes durable cleanup; it does not write the modem again.</string>
 			<key>id</key>
 			<string>recoveryGroup</string>
 			<key>label</key>
-			<string>GROUP_RECOVERY</string>
+			<string>Recovery &amp; Maintenance</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -194,9 +190,9 @@
 			<key>id</key>
 			<string>recoveryState</string>
 			<key>label</key>
-			<string>ROW_RECOVERY_STATE</string>
+			<string>Recovery state</string>
 			<key>value</key>
-			<string>VALUE_UNKNOWN</string>
+			<string>Unknown</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -208,9 +204,9 @@
 			<key>id</key>
 			<string>rebootRequirement</string>
 			<key>label</key>
-			<string>ROW_MAINTENANCE</string>
+			<string>Required action</string>
 			<key>value</key>
-			<string>RECOVERY_REBOOT_REQUIRED_DETAIL</string>
+			<string>The modem setter result is uncertain. Restart the device before making another change.</string>
 		</dict>
 		<dict>
 			<key>action</key>
@@ -222,20 +218,19 @@
 			<key>id</key>
 			<string>restoreSavedConfiguration</string>
 			<key>label</key>
-			<string>RESTORE_SAVED_CONFIGURATION</string>
+			<string>Restore saved configuration</string>
 		</dict>
-
 		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerAlignment</key>
 			<integer>1</integer>
 			<key>footerText</key>
-			<string>ABOUT_CREDITS_FOOTER</string>
+			<string>Developed and maintained by the NR Manager project.</string>
 			<key>id</key>
 			<string>aboutGroup</string>
 			<key>label</key>
-			<string>GROUP_ABOUT</string>
+			<string>About</string>
 		</dict>
 		<dict>
 			<key>action</key>
@@ -249,9 +244,9 @@
 			<key>id</key>
 			<string>maintainedSource</string>
 			<key>label</key>
-			<string>MAINTAINED_SOURCE</string>
+			<string>Source code</string>
 			<key>subtitle</key>
-			<string>MAINTAINED_SOURCE_SUBTITLE</string>
+			<string>NR Manager open-source repository</string>
 			<key>url</key>
 			<string>https://github.com/doimty/NRManager</string>
 		</dict>
@@ -265,12 +260,12 @@
 			<key>id</key>
 			<string>version</string>
 			<key>label</key>
-			<string>VERSION</string>
+			<string>Version</string>
 			<key>value</key>
 			<string>1.6.4</string>
 		</dict>
 	</array>
 	<key>title</key>
-	<string>SETTINGS_TITLE</string>
+	<string>NR Manager</string>
 </dict>
 </plist>

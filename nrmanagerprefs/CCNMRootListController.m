@@ -72,7 +72,7 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = CCNMPreferencesLocalizedString(@"SETTINGS_TITLE");
+    self.title = CCNMPreferencesLocalizedString(@"NR Manager");
     [self configureProductionHandlers];
     [self refreshPolicyState];
 
@@ -118,7 +118,7 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
     }
     self.policyOperationInProgress = YES;
     [self rebuildRecoverySection];
-    [self updateTransitionStateWithLocalizationKey:@"TRANSITION_APPLYING"];
+    [self updateTransitionStateWithLocalizationKey:@"Applying"];
     [self updateN78PreferenceEnabled:[self.policySummary[CCNMN78PolicySummaryRequestedModeKey]
         isEqual:CCNMRequestedModeN78Preferred] controlAvailable:NO];
     [self applyServingSummary:self.servingSummary];
@@ -150,7 +150,7 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
     }
     self.policyOperationInProgress = YES;
     [self rebuildRecoverySection];
-    [self updateTransitionStateWithLocalizationKey:@"TRANSITION_APPLYING"];
+    [self updateTransitionStateWithLocalizationKey:@"Applying"];
     [self updateN78PreferenceEnabled:[self.policySummary[CCNMN78PolicySummaryRequestedModeKey]
         isEqual:CCNMRequestedModeN78Preferred] controlAvailable:NO];
     [self applyServingSummary:self.servingSummary];
@@ -173,8 +173,8 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
 
 - (NSString *)requestedPolicyDisplayValue:(NSDictionary *)summary {
     return [summary[CCNMN78PolicySummaryRequestedModeKey] isEqual:CCNMRequestedModeN78Preferred]
-        ? CCNMPreferencesLocalizedString(@"REQUESTED_N78_PREFERENCE")
-        : CCNMPreferencesLocalizedString(@"REQUESTED_SYSTEM_DEFAULT");
+        ? CCNMPreferencesLocalizedString(@"NR band management")
+        : CCNMPreferencesLocalizedString(@"System default");
 }
 
 // A verified enabled state is rendered from the band set the policy recorded, not
@@ -215,7 +215,7 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
         NSArray<NSNumber *> *target = [rawTarget isKindOfClass:NSArray.class]
             ? CCNMCanonicalNRSelection(rawTarget, NULL) : nil;
         if (target.count == 0) {
-            return CCNMPreferencesLocalizedString(@"APPLIED_VERIFIED_NR_UNNAMED");
+            return CCNMPreferencesLocalizedString(@"NR band restriction was verified; recorded bands unavailable");
         }
         NSString *targetName = [self displayNameForNRBands:target];
         NSString *policyUUID = [policySummary[@"subscriptionUUID"] isKindOfClass:NSString.class]
@@ -239,43 +239,43 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
                 ? CCNMCanonicalNRSelection(rawActive, NULL) : nil;
         if (active.count == 0) {
             return [NSString stringWithFormat:
-                CCNMPreferencesLocalizedString(@"APPLIED_LAST_VERIFIED_NR_FORMAT"),
+                CCNMPreferencesLocalizedString(@"Last verified NR target %@; current modem bands unavailable"),
                 targetName];
         }
         if ([active isEqualToArray:target]) {
             return [NSString stringWithFormat:
-                CCNMPreferencesLocalizedString(@"APPLIED_VERIFIED_NR_FORMAT"),
+                CCNMPreferencesLocalizedString(@"Current NR allows only %@; LTE unchanged"),
                 targetName];
         }
         return [NSString stringWithFormat:
-            CCNMPreferencesLocalizedString(@"APPLIED_LIVE_NR_DRIFT_FORMAT"),
+            CCNMPreferencesLocalizedString(@"Current NR %@ differs from recorded target %@"),
             [self displayNameForNRBands:active], targetName];
     }
     NSDictionary *keys = @{
-        CCNMAppliedPolicyUnknown: @"APPLIED_UNKNOWN",
-        CCNMAppliedPolicyApplying: @"APPLIED_APPLYING",
-        CCNMAppliedPolicyVerifiedSystemDefault: @"APPLIED_VERIFIED_SYSTEM_DEFAULT",
-        CCNMAppliedPolicyDiverged: @"APPLIED_DIVERGED",
-        CCNMAppliedPolicyRecoveryRequired: @"APPLIED_RECOVERY_REQUIRED",
+        CCNMAppliedPolicyUnknown: @"Unknown",
+        CCNMAppliedPolicyApplying: @"Applying",
+        CCNMAppliedPolicyVerifiedSystemDefault: @"System default verified",
+        CCNMAppliedPolicyDiverged: @"Applied policy differs from the request",
+        CCNMAppliedPolicyRecoveryRequired: @"Recovery required",
     };
-    return CCNMPreferencesLocalizedString(keys[applied] ?: @"APPLIED_UNKNOWN");
+    return CCNMPreferencesLocalizedString(keys[applied] ?: @"Unknown");
 }
 
 - (NSString *)recoveryDisplayValue:(NSDictionary *)summary {
     if ([summary[CCNMN78PolicySummaryCleanupCheckpointRecoverableKey] boolValue]) {
-        return CCNMPreferencesLocalizedString(@"RECOVERY_STATE_CLEANUP_PENDING");
+        return CCNMPreferencesLocalizedString(@"Modem restore verified; cleanup pending");
     }
     NSString *recovery = summary[CCNMN78PolicySummaryRecoveryStateKey];
     NSDictionary *keys = @{
-        CCNMRecoveryStateClean: @"RECOVERY_STATE_CLEAN",
-        CCNMRecoveryStateEnablePending: @"RECOVERY_STATE_ENABLE_PENDING",
-        CCNMRecoveryStateEnabledWithBaseline: @"RECOVERY_STATE_ENABLED_WITH_BASELINE",
-        CCNMRecoveryStateCarrierResetPending: @"RECOVERY_STATE_CARRIER_RESET_PENDING",
-        CCNMRecoveryStateCarrierResetFailed: @"RECOVERY_STATE_CARRIER_RESET_FAILED",
-        CCNMRecoveryStateRebootRequired: @"RECOVERY_STATE_REBOOT_REQUIRED",
-        CCNMRecoveryStateRecoveryFailed: @"RECOVERY_STATE_FAILED",
+        CCNMRecoveryStateClean: @"No recovery required",
+        CCNMRecoveryStateEnablePending: @"Enable is pending",
+        CCNMRecoveryStateEnabledWithBaseline: @"Original configuration is retained",
+        CCNMRecoveryStateCarrierResetPending: @"An earlier carrier reload was left pending",
+        CCNMRecoveryStateCarrierResetFailed: @"An earlier carrier reload was not confirmed",
+        CCNMRecoveryStateRebootRequired: @"Restart required",
+        CCNMRecoveryStateRecoveryFailed: @"Recovery failed",
     };
-    return CCNMPreferencesLocalizedString(keys[recovery] ?: @"RECOVERY_STATE_FAILED");
+    return CCNMPreferencesLocalizedString(keys[recovery] ?: @"Recovery failed");
 }
 
 - (void)applyPolicySummary:(NSDictionary<NSString *, id> *)summary {
@@ -289,12 +289,12 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
         ![self.servingSummary[CCNMServingSummaryUnsafeOutstandingKey] boolValue];
     [self updateN78PreferenceEnabled:requested controlAvailable:mayWrite];
 
-    NSString *transitionKey = @"TRANSITION_RECOVERY_REQUIRED";
+    NSString *transitionKey = @"Recovery required";
     if ([appliedPolicy isEqual:CCNMAppliedPolicyApplying]) {
-        transitionKey = @"TRANSITION_APPLYING";
+        transitionKey = @"Applying";
     } else if ([recoveryState isEqual:CCNMRecoveryStateClean] ||
         [recoveryState isEqual:CCNMRecoveryStateEnabledWithBaseline]) {
-        transitionKey = @"TRANSITION_VERIFIED";
+        transitionKey = @"Verified";
     }
     [self updateTransitionStateWithLocalizationKey:transitionKey];
 
@@ -318,11 +318,11 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
 
 - (NSString *)servingDisplayValue:(NSDictionary *)summary {
     if ([summary[CCNMServingSummaryUnsafeOutstandingKey] boolValue]) {
-        return CCNMPreferencesLocalizedString(@"SERVING_UNKNOWN_RESTART_SETTINGS");
+        return CCNMPreferencesLocalizedString(@"Unknown (restart Settings before another modem operation)");
     }
     if ([summary[CCNMServingSummaryStaleKey] boolValue] ||
         ![summary[CCNMServingSummarySuccessKey] boolValue]) {
-        return CCNMPreferencesLocalizedString(@"SERVING_UNKNOWN_STALE");
+        return CCNMPreferencesLocalizedString(@"Unknown (data is stale)");
     }
     NSString *state = summary[CCNMServingSummaryStateKey];
     NSNumber *band = [summary[CCNMServingSummaryBandKey] isKindOfClass:NSNumber.class]
@@ -332,25 +332,25 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
     if ([state isEqual:CCNMServingStateNRN78]) {
         if (frequency) {
             NSString *machineFrequency = [NSString stringWithFormat:@"%.3f MHz", frequency.doubleValue];
-            return [NSString stringWithFormat:CCNMPreferencesLocalizedString(@"SERVING_NR_N78_FORMAT"), machineFrequency];
+            return [NSString stringWithFormat:CCNMPreferencesLocalizedString(@"NR n78 · %@"), machineFrequency];
         }
-        return CCNMPreferencesLocalizedString(@"SERVING_NR_N78");
+        return CCNMPreferencesLocalizedString(@"NR n78");
     }
     if ([state isEqual:CCNMServingStateNROther]) {
         NSString *machineBand = band ? [NSString stringWithFormat:@"n%@", band] : @"NR";
-        return [NSString stringWithFormat:CCNMPreferencesLocalizedString(@"SERVING_NR_OTHER_FORMAT"), machineBand];
+        return [NSString stringWithFormat:CCNMPreferencesLocalizedString(@"NR %@"), machineBand];
     }
     if ([state isEqual:CCNMServingStateLTE]) {
         NSString *machineBand = band ? [NSString stringWithFormat:@"B%@", band] : @"B?";
-        return [NSString stringWithFormat:CCNMPreferencesLocalizedString(@"SERVING_LTE_FORMAT"), machineBand];
+        return [NSString stringWithFormat:CCNMPreferencesLocalizedString(@"LTE %@ (NR is not currently serving)"), machineBand];
     }
-    return CCNMPreferencesLocalizedString(@"SERVING_OTHER");
+    return CCNMPreferencesLocalizedString(@"Other serving network");
 }
 
 - (NSString *)freshnessDisplayValue:(NSDictionary *)summary {
     long long milliseconds = [summary[CCNMServingSummarySampledAtMillisecondsKey] longLongValue];
     if (milliseconds <= 0) {
-        return CCNMPreferencesLocalizedString(@"VALUE_UNKNOWN");
+        return CCNMPreferencesLocalizedString(@"Unknown");
     }
     NSDate *date = [NSDate dateWithTimeIntervalSince1970:(NSTimeInterval)milliseconds / 1000.0];
     NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
@@ -358,7 +358,7 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
     formatter.timeStyle = NSDateFormatterMediumStyle;
     NSString *timestamp = [formatter stringFromDate:date] ?: @"";
     NSString *formatKey = [summary[CCNMServingSummaryStaleKey] boolValue]
-        ? @"FRESHNESS_STALE_FORMAT" : @"FRESHNESS_UPDATED_FORMAT";
+        ? @"Stale · %@" : @"Updated %@";
     return [NSString stringWithFormat:CCNMPreferencesLocalizedString(formatKey), timestamp];
 }
 
@@ -368,16 +368,16 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
     NSString *dataLine = [summary[CCNMServingSummaryDataLineKey] isKindOfClass:NSString.class]
         ? summary[CCNMServingSummaryDataLineKey] : @"";
     if ([dataLine isEqualToString:@"slot1"]) {
-        return CCNMPreferencesLocalizedString(@"DATA_LINE_SLOT_1");
+        return CCNMPreferencesLocalizedString(@"SIM 1");
     }
     if ([dataLine isEqualToString:@"slot2"]) {
-        return CCNMPreferencesLocalizedString(@"DATA_LINE_SLOT_2");
+        return CCNMPreferencesLocalizedString(@"SIM 2");
     }
     if ([dataLine hasPrefix:@"slot"] && dataLine.length > 4) {
-        return [NSString stringWithFormat:CCNMPreferencesLocalizedString(@"DATA_LINE_FORMAT"),
+        return [NSString stringWithFormat:CCNMPreferencesLocalizedString(@"Line %@"),
             [dataLine substringFromIndex:4]];
     }
-    return CCNMPreferencesLocalizedString(@"VALUE_UNKNOWN");
+    return CCNMPreferencesLocalizedString(@"Unknown");
 }
 
 - (void)beginServingRefresh {
@@ -389,13 +389,13 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
     [self rebuildRecoverySection];
     [self updateN78PreferenceEnabled:[self.policySummary[CCNMN78PolicySummaryRequestedModeKey]
         isEqual:CCNMRequestedModeN78Preferred] controlAvailable:NO];
-    [self setDisplayValue:@"FRESHNESS_REFRESHING" forSpecifierID:CCNMFreshnessSpecifierID];
+    [self setDisplayValue:@"Refreshing…" forSpecifierID:CCNMFreshnessSpecifierID];
     [self updateCurrentStateWithRequestedValue:[self requestedPolicyDisplayValue:self.policySummary]
                                   appliedValue:[self appliedPolicyDisplayValue:self.policySummary
                                                                servingSummary:self.servingSummary]
                                   servingValue:[self servingDisplayValue:self.servingSummary]
                                  dataLineValue:[self dataLineDisplayValue:self.servingSummary]
-                                freshnessValue:CCNMPreferencesLocalizedString(@"FRESHNESS_REFRESHING")
+                                freshnessValue:CCNMPreferencesLocalizedString(@"Refreshing…")
                               refreshAvailable:NO];
 
     __weak typeof(self) weakSelf = self;
@@ -437,26 +437,26 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
         return @"";
     }
     return [NSString stringWithFormat:
-        CCNMPreferencesLocalizedString(@"POLICY_ERROR_MEASURED_DEVICE_FORMAT"),
+        CCNMPreferencesLocalizedString(@"This device: %@ / iOS %@ (%@)"),
         model, version, build];
 }
 
 - (NSString *)policyFailureLocalizationKey:(NSString *)errorCode {
-    if ([errorCode isEqual:CCNMN78PolicyErrorBusy]) return @"POLICY_ERROR_BUSY";
-    if ([errorCode isEqual:CCNMN78PolicyErrorUnsupportedTarget]) return @"POLICY_ERROR_UNSUPPORTED_TARGET";
+    if ([errorCode isEqual:CCNMN78PolicyErrorBusy]) return @"Another policy or serving-status operation is still running.";
+    if ([errorCode isEqual:CCNMN78PolicyErrorUnsupportedTarget]) return @"This operation requires readable device identity and matching runtime capability evidence.";
     if ([errorCode isEqual:CCNMN78PolicyErrorUnsafeSubscription] ||
-        [errorCode isEqual:CCNMN78PolicyErrorUUIDDrift]) return @"POLICY_ERROR_SUBSCRIPTION";
+        [errorCode isEqual:CCNMN78PolicyErrorUUIDDrift]) return @"The data-line SIM layout or subscription identity is not safe for this operation.";
     // No caller produces baselineIncompatible any more: the restore-from-baseline
     // write path it guarded is gone. It stays mapped because 1.5.0 persisted it
     // into the state record's errorCode, and a device that upgrades from such a
     // state would otherwise see the generic string instead of the reason.
-    if ([errorCode isEqual:CCNMN78PolicyErrorBaselineIncompatible]) return @"POLICY_ERROR_BASELINE_INCOMPATIBLE";
-    if ([errorCode isEqual:CCNMN78PolicyErrorN78Unavailable]) return @"POLICY_ERROR_N78_UNAVAILABLE";
-    if ([errorCode isEqual:CCNMN78PolicyErrorSetterUncertain]) return @"POLICY_ERROR_REBOOT_REQUIRED";
-    if ([errorCode isEqual:CCNMN78PolicyErrorCarrierResetFailed]) return @"POLICY_ERROR_CARRIER_RESET_FAILED";
+    if ([errorCode isEqual:CCNMN78PolicyErrorBaselineIncompatible]) return @"The retained policy baseline is incompatible with this device or its modem capability evidence.";
+    if ([errorCode isEqual:CCNMN78PolicyErrorN78Unavailable]) return @"One or more selected NR bands are no longer present in both the active and supported band lists.";
+    if ([errorCode isEqual:CCNMN78PolicyErrorSetterUncertain]) return @"The modem setter result is uncertain. Restart the device before making another change.";
+    if ([errorCode isEqual:CCNMN78PolicyErrorCarrierResetFailed]) return @"An earlier carrier reload could not be confirmed. Restore the saved configuration from Recovery & Maintenance.";
     if ([errorCode isEqual:CCNMN78PolicyErrorRecoveryRequired] ||
-        [errorCode isEqual:CCNMN78PolicyErrorInvalidRecords]) return @"POLICY_ERROR_RECOVERY_REQUIRED";
-    return @"POLICY_ERROR_GENERIC";
+        [errorCode isEqual:CCNMN78PolicyErrorInvalidRecords]) return @"Saved policy evidence must be recovered before another change.";
+    return @"The policy could not be changed or verified. Review the recovery state before retrying.";
 }
 
 - (void)showPolicyFailureForSummary:(NSDictionary<NSString *, id> *)summary {
@@ -466,9 +466,9 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
         ? summary[CCNMN78PolicySummaryErrorKey] : @"";
     NSString *key = [self policyFailureLocalizationKey:errorCode];
     NSString *message = [NSString stringWithFormat:
-        CCNMPreferencesLocalizedString(@"POLICY_ERROR_DIAGNOSTIC_FORMAT"),
+        CCNMPreferencesLocalizedString(@"%@\n\nError code: %@\nDetails: %@"),
         CCNMPreferencesLocalizedString(key), errorCode,
-        technicalError.length > 0 ? technicalError : CCNMPreferencesLocalizedString(@"VALUE_UNKNOWN")];
+        technicalError.length > 0 ? technicalError : CCNMPreferencesLocalizedString(@"Unknown")];
     // The target check reports what it measured, so say so. Stating only which
     // device is accepted leaves the user to look up their own model and build by
     // hand to find out why they were refused.
@@ -477,11 +477,11 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
         message = [message stringByAppendingFormat:@"\n%@", measured];
     }
     UIAlertController *alert = [UIAlertController
-        alertControllerWithTitle:CCNMPreferencesLocalizedString(@"POLICY_ERROR_TITLE")
+        alertControllerWithTitle:CCNMPreferencesLocalizedString(@"Unable to Change NR Band Management")
         message:message
         preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction
-        actionWithTitle:CCNMPreferencesLocalizedString(@"BUTTON_OK")
+        actionWithTitle:CCNMPreferencesLocalizedString(@"OK")
         style:UIAlertActionStyleDefault
         handler:nil]];
     [self presentViewController:alert animated:YES completion:nil];
@@ -540,7 +540,7 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
 - (void)setDisplayValue:(NSString *)valueOrLocalizationKey forSpecifierID:(NSString *)identifier {
     NSString *displayValue = valueOrLocalizationKey.length > 0
         ? CCNMPreferencesLocalizedString(valueOrLocalizationKey)
-        : CCNMPreferencesLocalizedString(@"VALUE_UNKNOWN");
+        : CCNMPreferencesLocalizedString(@"Unknown");
     PSSpecifier *specifier = [self specifierForID:identifier];
     if (!specifier) {
         specifier = [self recoverySpecifierForID:identifier];
@@ -590,15 +590,15 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
     }
 
     BOOL cleanupOnly = self.cleanupCheckpointRecoverable;
-    NSString *titleKey = cleanupOnly ? @"CLEANUP_ALERT_TITLE" : @"RESTORE_ALERT_TITLE";
-    NSString *messageKey = cleanupOnly ? @"CLEANUP_ALERT_MESSAGE" : @"RESTORE_ALERT_MESSAGE";
-    NSString *buttonKey = cleanupOnly ? @"FINISH_VERIFIED_RESTORE_CLEANUP" : @"BUTTON_RESTORE";
+    NSString *titleKey = cleanupOnly ? @"Finish verified restore?" : @"Restore saved configuration?";
+    NSString *messageKey = cleanupOnly ? @"The modem already matched the saved configuration. Settings will recheck the live complete band configuration and finish the durable policy cleanup. No modem write is issued." : @"The band configuration saved before the NR band restriction was applied is written back to the modem, which removes the restriction. The result is verified by reading the modem back.";
+    NSString *buttonKey = cleanupOnly ? @"Finish verified restore" : @"Restore";
     UIAlertController *alert = [UIAlertController
         alertControllerWithTitle:CCNMPreferencesLocalizedString(titleKey)
         message:CCNMPreferencesLocalizedString(messageKey)
         preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction
-        actionWithTitle:CCNMPreferencesLocalizedString(@"BUTTON_CANCEL")
+        actionWithTitle:CCNMPreferencesLocalizedString(@"Cancel")
         style:UIAlertActionStyleCancel
         handler:nil]];
 
@@ -642,11 +642,11 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
 
 - (void)showLinkOpenFailure {
     UIAlertController *alert = [UIAlertController
-        alertControllerWithTitle:CCNMPreferencesLocalizedString(@"LINK_OPEN_FAILED_TITLE")
-        message:CCNMPreferencesLocalizedString(@"LINK_OPEN_FAILED_MESSAGE")
+        alertControllerWithTitle:CCNMPreferencesLocalizedString(@"Unable to Open Link")
+        message:CCNMPreferencesLocalizedString(@"The repository link could not be opened.")
         preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction
-        actionWithTitle:CCNMPreferencesLocalizedString(@"BUTTON_OK")
+        actionWithTitle:CCNMPreferencesLocalizedString(@"OK")
         style:UIAlertActionStyleDefault
         handler:nil]];
     [self presentViewController:alert animated:YES completion:nil];
@@ -732,7 +732,7 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
         }
         if ((self.hasRecoverableBaseline || self.cleanupCheckpointRecoverable) && restore) {
             NSString *titleKey = self.cleanupCheckpointRecoverable
-                ? @"FINISH_VERIFIED_RESTORE_CLEANUP" : @"RESTORE_SAVED_CONFIGURATION";
+                ? @"Finish verified restore" : @"Restore saved configuration";
             NSString *title = CCNMPreferencesLocalizedString(titleKey);
             restore.name = title;
             [restore setProperty:title forKey:PSTitleKey];

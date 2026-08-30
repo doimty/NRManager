@@ -263,7 +263,7 @@ typedef NS_ENUM(NSInteger, CCNMBandSelectionAvailability) {
         return nil;
     }
     if (selection.count == 0) {
-        return CCNMPreferencesLocalizedString(@"BAND_SAVE_EMPTY");
+        return CCNMPreferencesLocalizedString(@"Choose at least one NR band.");
     }
     NSArray *canonicalDomain = [self.domain sortedArrayUsingSelector:@selector(compare:)];
     BOOL containsOutsideBand = NO;
@@ -274,12 +274,12 @@ typedef NS_ENUM(NSInteger, CCNMBandSelectionAvailability) {
         }
     }
     if (containsOutsideBand) {
-        return CCNMPreferencesLocalizedString(@"BAND_SAVE_OUTSIDE_DOMAIN");
+        return CCNMPreferencesLocalizedString(@"The selection includes a band this device does not currently allow.");
     }
     if ([selection isEqualToArray:canonicalDomain]) {
-        return CCNMPreferencesLocalizedString(@"BAND_SAVE_WHOLE_DOMAIN");
+        return CCNMPreferencesLocalizedString(@"All currently available bands are selected. Turn the feature off instead.");
     }
-    return CCNMPreferencesLocalizedString(@"BAND_SAVE_INVALID_GENERIC");
+    return CCNMPreferencesLocalizedString(@"This selection cannot be applied on this device.");
 }
 
 - (BOOL)canSave {
@@ -290,11 +290,11 @@ typedef NS_ENUM(NSInteger, CCNMBandSelectionAvailability) {
 - (NSString *)unavailableExplanation {
     switch (self.availability) {
         case CCNMBandSelectionBlockedByEnabledPolicy:
-            return CCNMPreferencesLocalizedString(@"BAND_UNAVAILABLE_ENABLED");
+            return CCNMPreferencesLocalizedString(@"The NR band restriction is currently enabled, so the bands reported by iOS are the applied result rather than the original configuration. Turn off the switch on the previous screen before changing the selection.");
         case CCNMBandSelectionBlockedByRecovery:
-            return CCNMPreferencesLocalizedString(@"BAND_UNAVAILABLE_RECOVERY");
+            return CCNMPreferencesLocalizedString(@"Saved policy evidence needs attention before the selection can change. Resolve the recovery state on the previous screen first.");
         case CCNMBandSelectionBlockedByMissingEvidence:
-            return CCNMPreferencesLocalizedString(@"BAND_UNAVAILABLE_NO_EVIDENCE");
+            return CCNMPreferencesLocalizedString(@"No usable NR band evidence has been read from this device yet. Return to the previous screen and refresh the serving status.");
         case CCNMBandSelectionAvailable:
             return @"";
     }
@@ -303,7 +303,7 @@ typedef NS_ENUM(NSInteger, CCNMBandSelectionAvailability) {
 
 - (NSString *)statusText {
     if (![self isEditable]) {
-        return CCNMPreferencesLocalizedString(@"ROW_BAND_UNAVAILABLE");
+        return CCNMPreferencesLocalizedString(@"Unavailable");
     }
     NSString *failure = [self validationFailureForWorkingSelection];
     if (failure) {
@@ -314,18 +314,18 @@ typedef NS_ENUM(NSInteger, CCNMBandSelectionAvailability) {
     // touched is the factory default, and calling that "not saved yet" tells the
     // user to press a button which is correctly disabled, because there is nothing
     // to save. Only an actual edit is unsaved.
-    NSString *formatKey = @"BAND_STATUS_SAVED_FORMAT";
+    NSString *formatKey = @"Saved: %@";
     if ([self workingSelectionDiffersFromBaseline]) {
-        formatKey = @"BAND_STATUS_UNSAVED_FORMAT";
+        formatKey = @"Not saved yet: %@";
     } else if (!self.hasExplicitSavedSelection) {
-        formatKey = @"BAND_STATUS_DEFAULT_FORMAT";
+        formatKey = @"Using the default: %@";
     }
     return [NSString stringWithFormat:CCNMPreferencesLocalizedString(formatKey), list];
 }
 
 - (NSString *)descriptionForBands:(NSArray<NSNumber *> *)bands {
     if (bands.count == 0) {
-        return CCNMPreferencesLocalizedString(@"BAND_LIST_EMPTY");
+        return CCNMPreferencesLocalizedString(@"none");
     }
     NSMutableArray<NSString *> *names = [NSMutableArray array];
     for (NSNumber *band in bands) {
@@ -350,23 +350,23 @@ typedef NS_ENUM(NSInteger, CCNMBandSelectionAvailability) {
     }
     if (self.servingFrequencyMHz) {
         return [NSString stringWithFormat:
-            CCNMPreferencesLocalizedString(@"BAND_DETAIL_SERVING_WITH_FREQUENCY_FORMAT"),
+            CCNMPreferencesLocalizedString(@"%@ · currently connected at %@"),
             range, [NSString stringWithFormat:@"%.3f MHz", self.servingFrequencyMHz.doubleValue]];
     }
     return [NSString stringWithFormat:
-        CCNMPreferencesLocalizedString(@"BAND_DETAIL_SERVING_FORMAT"), range];
+        CCNMPreferencesLocalizedString(@"%@ · currently connected"), range];
 }
 
 - (NSString *)rangeDescriptionForBand:(NSNumber *)band {
     switch (CCNMClassifyNRBandRange(band.longLongValue)) {
         case CCNMNRBandRangeSub6:
-            return CCNMPreferencesLocalizedString(@"BAND_RANGE_SUB6");
+            return CCNMPreferencesLocalizedString(@"Sub-6 GHz");
         case CCNMNRBandRangeMillimeterWave:
-            return CCNMPreferencesLocalizedString(@"BAND_RANGE_MMWAVE");
+            return CCNMPreferencesLocalizedString(@"mmWave");
         case CCNMNRBandRangeUnknown:
-            return CCNMPreferencesLocalizedString(@"BAND_RANGE_UNKNOWN");
+            return CCNMPreferencesLocalizedString(@"Unrecognised band number");
     }
-    return CCNMPreferencesLocalizedString(@"BAND_RANGE_UNKNOWN");
+    return CCNMPreferencesLocalizedString(@"Unrecognised band number");
 }
 
 #pragma mark - Specifiers
@@ -386,7 +386,7 @@ typedef NS_ENUM(NSInteger, CCNMBandSelectionAvailability) {
 
 - (PSSpecifier *)statusSpecifier {
     PSSpecifier *specifier = [PSSpecifier preferenceSpecifierNamed:
-        CCNMPreferencesLocalizedString(@"ROW_BAND_SELECTION_STATUS")
+        CCNMPreferencesLocalizedString(@"Selection")
         target:self set:NULL get:NULL detail:Nil cell:PSStaticTextCell edit:Nil];
     CCNMSetSpecifierID(specifier, CCNMBandStatusSpecifierID);
     CCNMSetCellClass(specifier, CCNMStatusCell.class);
@@ -414,7 +414,7 @@ typedef NS_ENUM(NSInteger, CCNMBandSelectionAvailability) {
 
 - (PSSpecifier *)saveSpecifier {
     PSSpecifier *specifier = [PSSpecifier preferenceSpecifierNamed:
-        CCNMPreferencesLocalizedString(@"BAND_SAVE_SELECTION")
+        CCNMPreferencesLocalizedString(@"Save selection")
         target:self set:NULL get:NULL detail:Nil cell:PSButtonCell edit:Nil];
     CCNMSetSpecifierID(specifier, CCNMBandSaveSpecifierID);
     specifier->action = @selector(saveBandSelection:);
@@ -425,7 +425,7 @@ typedef NS_ENUM(NSInteger, CCNMBandSelectionAvailability) {
 
 - (PSSpecifier *)unavailableSpecifier {
     PSSpecifier *specifier = [PSSpecifier preferenceSpecifierNamed:
-        CCNMPreferencesLocalizedString(@"ROW_BAND_UNAVAILABLE")
+        CCNMPreferencesLocalizedString(@"Unavailable")
         target:self set:NULL get:NULL detail:Nil cell:PSStaticTextCell edit:Nil];
     CCNMSetSpecifierID(specifier, CCNMBandUnavailableSpecifierID);
     CCNMSetCellClass(specifier, CCNMStatusCell.class);
@@ -439,12 +439,12 @@ typedef NS_ENUM(NSInteger, CCNMBandSelectionAvailability) {
     // The dropped-band footer is a format string, so it cannot be handed to the
     // generic group builder as a key; it is substituted here instead.
     PSSpecifier *group = [self groupSpecifierWithID:CCNMBandGroupSpecifierID
-                                          titleKey:@"GROUP_BAND_SELECTION"
+                                          titleKey:@"Selectable Bands"
                                          footerKey:self.droppedStoredBands.count > 0
-                                             ? nil : @"BAND_GROUP_FOOTER"];
+                                             ? nil : @"Only bands that are both enabled by iOS and reported as supported by this modem can be chosen. Selecting every band is the same as turning the feature off."];
     if (self.droppedStoredBands.count > 0) {
         [group setProperty:[NSString stringWithFormat:
-            CCNMPreferencesLocalizedString(@"BAND_GROUP_FOOTER_DROPPED"),
+            CCNMPreferencesLocalizedString(@"Only bands that are both enabled by iOS and reported as supported by this modem can be chosen. Your saved selection also contained %@, which this device does not currently offer; those bands are not shown and will not be saved again."),
             [self descriptionForBands:self.droppedStoredBands]] forKey:PSFooterTextGroupKey];
     }
     [built addObject:group];
@@ -458,8 +458,8 @@ typedef NS_ENUM(NSInteger, CCNMBandSelectionAvailability) {
     }
 
     [built addObject:[self groupSpecifierWithID:CCNMBandSaveGroupSpecifierID
-                                       titleKey:@"GROUP_BAND_SAVE"
-                                      footerKey:@"BAND_SAVE_FOOTER"]];
+                                       titleKey:@"Save"
+                                      footerKey:@"Saving records your choice only. Nothing is written to the modem until you turn the switch on, and the selection is checked again against live band evidence at that moment."]];
     [built addObject:[self saveSpecifier]];
     return built;
 }
@@ -480,7 +480,7 @@ typedef NS_ENUM(NSInteger, CCNMBandSelectionAvailability) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = CCNMPreferencesLocalizedString(@"BAND_SELECTION_TITLE");
+    self.title = CCNMPreferencesLocalizedString(@"NR Bands");
 }
 
 // The parent pane can change policy state or refresh capability evidence while
@@ -565,9 +565,9 @@ typedef NS_ENUM(NSInteger, CCNMBandSelectionAvailability) {
         NSString *failure = ![self isEditable]
             ? [self unavailableExplanation] : [self validationFailureForWorkingSelection];
         if (failure.length == 0) {
-            failure = CCNMPreferencesLocalizedString(@"BAND_SAVE_INVALID_GENERIC");
+            failure = CCNMPreferencesLocalizedString(@"This selection cannot be applied on this device.");
         }
-        [self presentAlertWithTitleKey:@"BAND_SAVE_FAILED_TITLE" message:failure];
+        [self presentAlertWithTitleKey:@"Selection Not Saved" message:failure];
         return;
     }
 
@@ -586,13 +586,13 @@ typedef NS_ENUM(NSInteger, CCNMBandSelectionAvailability) {
 - (NSArray<NSString *> *)warningsForSelection:(NSArray<NSNumber *> *)selection {
     NSMutableArray<NSString *> *warnings = [NSMutableArray array];
     if ([self selectionIsMillimeterWaveOnly:selection]) {
-        [warnings addObject:CCNMPreferencesLocalizedString(@"BAND_WARNING_MMWAVE_ONLY")];
+        [warnings addObject:CCNMPreferencesLocalizedString(@"Every band in this selection is mmWave, which has very limited coverage. 5G will be unavailable almost everywhere. LTE is unaffected and will still be used.")];
     }
     // Only when an NR band was actually measured. On LTE there is no NR serving
     // band to lose, and inventing one would produce a warning about nothing.
     if (self.servingNRBand && ![selection containsObject:self.servingNRBand]) {
         [warnings addObject:[NSString stringWithFormat:
-            CCNMPreferencesLocalizedString(@"BAND_WARNING_EXCLUDES_SERVING_FORMAT"),
+            CCNMPreferencesLocalizedString(@"This selection excludes %@, which is the band you are connected to right now. Applying it will drop that 5G connection; the device will use another selected band if one is available, or LTE."),
             [NSString stringWithFormat:@"n%@", self.servingNRBand]]];
     }
     return warnings;
@@ -601,16 +601,16 @@ typedef NS_ENUM(NSInteger, CCNMBandSelectionAvailability) {
 - (void)confirmSelection:(NSArray<NSNumber *> *)selection
                 warnings:(NSArray<NSString *> *)warnings {
     UIAlertController *alert = [UIAlertController
-        alertControllerWithTitle:CCNMPreferencesLocalizedString(@"BAND_WARNING_ALERT_TITLE")
+        alertControllerWithTitle:CCNMPreferencesLocalizedString(@"Save this selection?")
         message:[warnings componentsJoinedByString:@"\n\n"]
         preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction
-        actionWithTitle:CCNMPreferencesLocalizedString(@"BUTTON_CANCEL")
+        actionWithTitle:CCNMPreferencesLocalizedString(@"Cancel")
         style:UIAlertActionStyleCancel
         handler:nil]];
     __weak typeof(self) weakSelf = self;
     [alert addAction:[UIAlertAction
-        actionWithTitle:CCNMPreferencesLocalizedString(@"BAND_SAVE_SELECTION")
+        actionWithTitle:CCNMPreferencesLocalizedString(@"Save selection")
         style:UIAlertActionStyleDestructive
         handler:^(UIAlertAction *action) {
             (void)action;
@@ -648,24 +648,24 @@ typedef NS_ENUM(NSInteger, CCNMBandSelectionAvailability) {
         !selectionStillCurrent || ![self canSave]) {
         [self rebuildFromWorld];
         NSString *message = [self isEditable]
-            ? CCNMPreferencesLocalizedString(@"BAND_SAVE_INVALID_GENERIC")
+            ? CCNMPreferencesLocalizedString(@"This selection cannot be applied on this device.")
             : [self unavailableExplanation];
         if (message.length > 0) {
-            [self presentAlertWithTitleKey:@"BAND_SAVE_FAILED_TITLE" message:message];
+            [self presentAlertWithTitleKey:@"Selection Not Saved" message:message];
         }
         return;
     }
 
     NSString *failure = nil;
     if (!CCNMWriteSelectedNRBands(selection, &failure)) {
-        [self presentAlertWithTitleKey:@"BAND_SAVE_FAILED_TITLE"
-                              message:CCNMPreferencesLocalizedString(@"BAND_SAVE_INVALID_GENERIC")];
+        [self presentAlertWithTitleKey:@"Selection Not Saved"
+                              message:CCNMPreferencesLocalizedString(@"This selection cannot be applied on this device.")];
         return;
     }
     NSArray<NSNumber *> *readBack = CCNMReadSelectedNRBands();
     if (![readBack isEqualToArray:selection]) {
-        [self presentAlertWithTitleKey:@"BAND_SAVE_FAILED_TITLE"
-                              message:CCNMPreferencesLocalizedString(@"BAND_SAVE_INVALID_GENERIC")];
+        [self presentAlertWithTitleKey:@"Selection Not Saved"
+                              message:CCNMPreferencesLocalizedString(@"This selection cannot be applied on this device.")];
         return;
     }
     // Re-read the whole model after the write. This clears droppedStoredBands and
@@ -680,7 +680,7 @@ typedef NS_ENUM(NSInteger, CCNMBandSelectionAvailability) {
         message:message
         preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction
-        actionWithTitle:CCNMPreferencesLocalizedString(@"BUTTON_OK")
+        actionWithTitle:CCNMPreferencesLocalizedString(@"OK")
         style:UIAlertActionStyleDefault
         handler:nil]];
     [self presentViewController:alert animated:YES completion:nil];

@@ -429,7 +429,7 @@ static void CCNMHideStandardCellContent(PSTableCell *cell) {
     // identical to an unchecked one. Say it in text instead of silently losing it.
     if (checked && self.checkmarkView.image == nil) {
         self.checkmarkView.hidden = YES;
-        NSString *mark = CCNMPreferencesLocalizedString(@"BAND_SELECTED_FALLBACK_MARK");
+        NSString *mark = CCNMPreferencesLocalizedString(@"Selected");
         detail = detail.length > 0
             ? [NSString stringWithFormat:@"%@ · %@", mark, detail]
             : mark;

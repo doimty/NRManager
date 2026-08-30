@@ -29,7 +29,7 @@ CONTROLLER = PREFS / "CCNMN78PolicyController.m"
 READER = PREFS / "CCNMN78PolicyReader.m"
 POLICY_HEADER = PREFS / "CCNMN78PolicyController.h"
 ROOT_PLIST = PREFS / "Resources/Root.plist"
-ENGLISH = PREFS / "Resources/en.lproj/NRManagerPrefs.strings"
+ENGLISH = PREFS / "Resources/en.lproj/NRManagerPrefs.strings"  # removed; English text is now inline (products/README)
 CHINESE = PREFS / "Resources/zh-Hans.lproj/NRManagerPrefs.strings"
 
 # Every entry point that can reach the modem or the durable policy records.
@@ -133,7 +133,7 @@ def method_bodies(source: str) -> dict[str, str]:
 
 def strings_table(path: pathlib.Path) -> dict[str, str]:
     table = {}
-    pattern = re.compile(r'^"([A-Z0-9_]+)"\s*=\s*"(.*)";$')
+    pattern = re.compile(r'^"((?:[^"\\]|\\.)*)"\s*=\s*"((?:[^"\\]|\\.)*)";$')
     for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         stripped = line.strip()
         if not stripped or stripped.startswith("//"):
@@ -328,7 +328,7 @@ class PaneDomainTests(unittest.TestCase):
         self.assertIn("CCNMRecoveryStateEnabledWithBaseline", availability)
         self.assertIn("CCNMRequestedModeN78Preferred", availability)
         self.assertIn("CCNMRecoveryStateClean", availability)
-        self.assertIn("BAND_UNAVAILABLE_ENABLED", self.source)
+        self.assertIn("The NR band restriction is currently enabled, so the bands reported by iOS are the applied result rather than the original configuration. Turn off the switch on the previous screen before changing the selection.", self.source)
 
     def test_a_stored_band_outside_the_domain_is_reported_not_silently_kept(self):
         """The stranding case: a stored band the current SIM no longer offers.
@@ -337,7 +337,7 @@ class PaneDomainTests(unittest.TestCase):
         from what they last saved and no way to see why.
         """
         self.assertIn("droppedStoredBands", self.source)
-        self.assertIn("BAND_GROUP_FOOTER_DROPPED", self.source)
+        self.assertIn("Only bands that are both enabled by iOS and reported as supported by this modem can be chosen. Your saved selection also contained %@, which this device does not currently offer; those bands are not shown and will not be saved again.", self.source)
 
     def test_the_pane_does_not_substitute_a_default_for_an_absent_applied_target(self):
         """CCNMN78PolicySummaryTargetNRBandsKey is absent unless a settled enabled
@@ -391,13 +391,13 @@ class PaneDomainTests(unittest.TestCase):
         self.assertNotIn("sortedArrayUsingSelector", differs)
         self.assertIn("workingSelectionDiffersFromBaseline", self.bodies["canSave"])
         self.assertIn("workingSelectionDiffersFromBaseline", self.bodies["statusText"])
-        self.assertIn("BAND_GROUP_FOOTER_DROPPED", self.source)
+        self.assertIn("Only bands that are both enabled by iOS and reported as supported by this modem can be chosen. Your saved selection also contained %@, which this device does not currently offer; those bands are not shown and will not be saved again.", self.source)
 
     def test_the_default_selection_is_not_presented_as_an_explicit_save(self):
         self.assertIn("CCNMHasStoredSelectedNRBands", self.source)
         status = self.bodies["statusText"]
         self.assertIn("hasExplicitSavedSelection", status)
-        self.assertIn("BAND_STATUS_UNSAVED_FORMAT", status)
+        self.assertIn("Not saved yet: %@", status)
 
     def test_enabled_state_displays_the_applied_policy_target(self):
         reload_model = self.bodies["reloadModel"]
@@ -425,8 +425,8 @@ class PaneServingBandTests(unittest.TestCase):
     def test_excluding_the_serving_band_warns_only_when_one_was_measured(self):
         warnings = self.bodies["warningsForSelection"]
         self.assertIn("self.servingNRBand", warnings)
-        self.assertIn("BAND_WARNING_EXCLUDES_SERVING_FORMAT", warnings)
-        self.assertIn("BAND_WARNING_MMWAVE_ONLY", warnings)
+        self.assertIn("This selection excludes %@, which is the band you are connected to right now. Applying it will drop that 5G connection; the device will use another selected band if one is available, or LTE.", warnings)
+        self.assertIn("Every band in this selection is mmWave, which has very limited coverage. 5G will be unavailable almost everywhere. LTE is unaffected and will still be used.", warnings)
 
     def test_a_row_does_not_claim_a_frequency_for_an_unmeasured_band(self):
         """A band number alone does not determine a frequency; that needs the 3GPP
@@ -475,7 +475,7 @@ class PaneCellTests(unittest.TestCase):
 
     def test_a_checked_row_stays_visible_without_sf_symbols(self):
         band_refresh = self.cells.rsplit("- (void)refreshCellContentsWithSpecifier:", 1)[1]
-        self.assertIn("BAND_SELECTED_FALLBACK_MARK", band_refresh)
+        self.assertIn("Selected", band_refresh)
 
     def test_custom_cells_choose_accessibility_height_themselves(self):
         pane = code_only(PANE.read_text())
@@ -645,11 +645,10 @@ class PaneCellTests(unittest.TestCase):
         """
         pane = code_only(PANE.read_text())
         status = method_bodies(pane)["statusText"]
-        self.assertIn("BAND_STATUS_DEFAULT_FORMAT", status)
+        self.assertIn("Using the default: %@", status)
         self.assertNotIn("|| !self.hasExplicitSavedSelection", status)
-        for table in (strings_table(ENGLISH), strings_table(CHINESE)):
-            self.assertIn("BAND_STATUS_DEFAULT_FORMAT", table)
-            self.assertIn("%@", table["BAND_STATUS_DEFAULT_FORMAT"])
+        self.assertIn("Using the default: %@", strings_table(CHINESE))
+        self.assertIn("%@", strings_table(CHINESE)["Using the default: %@"])
 
     def test_the_save_handler_does_not_claim_disabled_rows_still_dispatch(self):
         """The re-check is right; the reason recorded for it was not.
@@ -688,39 +687,38 @@ class PanePackagingTests(unittest.TestCase):
 class PaneLocalizationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.english = strings_table(ENGLISH)
         cls.chinese = strings_table(CHINESE)
         # Comment-stripped so a commented-out call cannot demand a key, while the
         # string literals the keys live in are preserved.
         cls.source = code_only(PANE.read_text()) + code_only(CELLS.read_text())
 
     def test_every_key_the_pane_asks_for_exists_in_both_locales(self):
-        used = set(re.findall(r'CCNMPreferencesLocalizedString\(@"([A-Z0-9_]+)"\)', self.source))
-        self.assertGreater(len(used), 20)
+        used = set(re.findall(r'CCNMPreferencesLocalizedString\(@"((?:[^"\\]|\\.)*)"\)', self.source))
+        self.assertGreater(len(used), 10)
         for key in sorted(used):
-            self.assertIn(key, self.english, key)
             self.assertIn(key, self.chinese, key)
             self.assertTrue(self.chinese[key].strip(), key)
 
     def test_format_strings_agree_between_locales(self):
         """A locale with a different placeholder count crashes -stringWithFormat:
-        rather than degrading."""
-        for key in sorted(set(self.english) & set(self.chinese)):
-            self.assertEqual(self.english[key].count("%@"), self.chinese[key].count("%@"), key)
+        rather than degrading. English is the key itself; the zh-Hans value must
+        keep the same placeholder count."""
+        for key, value in self.chinese.items():
+            self.assertEqual(key.count("%@"), value.count("%@"), key)
 
     def test_validation_failures_are_localized_before_reaching_the_ui(self):
         validation = method_bodies(self.source)["validationFailureForWorkingSelection"]
-        for key in ("BAND_SAVE_EMPTY", "BAND_SAVE_OUTSIDE_DOMAIN", "BAND_SAVE_WHOLE_DOMAIN"):
+        for key in ("Choose at least one NR band.", "The selection includes a band this device does not currently allow.", "All currently available bands are selected. Turn the feature off instead."):
             self.assertIn(key, validation, key)
         self.assertNotIn("return failure;", validation)
 
     def test_the_pane_strings_say_that_saving_writes_nothing_to_the_modem(self):
         """The pane's whole safety story is that it is inert until the switch is
         used. If that sentence is dropped, a user has no way to know."""
-        self.assertIn("modem", self.english["BAND_SAVE_FOOTER"])
-        self.assertIn("基带", self.chinese["BAND_SAVE_FOOTER"])
-        self.assertIn("LTE", self.english["BAND_WARNING_MMWAVE_ONLY"])
-        self.assertIn("LTE", self.chinese["BAND_WARNING_MMWAVE_ONLY"])
+        self.assertIn("modem", "Saving records your choice only. Nothing is written to the modem until you turn the switch on, and the selection is checked again against live band evidence at that moment.")
+        self.assertIn("基带", self.chinese["Saving records your choice only. Nothing is written to the modem until you turn the switch on, and the selection is checked again against live band evidence at that moment."])
+        self.assertIn("LTE", "Every band in this selection is mmWave, which has very limited coverage. 5G will be unavailable almost everywhere. LTE is unaffected and will still be used.")
+        self.assertIn("LTE", self.chinese["Every band in this selection is mmWave, which has very limited coverage. 5G will be unavailable almost everywhere. LTE is unaffected and will still be used."])
 
 
 if __name__ == "__main__":

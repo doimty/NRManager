@@ -317,11 +317,9 @@ class WritePathTargetGateTests(unittest.TestCase):
         implementation = (REPO / "nrmanagerprefs/CCNMN78PolicySupport.m").read_text(encoding="utf-8")
         for text in (support, implementation, ui, self.source):
             self.assertIn("CCNMN78PolicyErrorBaselineIncompatible", text)
-        self.assertIn("POLICY_ERROR_BASELINE_INCOMPATIBLE", ui)
-        for lproj in ("en", "zh-Hans"):
-            strings = (REPO / f"nrmanagerprefs/Resources/{lproj}.lproj/NRManagerPrefs.strings")
-            with self.subTest(lproj=lproj):
-                self.assertIn("POLICY_ERROR_BASELINE_INCOMPATIBLE", strings.read_text(encoding="utf-8"))
+        self.assertIn("The retained policy baseline is incompatible with this device or its modem capability evidence.", ui)
+        strings_path = REPO / "nrmanagerprefs/Resources/zh-Hans.lproj/NRManagerPrefs.strings"
+        self.assertIn("The retained policy baseline is incompatible with this device or its modem capability evidence.", strings_path.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

@@ -10,19 +10,18 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 PREFS = ROOT / "nrmanagerprefs"
 ROOT_PLIST = PREFS / "Resources/Root.plist"
-ENGLISH = PREFS / "Resources/en.lproj/NRManagerPrefs.strings"
 CHINESE = PREFS / "Resources/zh-Hans.lproj/NRManagerPrefs.strings"
 CELLS = PREFS / "CCNMPreferencesCells.m"
 CONTROLLER = PREFS / "CCNMRootListController.m"
 CONTROL = ROOT / "control"
 
-# Every UPPER_SNAKE literal in the bundle's own sources, plus every such value in
-# Root.plist. This is deliberately wider than the localized-string call sites: a
-# key can reach the table through a lookup dictionary (recoveryStateLocalizationKey)
-# or through a plist row, and matching only CCNMPreferencesLocalizedString call
-# sites reports those as unused.
-KEY_LITERAL = re.compile(r'@"([A-Z][A-Z0-9_]{3,})"')
-BARE_KEY = re.compile(r"[A-Z0-9_]+")
+# Every localized string the bundle can ask for is a plain English-text key. The
+# English text is both what an English device shows and the zh-Hans table key, so
+# a missing translation degrades to readable English instead of a bare key name.
+LOCALIZED_CALL = re.compile(r'CCNMPreferencesLocalizedString\(@"((?:[^"\\]|\\.)*)"\)')
+# Dynamic-string values (dictionary values, formatKey assignments, alert title/
+# message/button locals, display-values) that are passed into the localizer.
+STRING_LITERAL = re.compile(r'@"((?:[^"\\]|\\.)*)"')
 
 SOURCE_REPO = "https://github.com/doimty/NRManager"
 
@@ -31,8 +30,8 @@ SOURCE_REPO = "https://github.com/doimty/NRManager"
 # table describes the policy, which since 1.6.0 is any subset of the allowed NR
 # bands and therefore cannot name one.
 SERVING_KEYS_THAT_MAY_NAME_A_BAND = frozenset({
-    "SERVING_NR_N78",
-    "SERVING_NR_N78_FORMAT",
+    "NR n78",
+    "NR n78 · %@",
 })
 
 
@@ -109,19 +108,34 @@ def strings_table(path: Path) -> dict[str, str]:
 
 
 def referenced_localization_keys() -> set[str]:
+    """All English-text keys the bundle actually asks for.
+
+    English text is inline now: Root.plist carries it directly and the localizer
+    calls pass English text as the key. This is the set the zh-Hans table must
+    cover, and it is the set the definition-side check in
+    test_the_string_tables_and_the_bundle_reference_the_same_keys relies on
+    being complete enough not to flag legitimate prose.
+    """
     keys = set()
     for source in sorted(PREFS.glob("*.m")) + sorted(PREFS.glob("*.h")):
-        keys |= set(KEY_LITERAL.findall(source.read_text(encoding="utf-8")))
+        keys |= set(LOCALIZED_CALL.findall(source.read_text(encoding="utf-8")))
+    for name in ("CCNMRootListController.m", "CCNMBandSelectionListController.m", "CCNMPreferencesCells.m"):
+        source = (PREFS / name).read_text(encoding="utf-8")
+        for literal in STRING_LITERAL.findall(source):
+            if literal and literal[0].isupper() and not literal.startswith(("CCNM", "me.", "com.", "http")):
+                keys.add(literal)
 
     def walk(node):
         if isinstance(node, dict):
-            for value in node.values():
+            for key, value in node.items():
+                if key in ("label", "subtitle", "footerText", "title", "value") \
+                        and isinstance(value, str) and value and value[0].isupper() \
+                        and not value.startswith("http"):
+                    keys.add(value)
                 walk(value)
         elif isinstance(node, list):
             for value in node:
                 walk(value)
-        elif isinstance(node, str) and BARE_KEY.fullmatch(node):
-            keys.add(node)
 
     walk(plistlib.loads(ROOT_PLIST.read_bytes()))
     return keys
@@ -132,24 +146,24 @@ class FormalSettingsUITests(unittest.TestCase):
     def setUpClass(cls):
         cls.plist = plistlib.loads(ROOT_PLIST.read_bytes())
         cls.items = cls.plist["items"]
-        cls.english = strings_table(ENGLISH)
         cls.chinese = strings_table(CHINESE)
         cls.cells = CELLS.read_text()
         cls.controller = CONTROLLER.read_text()
 
     def test_localization_key_parity_and_required_chinese(self):
-        self.assertEqual(set(self.english), set(self.chinese))
+        # English text is inline in Root.plist and the sources, so there is no
+        # separate English table; zh-Hans must define every English text key.
         for key in (
-            "HEADER_SUBTITLE",
-            "GROUP_N78_PREFERENCE",
-            "TOGGLE_N78_PREFERENCE",
-            "GROUP_CURRENT_STATE",
-            "GROUP_RECOVERY",
-            "MAINTAINED_SOURCE",
+            "NR band management and actual serving status",
+            "NR Band Management",
+            "Enable NR band management",
+            "Current State",
+            "Recovery & Maintenance",
+            "Source code",
         ):
             self.assertIn(key, self.chinese)
             self.assertTrue(self.chinese[key].strip())
-        self.assertEqual(self.chinese["TOGGLE_N78_PREFERENCE"], "启用 NR 频段管理")
+        self.assertEqual(self.chinese["Enable NR band management"], "启用 NR 频段管理")
 
     def test_generic_policy_copy_does_not_name_one_band(self):
         """Policy copy describes the mechanism; only measured state may name a band.
@@ -159,7 +173,7 @@ class FormalSettingsUITests(unittest.TestCase):
         the applied-policy row therefore claimed n78, which reads as the modem
         ignoring the restriction rather than as a wording bug.
         """
-        for table in (self.english, self.chinese):
+        for table in (self.chinese,):
             for key, value in table.items():
                 if key in SERVING_KEYS_THAT_MAY_NAME_A_BAND:
                     continue
@@ -167,7 +181,7 @@ class FormalSettingsUITests(unittest.TestCase):
 
     def test_serving_rows_may_still_name_the_measured_band(self):
         """n78 in a serving string is a measurement, not a policy claim."""
-        for table in (self.english, self.chinese):
+        for table in (self.chinese,):
             for key in SERVING_KEYS_THAT_MAY_NAME_A_BAND:
                 self.assertIn("n78", table[key].lower(), key)
 
@@ -183,10 +197,10 @@ class FormalSettingsUITests(unittest.TestCase):
             "- (NSString *)appliedPolicyDisplayValue:(NSDictionary *)policySummary",
         )
         self.assertIn("CCNMN78PolicySummaryTargetNRBandsKey", body)
-        self.assertIn("APPLIED_VERIFIED_NR_FORMAT", body)
-        self.assertIn("APPLIED_LAST_VERIFIED_NR_FORMAT", body)
-        self.assertIn("APPLIED_LIVE_NR_DRIFT_FORMAT", body)
-        self.assertIn("APPLIED_VERIFIED_NR_UNNAMED", body)
+        self.assertIn("Current NR allows only %@; LTE unchanged", body)
+        self.assertIn("Last verified NR target %@; current modem bands unavailable", body)
+        self.assertIn("Current NR %@ differs from recorded target %@", body)
+        self.assertIn("NR band restriction was verified; recorded bands unavailable", body)
         self.assertIn("CCNMServingSummaryCapabilityActiveNRBandsKey", body)
         self.assertIn("CCNMServingSummaryCapabilityReadSuccessKey", body)
         self.assertIn("CCNMServingSummaryCapabilitySampledAtMillisecondsKey", body)
@@ -201,12 +215,12 @@ class FormalSettingsUITests(unittest.TestCase):
             " ordering the policy would not have stored",
         )
         self.assertNotIn("APPLIED_VERIFIED_N78_ONLY", self.controller)
-        for table in (self.english, self.chinese):
+        for table in (self.chinese,):
             self.assertNotIn("APPLIED_VERIFIED_N78_ONLY", table)
-            self.assertEqual(table["APPLIED_VERIFIED_NR_FORMAT"].count("%@"), 1)
-            self.assertEqual(table["APPLIED_LAST_VERIFIED_NR_FORMAT"].count("%@"), 1)
-            self.assertEqual(table["APPLIED_LIVE_NR_DRIFT_FORMAT"].count("%@"), 2)
-            self.assertNotIn("%@", table["APPLIED_VERIFIED_NR_UNNAMED"])
+            self.assertEqual(table["Current NR allows only %@; LTE unchanged"].count("%@"), 1)
+            self.assertEqual(table["Last verified NR target %@; current modem bands unavailable"].count("%@"), 1)
+            self.assertEqual(table["Current NR %@ differs from recorded target %@"].count("%@"), 2)
+            self.assertNotIn("%@", table["NR band restriction was verified; recorded bands unavailable"])
 
     def test_applied_policy_row_recomputes_when_live_capability_changes(self):
         apply_policy = method_body(self.controller, "- (void)applyPolicySummary:")
@@ -222,8 +236,8 @@ class FormalSettingsUITests(unittest.TestCase):
         self.assertEqual(len(headers), 1)
         self.assertIs(self.items[0], headers[0])
         self.assertEqual(headers[0].get("height"), 88.0)
-        self.assertEqual(headers[0].get("label"), "HEADER_TITLE")
-        self.assertEqual(headers[0].get("subtitle"), "HEADER_SUBTITLE")
+        self.assertEqual(headers[0].get("label"), "NR Manager")
+        self.assertEqual(headers[0].get("subtitle"), "NR band management and actual serving status")
         for token in (
             "constraintEqualToConstant:46.0",
             "preferredFontForTextStyle",
@@ -330,39 +344,60 @@ class FormalSettingsUITests(unittest.TestCase):
         self.assertIn('summary[@"baselineValid"]', self.controller)
         self.assertIn('CCNMN78PolicySummaryErrorCodeKey', self.controller)
         self.assertIn('CCNMN78PolicySummaryErrorKey', self.controller)
-        self.assertIn('POLICY_ERROR_DIAGNOSTIC_FORMAT', self.controller)
-
+        self.assertIn('%@\\n\\nError code: %@\\nDetails: %@', self.controller)
     def test_version_and_credits_are_formal(self):
         version_rows = [item for item in self.items if item.get("id") == "version"]
         self.assertEqual(len(version_rows), 1)
         self.assertEqual(version_rows[0].get("value"), control_version())
-        self.assertEqual(
-            self.english["ABOUT_CREDITS_FOOTER"],
+        self.assertIn(
             "Developed and maintained by the NR Manager project.",
+            self.chinese,
         )
 
     def test_the_string_tables_and_the_bundle_reference_the_same_keys(self):
         """Both directions, because each failure mode ships something broken.
 
-        A referenced-but-undefined key renders as the raw key on the device: the
-        n78 alert showed a literal RESET_CARRIER_DEFAULTS button after the
-        recovery action was renamed. A defined-but-unreferenced key is the other
-        half of the same rename -- the retired RESTORE_ORIGINAL_BANDS and
-        KNOWN_ORPHAN_* text stayed behind and still described replaying a saved
-        baseline, which this package no longer does.
+        A referenced-but-undefined text renders as raw text on the device, which is
+        English (readable) rather than a bare key, but still means the Chinese
+        translation is missing. A table entry that nothing can trigger is the other
+        half: it rots without anyone noticing.
         """
-        referenced = referenced_localization_keys()
-        for table, name in ((self.english, "en"), (self.chinese, "zh-Hans")):
-            missing = sorted(referenced - set(table))
-            self.assertEqual(
-                missing, [], f"{name} is missing keys the bundle asks for: {missing}"
-            )
-        unreferenced = sorted(set(self.english) - referenced)
-        self.assertEqual(
-            unreferenced,
-            [],
-            f"these keys are defined but nothing reads them: {unreferenced}",
-        )
+        # Reference side: every Root.plist user-facing value and every direct
+        # localized-string call argument must exist in the zh-Hans table.
+        plist_texts = set()
+        def walk(node):
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    if key in ("label", "subtitle", "footerText", "title", "value") \
+                            and isinstance(value, str) and value \
+                            and not value.startswith("http") and not value.startswith("1.6"):
+                        plist_texts.add(value)
+                    walk(value)
+            elif isinstance(node, list):
+                for value in node:
+                    walk(value)
+        walk(self.plist["items"])
+        call_args = set()
+        for source in (self.controller, self.cells):
+            call_args |= set(LOCALIZED_CALL.findall(source))
+        for source_name in ("CCNMRootListController.m", "CCNMBandSelectionListController.m", "CCNMPreferencesCells.m"):
+            source = (PREFS / source_name).read_text(encoding="utf-8")
+            call_args |= set(LOCALIZED_CALL.findall(source))
+        for text in sorted(plist_texts | call_args):
+            self.assertIn(text, self.chinese, f"zh-Hans is missing: {text!r}")
+
+        # Definition side: every table key must be triggerable from the sources or
+        # the plist, and must be a plain English text (never a bare UPPER_SNAKE
+        # key, which is exactly what used to leak onto the device).
+        haystack = "\n".join([
+            self.controller, self.cells,
+            (PREFS / "CCNMBandSelectionListController.m").read_text(),
+            ROOT_PLIST.read_text(),
+        ])
+        for key in self.chinese:
+            self.assertRegex(key, r"[A-Za-z]")
+            self.assertNotRegex(key, r"^[A-Z0-9_]{5,}$")
+            self.assertIn(key, haystack)
 
 
 if __name__ == "__main__":

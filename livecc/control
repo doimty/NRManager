@@ -4,6 +4,6 @@ Depends: com.opa334.ccsupport
 Version: 0.0.5
 Architecture: iphoneos-arm64
 Description: Non-deliverable read-only live serving status preview for NR Manager
-Maintainer: 灰灰
-Author: 灰灰
+Maintainer: doimty
+Author: doimty
 Section: Control Center (Modules)

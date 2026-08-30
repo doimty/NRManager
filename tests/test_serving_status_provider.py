@@ -228,26 +228,26 @@ int main(void) {
         self.assertNotIn(
             'dataLineValue:CCNMPreferencesLocalizedString(@"DATA_LINE_SLOT_1")', controller
         )
-        for language in ("en", "zh-Hans"):
+        for language in ("zh-Hans",):
             strings = (ROOT / f"nrmanagerprefs/Resources/{language}.lproj"
                        / "NRManagerPrefs.strings").read_text()
-            self.assertIn('"DATA_LINE_SLOT_2"', strings)
-            self.assertIn('"DATA_LINE_FORMAT"', strings)
+            self.assertIn('"SIM 2"', strings)
+            self.assertIn('"Line %@"', strings)
 
     def test_unsupported_target_alert_reports_what_it_measured(self):
         controller = (ROOT / "nrmanagerprefs/CCNMRootListController.m").read_text()
         self.assertIn("measuredDeviceDescription:", controller)
-        self.assertIn('POLICY_ERROR_MEASURED_DEVICE_FORMAT', controller)
+        self.assertIn("This device: %@ / iOS %@ (%@)", controller)
         # A summary that never reached the target check has no identity to show,
         # and must not have one invented for it.
         start = controller.index("- (NSString *)measuredDeviceDescription:")
         end = controller.index("- (NSString *)policyFailureLocalizationKey:", start)
         measured = controller[start:end]
         self.assertIn("return @\"\";", measured)
-        for language in ("en", "zh-Hans"):
+        for language in ("zh-Hans",):
             strings = (ROOT / f"nrmanagerprefs/Resources/{language}.lproj"
                        / "NRManagerPrefs.strings").read_text()
-            self.assertIn('"POLICY_ERROR_MEASURED_DEVICE_FORMAT"', strings)
+            self.assertIn('"This device: %@ / iOS %@ (%@)"', strings)
 
     def test_provider_never_writes_modem_or_infers_from_policy(self):
         combined = SOURCE.read_text() + SAMPLER.read_text()

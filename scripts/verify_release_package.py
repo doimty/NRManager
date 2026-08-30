@@ -143,7 +143,6 @@ REQUIRED_PAYLOAD_FILES = {
     "Library/PreferenceBundles/NRManagerPrefs.bundle/NRManagerPrefs",
     "Library/PreferenceBundles/NRManagerPrefs.bundle/Root.plist",
     "Library/PreferenceBundles/NRManagerPrefs.bundle/defaults.plist",
-    "Library/PreferenceBundles/NRManagerPrefs.bundle/en.lproj/NRManagerPrefs.strings",
     "Library/PreferenceBundles/NRManagerPrefs.bundle/zh-Hans.lproj/NRManagerPrefs.strings",
     "Library/PreferenceLoader/Preferences/NRManagerPrefs.plist",
     INSTALL_GUARD_RELATIVE,

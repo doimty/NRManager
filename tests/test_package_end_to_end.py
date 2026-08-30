@@ -83,8 +83,6 @@ TEXT_PAYLOAD = {
     "Library/PreferenceLoader/Preferences/NRManagerPrefs.plist":
         plistlib.dumps({"entry": {}}),
     "Library/PreferenceBundles/NRManagerPrefs.bundle/"
-    "en.lproj/NRManagerPrefs.strings": b'"key" = "value";\n',
-    "Library/PreferenceBundles/NRManagerPrefs.bundle/"
     "zh-Hans.lproj/NRManagerPrefs.strings": b'"key" = "value";\n',
     "Library/ControlCenter/Bundles/NRManager.bundle/SettingsIcon@2x.png":
         b"\x89PNG\r\n\x1a\n",

@@ -111,7 +111,6 @@ class DeliveredVersionLedgerTests(unittest.TestCase):
             "layout/Library/LaunchDaemons/com.doimty.nrmanager.maintenance.plist",
             "nrmanagerprefs/Resources/Root.plist",
             "nrmanagerprefs/CCNMRootListController.m",
-            "nrmanagerprefs/Resources/en.lproj/NRManagerPrefs.strings",
             "nrmanagerprefs/Resources/zh-Hans.lproj/NRManagerPrefs.strings",
             "maintenance-daemon/main.m",
             "package-actions/postinst.sh.in",

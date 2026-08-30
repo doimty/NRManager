@@ -230,10 +230,6 @@ Load command 1
             required,
         )
         self.assertIn(
-            "Library/PreferenceBundles/NRManagerPrefs.bundle/en.lproj/NRManagerPrefs.strings",
-            required,
-        )
-        self.assertIn(
             "Library/PreferenceBundles/NRManagerPrefs.bundle/zh-Hans.lproj/NRManagerPrefs.strings",
             required,
         )
