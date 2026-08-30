@@ -34,10 +34,10 @@ CCNMServingState const CCNMServingStateUnknown = @"unknown";
 
 NSString *CCNMN78PolicyStatePath(void) {
     return CCNMLiveResolvedPath(
-        @"/var/mobile/Library/Preferences/me.nixuge.networkmanager.n78-policy.state.plist");
+        @"/var/mobile/Library/Preferences/com.doimty.nrmanager.n78-policy.state.plist");
 }
 
 NSString *CCNMN78PolicyLockPath(void) {
     return CCNMLiveResolvedPath(
-        @"/var/mobile/Library/Preferences/me.nixuge.networkmanager.n78-policy.lock");
+        @"/var/mobile/Library/Preferences/com.doimty.nrmanager.n78-policy.lock");
 }

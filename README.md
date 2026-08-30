@@ -1,27 +1,25 @@
-# NetworkManagerReborn
+# NR Manager
 
-NetworkManagerReborn continues NoisyFlake's original [NetworkManager](https://github.com/NoisyFlake/NetworkManager), with earlier maintenance by Nixuge and current maintenance at [doimty/NetworkManagerReborn](https://github.com/doimty/NetworkManagerReborn).
+NR Manager is a Control Center module for selecting allowed NR bands and viewing the actual serving network. It narrows only the NR band list selected by the user, keeps LTE available as fallback, and publishes the source code at [NR Manager source repository](https://github.com/doimty/NetworkManagerReborn).
 
-## 1.5.0 scope
+## What it does
 
-Version 1.5.0 replaces legacy RAT cycling with a reversible n78 preference:
+- Select one or more NR bands that are already both enabled by iOS and supported by the modem.
+- Apply the selection through the existing reversible policy switch.
+- Leave LTE and every other non-NR band list unchanged.
+- Show requested policy, verified applied policy, and fresh serving RAT/band as separate states.
+- Retain the original complete configuration so disabling the policy, recovering from an interrupted operation, removing the package, or downgrading can restore it safely.
+- Support dual-SIM devices by selecting the current data subscription on first enable and retaining that subscription identity for later verification and restore.
 
-- When NR is used, the allowed NR list is changed to exactly n78.
-- LTE and every other non-NR band list remain unchanged.
-- LTE fallback remains available when n78 is not serving.
-- Requested policy, verified applied policy, and fresh serving RAT/Band are kept as separate domains in Settings and maintenance.
-- The formal package keeps the Live Band Control Center button, rejects redundant long-press expansion, and reflects the enabled n78 preference with the original orange selected glyph.
-- A retained baseline and package removal guard prevent uninstall or downgrade from stranding the modem on the modified NR list.
+NR Manager is a band preference, not a hard 5G or NR lock. Carrier policy, coverage, idle state, thermal state, and modem selection can still move service to another selected band or to LTE. Selecting every currently available NR band is treated as the system-default state rather than as a modem write.
 
-This is not a hard n78 lock. Carrier policy, coverage, idle state, thermal state, and modem selection can still move service to LTE.
+## Current status
 
-The first end-to-end acceptance was performed on `iPhone14,3` running iOS 15.1.1 (`19B81`), but that identity is recorded evidence rather than a compatibility allowlist. Enable runs on any device/build that passes the runtime contract: the private CoreTelephony ABI is valid, a write target resolves unambiguously to a present and good SIM with a stable UUID in a positive slot, complete fresh `activeBands` and `supportedBands` are readable, and both NR sets contain n78. Dual-SIM phones are supported: a first enable targets the line CoreTelephony reports as the current data line, and every later verification and restore looks that recorded subscription up by UUID plus slot instead of re-choosing, because the data line moves at runtime. Only the NR array changes; LTE and every other RAT remain unchanged. Restore is bound to the same hardware model and to the saved capability shape and owned NR capability evidence. The saved active NR list is replayed exactly; it is not required to be a subset of the current supported NR list because the device's BandInfo contract permits that shape. An iOS version/build update alone does not strand the baseline.
+Version 1.6.4 is under source validation. Rootless and roothide packages are not release-ready until the pinned Xcode 15.4 cloud builds and the device acceptance checklist pass. The formal package includes the Control Center module, Settings interface, and automatic maintenance. The standalone LiveCC target remains an isolated read-only prototype and is not a deliverable package.
 
-## Release status
+The first end-to-end acceptance was performed on `iPhone14,3` running iOS 15.1.1 (`19B81`). That device is recorded evidence, not a compatibility allowlist. Runtime checks validate the private CoreTelephony ABI, the target subscription, fresh active and supported NR capabilities, and every modem write by complete read-back.
 
-The 1.5.0 source is under validation. Rootless and roothide packages are not release-ready until pinned Xcode 15.4 cloud builds and the device acceptance checklist in [the release plan](docs/formal-release-1.5.0-plan.md) pass. The formal package owns the Control Center preview, Settings, and automatic maintenance; the standalone LiveCC package remains an independent prototype/preview build.
-
-Host checks:
+## Checks
 
 ```sh
 python3 -m unittest discover -s tests -v

@@ -436,14 +436,14 @@ class MaintainerScriptTests(unittest.TestCase):
         # of the full one without an external tool selecting a line by number,
         # which then silently follows whatever becomes line two next.
         self.assertEqual(
-            POLICY_SHELL.count("me.nixuge.networkmanager.n78-policy.baseline.plist"), 1)
-        self.assertIn("POLICY_BASELINE_BASENAME='me.nixuge.networkmanager.n78-policy.baseline.plist'",
+            POLICY_SHELL.count("com.doimty.nrmanager.n78-policy.baseline.plist"), 1)
+        self.assertIn("POLICY_BASELINE_BASENAME='com.doimty.nrmanager.n78-policy.baseline.plist'",
                       POLICY_SHELL)
         for generator in ("policy_records()", "policy_baseline_record()"):
             with self.subTest(generator=generator):
                 body = function_body(POLICY_SHELL, generator)
                 self.assertIn("${POLICY_BASELINE_BASENAME}", body)
-                self.assertNotIn("me.nixuge.networkmanager.n78-policy.baseline.plist", body)
+                self.assertNotIn("com.doimty.nrmanager.n78-policy.baseline.plist", body)
         # And the directory is shared too, so the two cannot disagree about where.
         for generator in ("policy_records()", "policy_baseline_record()",
                           "policy_band_selection()"):
@@ -451,7 +451,7 @@ class MaintainerScriptTests(unittest.TestCase):
                 self.assertIn("${POLICY_RECORD_DIR}", function_body(POLICY_SHELL, generator))
         present = function_body(POLICY_SHELL, "policy_baseline_present()")
         self.assertIn("policy_baseline_record", present)
-        self.assertNotIn("me.nixuge.networkmanager", present)
+        self.assertNotIn("com.doimty.nrmanager", present)
 
     def test_the_band_selection_is_a_separate_list_discarded_on_removal_only(self):
         records = function_body(POLICY_SHELL, "policy_records()")

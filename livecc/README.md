@@ -1,14 +1,14 @@
-# NetworkManager Live CC Prototype
+# NR Manager Live Control Center Preview
 
-This is an isolated, non-deliverable prototype for a read-only live serving-band
-Control Center module. It does not replace or extend `NetworkManager.bundle`.
+This is an isolated, non-deliverable prototype for a read-only live serving-status
+Control Center module. It does not replace or extend the production NR Manager bundle (`NetworkManager.bundle`).
 
-Prototype question: can a standalone `CCUIContentModule` own a
+This preview tests whether a standalone `CCUIContentModule` can own a
 `CCUIButtonModuleViewController`, refresh serving-band state while Control Center
 is visible, and update `glyphImage` directly without any toggle or policy-writing
 path?
 
-Current verdict: version 0.0.1 loaded on the target device without a SpringBoard
+Current status: version 0.0.1 loaded on the target device without a SpringBoard
 crash and refreshed serving bands quickly. Version 0.0.2 added a radio-search
 SF Symbol and one pending RAT refresh; device feedback confirmed the symbol but
 found its raw bounds offset and black tint inappropriate. Version 0.0.3 renders

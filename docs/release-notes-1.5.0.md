@@ -1,20 +1,20 @@
-# NetworkManagerReborn 1.5.0 release notes
+# NR Manager 1.5.0 release notes (historical)
 
 Status: release candidate source, not yet approved for distribution.
 
 ## Product changes
 
-- Replaced local Control Center RAT cycling with a single reversible n78 preference.
+- Replaced local Control Center RAT cycling with a single reversible NR band preference, defaulting to n78.
 - Enabling changes only the NR allowed-band array to exact `[78]`; all non-NR arrays, including LTE, remain unchanged.
 - Added separate requested-policy, verified-applied-policy, and fresh serving-network states.
 - Added adaptive Cell Monitor sampling for truthful NR n78, other NR, LTE, other, or stale/unknown serving status.
 - Added an independently implemented, localized Simplified Chinese and English Settings interface.
-- Kept the formal Live Band Control Center button, disabled its redundant long-press expansion, and restored the original orange selected glyph when n78 preference is enabled.
-- Kept links and credit for NoisyFlake's original project, Nixuge's continuation, and doimty's maintained source.
+- Kept the formal NR Manager Control Center button, disabled its redundant long-press expansion, and restored the orange selected glyph when the NR band restriction is enabled.
+- The source repository is the project's only published repository link: [NR Manager source repository](https://github.com/doimty/NetworkManagerReborn).
 
 ## Safety and recovery
 
-- Retains the complete original six-RAT baseline while n78 preference is enabled.
+- Retains the complete original six-RAT baseline while an NR band preference is enabled.
 - Uses durable intent and in-flight records, exact subscription identity, a cross-process lock, and full read-back verification.
 - A 20-second setter deadline returns control while retaining the lock until a late private call resolves; uncertain outcomes forbid another same-boot write.
 - Disabling restores the exact original NR list while preserving current non-NR arrays.
@@ -44,7 +44,7 @@ The model and OS identity are now recorded baseline evidence, not a compatibilit
 
 The dedicated known-orphan recovery remains stricter: it requires an exact match of the reviewed six-RAT active and supported dictionaries, subscription identity, clean durable state, and a phone holding a single SIM, because its reviewed evidence was captured on a single-SIM reference device. It is not a general fallback for arbitrary phones.
 
-This feature is an n78 preference, not a guarantee of continuous 5G or n78 service. LTE fallback is expected and is not reported as policy failure.
+This feature is an NR band preference, defaulting to n78, not a guarantee of continuous 5G or n78 service. LTE fallback is expected and is not reported as policy failure.
 
 ## Remaining release gates
 

@@ -117,7 +117,7 @@ int main(void) {
         1, @1234567890000, CCNMAutomaticMaintenanceAwaitEvidence, nil);
     if (!record) return 1;
     if (![record[CCNMARecordSchemaVersionKey] isEqual:@2]) return 2;
-    if (![record[CCNMARecordOwnerKey] isEqual:@"me.nixuge.networkmanager.automatic-maintenance"]) return 3;
+    if (![record[CCNMARecordOwnerKey] isEqual:@"com.doimty.nrmanager.automatic-maintenance"]) return 3;
     if (![record[CCNMARecordDeviceModelKey] isEqual:@"iPhone14,3"]) return 4;
     if (![record[CCNMARecordSystemVersionKey] isEqual:@"15.1.1"]) return 5;
     if (![record[CCNMARecordSystemBuildKey] isEqual:@"19B81"]) return 6;

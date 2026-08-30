@@ -57,4 +57,4 @@ NSString *const CCNMN78PolicySummaryCleanupCheckpointRecoverableKey =
 NSString *const CCNMN78PolicySummaryTargetNRBandsKey = @"targetNRBands";
 
 NSString *const CCNMN78PolicyDidChangeDarwinNotification =
-    @"me.nixuge.networkmanager/n78-policy-changed";
+    @"com.doimty.nrmanager/n78-policy-changed";

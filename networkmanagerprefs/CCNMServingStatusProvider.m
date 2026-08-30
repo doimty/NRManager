@@ -43,23 +43,23 @@ NSString *const CCNMServingSummaryCapabilitySampledAtMillisecondsKey = @"capabil
 NSString *const CCNMServingSummaryCapabilityErrorKey = @"capabilityError";
 #if CCNM_SERVING_USE_LIVECC_NAMESPACE
 NSString *const CCNMServingStatusDidChangeDarwinNotification =
-    @"me.nixuge.networkmanager.livecc.serving-status-changed";
+    @"com.doimty.nrmanager.livecc.serving-status-changed";
 #else
 NSString *const CCNMServingStatusDidChangeDarwinNotification =
-    @"me.nixuge.networkmanager.serving-status-changed";
+    @"com.doimty.nrmanager.serving-status-changed";
 #endif
 
 static const long long CCNMServingFreshnessLifetimeMilliseconds = 30000;
 #if CCNM_SERVING_USE_LIVECC_NAMESPACE
 static NSString *const CCNMServingCacheFilename =
-    @"me.nixuge.networkmanager.livecc.serving-status.plist";
+    @"com.doimty.nrmanager.livecc.serving-status.plist";
 static NSString *const CCNMServingCacheLockFilename =
-    @"me.nixuge.networkmanager.livecc.serving-status.lock";
+    @"com.doimty.nrmanager.livecc.serving-status.lock";
 #else
 static NSString *const CCNMServingCacheFilename =
-    @"me.nixuge.networkmanager.serving-status.plist";
+    @"com.doimty.nrmanager.serving-status.plist";
 static NSString *const CCNMServingCacheLockFilename =
-    @"me.nixuge.networkmanager.serving-status.lock";
+    @"com.doimty.nrmanager.serving-status.lock";
 #endif
 
 static NSString *CCNMServingCachePath(void) {
@@ -769,7 +769,7 @@ static NSDictionary *CCNMServingSummaryFromReport(NSDictionary *report,
 - (instancetype)init {
     self = [super init];
     if (self) {
-        _operationQueue = dispatch_queue_create("me.nixuge.networkmanager.serving-status", DISPATCH_QUEUE_SERIAL);
+        _operationQueue = dispatch_queue_create("com.doimty.nrmanager.serving-status", DISPATCH_QUEUE_SERIAL);
         _lastSummary = CCNMServingReadCachedSummary() ?: CCNMServingStatusEmptySummary();
         _lastSupportEvidence = @{};
         _retainedSamplerLockDescriptor = -1;

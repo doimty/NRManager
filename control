@@ -1,9 +1,9 @@
-Package: me.nixuge.networkmanager
-Name: NetworkManagerReborn
+Package: com.doimty.nrmanager
+Name: NR Manager
 Depends: mobilesubstrate, com.opa334.ccsupport
-Version: 1.6.3
+Version: 1.6.4
 Architecture: iphoneos-arm64
-Description: Control Center network selection with an NR band restriction
-Maintainer: Nixuge, 灰灰
-Author: NoisyFlake, Nixuge, 灰灰
+Description: Select NR bands and view live serving status in Control Center
+Maintainer: 灰灰
+Author: 灰灰
 Section: Control Center (Modules)

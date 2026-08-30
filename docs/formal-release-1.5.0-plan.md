@@ -1,4 +1,6 @@
-# NetworkManagerReborn 1.5.0 formal release plan
+# NR Manager 1.5.0 formal release plan (historical)
+
+This document describes the 1.5.0 release plan and is retained as historical engineering context. It is not the current product contract; current user-facing branding is NR Manager and the current source version is maintained in the package metadata.
 
 **Branch:** `release/1.5.0`
 **Baseline:** `2947f98ffb2665b000afab2c4db3ae843866d4da`
@@ -6,13 +8,15 @@
 
 ## Release goal
 
-Ship a small, truthful n78 preference product instead of a collection of modem diagnostics.
+Ship a small, truthful NR band preference product, with n78 as the 1.5.0 default, instead of a collection of modem diagnostics.
 
-The formal user contract is:
+The formal user contract for 1.5.0 is:
 
 > When NR is used, allow only n78. Keep the complete LTE fallback policy unchanged. Show requested policy, verified applied policy, and actual serving RAT/Band as separate states. Never claim continuous n78 service.
 
-This is an n78 preference, not a hard n78 lock. Carrier policy, coverage, idle state, thermal state, and modem selection may still move service to LTE.
+Later NR Manager versions generalise the same reversible mechanism to a user-selected subset of the device's currently allowed NR bands.
+
+This is an n78 preference in 1.5.0, not a hard n78 lock. Carrier policy, coverage, idle state, thermal state, and modem selection may still move service to LTE.
 
 ## Source boundary
 
@@ -27,7 +31,7 @@ This is an n78 preference, not a hard n78 lock. Carrier policy, coverage, idle s
 - Release version: `1.5.0`.
 - Tag after final acceptance: `1.5.0`.
 - Package ID remains `me.nixuge.networkmanager`.
-- Use neutral package metadata for both schemes: `NetworkManagerReborn`, not `NetworkManagerReborn Roothide` in the rootless package.
+- Use the same neutral package metadata for both schemes: `NR Manager`.
 - Publish rootless and roothide as separate artifacts from the same source commit. Only publish a scheme after its own device acceptance.
 
 ## Product state model
@@ -116,7 +120,7 @@ Use the PullOver-X information hierarchy, independently implemented with Auto La
 ### Header
 
 - Existing NetworkManager icon, 46 pt.
-- Title: `NetworkManagerReborn`.
+- Title: `NR Manager`.
 - Subtitle: `5G n78 偏好与真实驻网状态`.
 - Compact 88 pt header cell; no decorative banner card.
 
@@ -155,16 +159,13 @@ Examples must be truthful:
 
 Implement PullOver-style blue link cells with a Safari glyph and optional subtitle.
 
-- `原作者项目`
-  - Subtitle: `NetworkManager by NoisyFlake`
-  - URL: `https://github.com/NoisyFlake/NetworkManager`
-- `当前维护源码`
-  - Subtitle: `NetworkManagerReborn by doimty`
+- `源码仓库`
+  - Subtitle: `NR Manager open-source repository`
   - URL: `https://github.com/doimty/NetworkManagerReborn`
 - `版本`
   - `1.5.0`
 
-Credit NoisyFlake and Nixuge in the footer/release notes. Do not copy PullOver-X GPL source.
+Do not copy PullOver-X GPL source; implement the interface independently.
 
 ## Localization
 
@@ -207,7 +208,7 @@ Before implementation, add red tests for:
 - requested/applied/serving states never conflated;
 - diagnostic actions and forbidden strings absent from formal source/package. The scan selects files by extension, so any change to a shipped file's shape must be reflected there: the maintainer scripts moved from `postinst.m`/`prerm.m` to `postinst.sh.in`/`prerm.sh.in`, which silently removed them from the scan until `.in`/`.sh` were added;
 - Chinese and English localization key parity;
-- original/current repository URLs present exactly once;
+- the NR Manager source repository URL is present exactly once;
 - uninstall/downgrade cannot strand NR `[78]`.
 
 ## Reproducible build

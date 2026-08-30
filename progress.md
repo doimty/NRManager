@@ -4,6 +4,17 @@ Baseline: `2947f98ffb2665b000afab2c4db3ae843866d4da`
 Branch: `prototype/livecc-readonly`
 Target: iPhone14,3 / iOS 15.1.1 (19B81), slot 1, one present and good SIM
 
+## 2026-08-30 NR Manager rebrand completion: package ID and repository identity
+
+- The earlier rebrand pass (same date) renamed the product and removed original-author attribution from user-facing text but deliberately kept `Package: me.nixuge.networkmanager` for upgrade compatibility. The user explicitly overrode that decision: the package ID and every internal state path must be rebranded too, and the latest source uploaded to the repository.
+- New package identity: `com.doimty.nrmanager` (main), `com.doimty.nrmanager.prefs` (Settings bundle), `com.doimty.nrmanager.livecc` (read-only Live CC prototype). LaunchDaemon renamed to `com.doimty.nrmanager.maintenance.plist` with Label `com.doimty.nrmanager.maintenance`; KeepAlive PathState now watches `com.doimty.nrmanager.n78-policy.baseline.plist`.
+- Every internal identifier moved with the package: policy state/intent/inflight/lock/removal-guard and n78-selection plist basenames, automatic-maintenance owner/record/status names, serving-status cache/notification names, the `n78-policy-changed` and livecc serving notifications, dispatch queue labels, and the maintainer record key. All ObjC sources, shell maintainer scripts, launchd plist, Info.plist bundle identifiers, verifiers (`verify_release_source.py`, `verify_release_package.py`, `patch-maintenance-launchd.py`), workflow assertions and upload metadata, and the pure-logic / packaging / shell tests now assert the new ID. `git mv` preserved the LaunchDaemon plist rename.
+- Historical docs and the changelog are not rewritten: `docs/formal-release-1.5.0-plan.md` and earlier `progress.md` entries retain the old ID as historical record.
+- The repository URL is unchanged and is the project's own open-source repository (`doimty/NetworkManagerReborn`); README, release notes, formal plan, About-page source link and its test all point at that single URL.
+- Evidence: 427 host tests pass (4 Foundation-dependent skips); `verify_release_source.py` returns `status: passed` with `com.doimty.nrmanager / NR Manager / 1.6.4` and empty `failures`/`forbidden`; residual scan for `me.nixuge` outside build dirs and historical docs is empty.
+- Delivery consequence, stated: installing this package alongside a previously installed `me.nixuge.networkmanager` package will make dpkg treat them as two packages. Upgrade/downgrade interplay of the old removal guard with the new ID was not re-verified on device; the old package should be removed before installing the rebranded one.
+
+
 ## Completed in working tree
 
 - Formal n78 policy state model with exact six-RAT validation, durable baseline, intent/in-flight records, UUID/SIM checks, cross-process flock, bounded setter wait, late-setter lock retention, full read-back, and reboot-required uncertainty.
@@ -427,3 +438,12 @@ Cloud gate complete: release run `32688526055`, final source SHA `e233deb986b798
 - Twelve signals verified, positives as carefully as negatives. Must stay green: baseline; a `progress.md` edit; a test-file edit; a source edit that has already been bumped to an undelivered 1.6.4 (skips by design). Must turn red: a one-line edit to `CCNMRootListController.m` at a delivered version (this is the original defect, reproduced); an edit to `build.yml`; an edit to the en strings table; the version returned to 1.6.2; lowered to an unrecorded 1.6.0; `Root.plist` left behind alone; the ledger emptied; a duplicated entry; and the digest scope narrowed to exclude `networkmanagerprefs/` or `maintenance-daemon/`, which the scope assertion catches by name.
 - Stated limitation: the digest proves the inputs match, not that the output bytes match. `LC_UUID` alone already makes the deb non-reproducible, so identical inputs is the strongest available claim.
 - Evidence: 427 host tests pass with 3 Foundation-dependent skips, `py_compile` and `git diff --check` clean, ledger parses at schema 2. Caches are cleared before every mutation round; a stale `scripts/__pycache__` entry made one restored baseline read as failing earlier today, and an untracked `scripts/shipping_digest.py` made `git checkout --` a no-op for one restore, which is why each round now asserts its own return to green.
+
+## 2026-08-30 NR Manager rebrand and attribution cleanup
+
+- Rebranded user-facing product metadata, Settings UI, Control Center labels, maintainer-script messages, README, and CI artifacts to **NR Manager**.
+- Removed the original-author and original-repository entry from the About page; the About page now contains exactly one source link, the current project repository.
+- Removed the extra `upstream` and duplicate `doimty` git remotes from this worktree; `origin` remains the only remote and points to the current project repository.
+- Updated package descriptions to describe the current product as selectable NR-band management with live serving status. The old package ID and internal state paths remain unchanged intentionally for upgrade and recovery compatibility.
+- Updated the stale 1.5.0 planning/release documents to identify them as historical and to distinguish the old n78 default from the current selectable-band product.
+- Validation: 427 host tests passed before the final localization/scanner corrections; final focused and source-verification checks are rerun after those corrections.

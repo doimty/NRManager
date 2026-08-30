@@ -51,7 +51,7 @@ static NSString *CCNMPolicyRootForMaintainer(NSString *path) {
 #define CCNMPolicyRoot(path) (path)
 #endif
 
-static NSString *const CCNMPolicyOwner = @"me.nixuge.networkmanager.n78-policy";
+static NSString *const CCNMPolicyOwner = @"com.doimty.nrmanager.n78-policy";
 static NSString *const CCNMNRKey = @"kCTRegistrationRadioAccessTechnologyNR";
 static const long long CCNMMaximumBandIdentifier = 1024;
 static const NSTimeInterval CCNMSetterDeadlineSeconds = 20.0;
@@ -105,27 +105,27 @@ static int CCNMSetterRetainedPolicyLockDescriptor = -1;
 static NSUInteger CCNMSetterRetainedPolicyLockGeneration = 0;
 
 NSString *CCNMN78PolicyStatePath(void) {
-    return CCNMPolicyRoot(@"/var/mobile/Library/Preferences/me.nixuge.networkmanager.n78-policy.state.plist");
+    return CCNMPolicyRoot(@"/var/mobile/Library/Preferences/com.doimty.nrmanager.n78-policy.state.plist");
 }
 
 NSString *CCNMN78PolicyBaselinePath(void) {
-    return CCNMPolicyRoot(@"/var/mobile/Library/Preferences/me.nixuge.networkmanager.n78-policy.baseline.plist");
+    return CCNMPolicyRoot(@"/var/mobile/Library/Preferences/com.doimty.nrmanager.n78-policy.baseline.plist");
 }
 
 NSString *CCNMN78PolicyIntentPath(void) {
-    return CCNMPolicyRoot(@"/var/mobile/Library/Preferences/me.nixuge.networkmanager.n78-policy.intent.plist");
+    return CCNMPolicyRoot(@"/var/mobile/Library/Preferences/com.doimty.nrmanager.n78-policy.intent.plist");
 }
 
 NSString *CCNMN78PolicyInFlightPath(void) {
-    return CCNMPolicyRoot(@"/var/mobile/Library/Preferences/me.nixuge.networkmanager.n78-policy.inflight.plist");
+    return CCNMPolicyRoot(@"/var/mobile/Library/Preferences/com.doimty.nrmanager.n78-policy.inflight.plist");
 }
 
 NSString *CCNMN78PolicyLockPath(void) {
-    return CCNMPolicyRoot(@"/var/mobile/Library/Preferences/me.nixuge.networkmanager.n78-policy.lock");
+    return CCNMPolicyRoot(@"/var/mobile/Library/Preferences/com.doimty.nrmanager.n78-policy.lock");
 }
 
 NSString *CCNMN78PolicyRemovalGuardPath(void) {
-    return CCNMPolicyRoot(@"/var/mobile/Library/Preferences/me.nixuge.networkmanager.n78-policy.removal-guard.plist");
+    return CCNMPolicyRoot(@"/var/mobile/Library/Preferences/com.doimty.nrmanager.n78-policy.removal-guard.plist");
 }
 
 // The pending band selection is ordinary user preference data, not policy
@@ -136,7 +136,7 @@ NSString *CCNMN78PolicyRemovalGuardPath(void) {
 // path revalidates it against the live domain, so a tampered file can still only
 // pick a subset of what iOS already allowed.
 NSString *CCNMN78SelectedBandsPath(void) {
-    return CCNMPolicyRoot(@"/var/mobile/Library/Preferences/me.nixuge.networkmanager.n78-selection.plist");
+    return CCNMPolicyRoot(@"/var/mobile/Library/Preferences/com.doimty.nrmanager.n78-selection.plist");
 }
 
 NSArray<NSString *> *CCNMN78PolicyPaths(void) {
@@ -2144,7 +2144,7 @@ static CCNMSetterOutcome CCNMCallSetter(id<CCNMCoreTelephonyClient> client,
     details[@"setterStartedAt"] = @(CCNMUnixMilliseconds());
 
     dispatch_queue_t setterQueue = dispatch_queue_create(
-        "me.nixuge.networkmanager.n78-policy.setter", DISPATCH_QUEUE_SERIAL);
+        "com.doimty.nrmanager.n78-policy.setter", DISPATCH_QUEUE_SERIAL);
     dispatch_semaphore_t setterFinished = dispatch_semaphore_create(0);
     __block NSError *setterError = nil;
     __block NSException *caught = nil;
@@ -2537,7 +2537,7 @@ static BOOL CCNMFinishSystemDefaultState(NSUInteger generation,
 - (instancetype)init {
     self = [super init];
     if (self) {
-        _operationQueue = dispatch_queue_create("me.nixuge.networkmanager.n78-policy", DISPATCH_QUEUE_SERIAL);
+        _operationQueue = dispatch_queue_create("com.doimty.nrmanager.n78-policy", DISPATCH_QUEUE_SERIAL);
     }
     return self;
 }
@@ -2891,7 +2891,7 @@ static BOOL CCNMFinishSystemDefaultState(NSUInteger generation,
                         state[@"subscriptionUUID"], state[@"slotID"], details, &failure) : nil;
                 NSDictionary *fresh = context ? CCNMReadFreshBandInfo(client, context, &failure) : nil;
                 if (!fresh || !CCNMDictionariesEqual(fresh[@"activeBands"], state[@"verifiedActiveBands"])) {
-                    failure = failure ?: @"Live BandInfo no longer matches the verified restore cleanup checkpoint.";
+                    failure = failure ?: @"Live modem BandInfo no longer matches the verified restore cleanup checkpoint.";
                     return CCNMErrorSummary(operation, CCNMN78PolicyErrorInvalidBandInfo, failure, details);
                 }
                 // The slot comes from the subscription just revalidated above, not

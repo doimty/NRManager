@@ -95,11 +95,11 @@ LAUNCHD_PLIST='@LAUNCHD_PLIST@'
 GUARD_LAUNCHD_VERIFIED='launchd-contract-verified'
 
 note() {
-    printf 'NetworkManagerReborn: %s\n' "$1" >&2
+    printf 'NR Manager: %s\n' "$1" >&2
 }
 
 warn() {
-    printf 'NetworkManagerReborn: warning — %s\n' "$1" >&2
+    printf 'NR Manager: warning — %s\n' "$1" >&2
 }
 
 # Printed on every exit path, including the early ones, because the reporting

@@ -58,7 +58,7 @@ _spec.loader.exec_module(patcher)
 
 POSTINST_TEMPLATE = REPO / "package-actions" / "postinst.sh.in"
 PRERM_TEMPLATE = REPO / "package-actions" / "prerm.sh.in"
-LABEL = "me.nixuge.networkmanager.maintenance"
+LABEL = "com.doimty.nrmanager.maintenance"
 PLIST_RELATIVE = f"Library/LaunchDaemons/{LABEL}.plist"
 # The single line postinst reads from the guard's stdout as permission to load
 # the job. Defined here from the same literal both halves use, so a divergence
@@ -286,7 +286,7 @@ class ShellScriptBase(unittest.TestCase):
 
     def policy_records(self, create=False):
         records = [
-            self.policy_record_dir() / f"me.nixuge.networkmanager.n78-policy.{suffix}.plist"
+            self.policy_record_dir() / f"com.doimty.nrmanager.n78-policy.{suffix}.plist"
             for suffix in ("state", "baseline", "intent", "inflight",
                            "removal-guard")]
         if create:
@@ -297,11 +297,11 @@ class ShellScriptBase(unittest.TestCase):
 
     def policy_baseline(self):
         return (self.policy_record_dir()
-                / "me.nixuge.networkmanager.n78-policy.baseline.plist")
+                / "com.doimty.nrmanager.n78-policy.baseline.plist")
 
     def band_selection(self, create=False):
         path = (self.policy_record_dir()
-                / "me.nixuge.networkmanager.n78-selection.plist")
+                / "com.doimty.nrmanager.n78-selection.plist")
         if create:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("chosen bands")
@@ -1026,7 +1026,7 @@ class PostinstLaunchdLoadTests(ShellScriptBase):
 
     # ------------------------------------------------------------------
     # The hung install. A reinstall on the reporting device stopped at
-    # "Configuring me.nixuge.networkmanager" and never returned.
+    # "Configuring com.doimty.nrmanager" and never returned.
     #
     # Both mechanisms below produce that same symptom, both were possible in the
     # shipped script, and both are covered here because the evidence did not
@@ -1421,7 +1421,7 @@ class PrermTests(ShellScriptBase):
         self.addCleanup(shutil.rmtree, elsewhere, ignore_errors=True)
         stray = elsewhere / "relative/root/var/mobile/Library/Preferences"
         stray.mkdir(parents=True)
-        victim = stray / "me.nixuge.networkmanager.n78-policy.state.plist"
+        victim = stray / "com.doimty.nrmanager.n78-policy.state.plist"
         victim.write_text("not ours to delete")
 
         self.stub("jbroot", '#!/bin/sh\nprintf "relative/root\\n"\n')

@@ -43,7 +43,7 @@ int main(int argc, const char *argv[]) {
             // dpkg always runs maintainer scripts as root, so this is an
             // out-of-band invocation rather than a device condition. Reading the
             // plist needs root, and so does loading the job.
-            fprintf(stderr, "NetworkManagerReborn: installation guard must run as root.\n");
+            fprintf(stderr, "NR Manager: installation guard must run as root.\n");
             return CCNMPostinstBlocked;
         }
 
@@ -62,7 +62,7 @@ int main(int argc, const char *argv[]) {
             // still end up with a fully configured package rather than a
             // permanently half-installed one.
             fprintf(stderr,
-                "NetworkManagerReborn: warning — the maintenance owner will not be started (%s).\n"
+                "NR Manager: warning — the maintenance owner will not be started (%s).\n"
                 "  Band policy changes work. Automatic serving-state monitoring is\n"
                 "  unavailable until this is corrected.\n",
                 launchdError.localizedDescription.UTF8String ?: "unknown");

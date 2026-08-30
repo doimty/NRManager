@@ -1,10 +1,10 @@
-"SETTINGS_TITLE" = "NetworkManagerReborn";
-"HEADER_TITLE" = "NetworkManagerReborn";
-"HEADER_SUBTITLE" = "NR band selection and actual serving status";
+"SETTINGS_TITLE" = "NR Manager";
+"HEADER_TITLE" = "NR Manager";
+"HEADER_SUBTITLE" = "NR band management and actual serving status";
 
-"GROUP_N78_PREFERENCE" = "NR Band Restriction";
+"GROUP_N78_PREFERENCE" = "NR Band Management";
 "N78_PREFERENCE_FOOTER" = "When enabled, NR allows only the selected bands. LTE bands remain unchanged and can be used when 5G is unavailable.";
-"TOGGLE_N78_PREFERENCE" = "Enable NR band restriction";
+"TOGGLE_N78_PREFERENCE" = "Enable NR band management";
 "ROW_TRANSITION_STATE" = "Transition state";
 "TRANSITION_APPLYING" = "Applying";
 "TRANSITION_VERIFIED" = "Verified";
@@ -54,7 +54,7 @@
 "ROW_FRESHNESS" = "Updated";
 "REFRESH_SERVING_STATUS" = "Refresh serving status";
 "REQUESTED_SYSTEM_DEFAULT" = "System default";
-"REQUESTED_N78_PREFERENCE" = "NR band restriction";
+"REQUESTED_N78_PREFERENCE" = "NR band management";
 "APPLIED_UNKNOWN" = "Unknown";
 "APPLIED_APPLYING" = "Applying";
 "APPLIED_VERIFIED_SYSTEM_DEFAULT" = "System default verified";
@@ -101,11 +101,9 @@
 "BUTTON_RESTORE" = "Restore";
 
 "GROUP_ABOUT" = "About";
-"ABOUT_CREDITS_FOOTER" = "Original project by NoisyFlake, continued by Nixuge, and maintained by doimty.";
-"ORIGINAL_PROJECT" = "Original project";
-"ORIGINAL_PROJECT_SUBTITLE" = "NetworkManager by NoisyFlake";
-"MAINTAINED_SOURCE" = "Maintained source";
-"MAINTAINED_SOURCE_SUBTITLE" = "NetworkManagerReborn by doimty";
+"ABOUT_CREDITS_FOOTER" = "Developed and maintained by the NR Manager project.";
+"MAINTAINED_SOURCE" = "Source code";
+"MAINTAINED_SOURCE_SUBTITLE" = "NR Manager open-source repository";
 "VERSION" = "Version";
 
 "VALUE_UNKNOWN" = "Unknown";
@@ -113,7 +111,7 @@
 "LINK_OPEN_FAILED_MESSAGE" = "The repository link could not be opened.";
 "BUTTON_OK" = "OK";
 
-"POLICY_ERROR_TITLE" = "Unable to Change NR Band Restriction";
+"POLICY_ERROR_TITLE" = "Unable to Change NR Band Management";
 "POLICY_ERROR_BUSY" = "Another policy or serving-status operation is still running.";
 "POLICY_ERROR_UNSUPPORTED_TARGET" = "This operation requires readable device identity and matching runtime capability evidence.";
 "POLICY_ERROR_SUBSCRIPTION" = "The data-line SIM layout or subscription identity is not safe for this operation.";

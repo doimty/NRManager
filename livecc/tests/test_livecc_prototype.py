@@ -24,8 +24,8 @@ class LiveCCPackagingTests(unittest.TestCase):
             cls.plist = plistlib.load(handle)
 
     def test_package_bundle_and_principal_class_are_separate(self):
-        self.assertIn("Package: me.nixuge.networkmanager.livecc", self.control)
-        self.assertEqual(self.plist["CFBundleIdentifier"], "me.nixuge.networkmanager.livecc")
+        self.assertIn("Package: com.doimty.nrmanager.livecc", self.control)
+        self.assertEqual(self.plist["CFBundleIdentifier"], "com.doimty.nrmanager.livecc")
         self.assertEqual(self.plist["CFBundleExecutable"], "NetworkManagerLive")
         self.assertEqual(self.plist["NSPrincipalClass"], "NetworkManagerLiveModule")
         self.assertEqual(self.plist["CFBundleShortVersionString"], "0.0.5")
@@ -45,7 +45,7 @@ class LiveCCPackagingTests(unittest.TestCase):
         self.assertIn("BUNDLE_NAME = NetworkManager\n", root_makefile)
         self.assertIn("NetworkManager_FILES", root_makefile)
         self.assertIn("CCNM_SERVING_USE_LIVECC_NAMESPACE=1", root_makefile)
-        self.assertIn("Package: me.nixuge.networkmanager\n", root_control)
+        self.assertIn("Package: com.doimty.nrmanager\n", root_control)
         self.assertEqual(root_plist["CFBundleExecutable"], "NetworkManager")
         self.assertEqual(root_plist["NSPrincipalClass"], "CCNetworkManager")
         self.assertIn('cd livecc && make clean package ARCHS="arm64 arm64e"', workflow)

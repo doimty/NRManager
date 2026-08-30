@@ -24,8 +24,7 @@ CONTROL = ROOT / "control"
 KEY_LITERAL = re.compile(r'@"([A-Z][A-Z0-9_]{3,})"')
 BARE_KEY = re.compile(r"[A-Z0-9_]+")
 
-ORIGINAL_REPO = "https://github.com/NoisyFlake/NetworkManager"
-MAINTAINED_REPO = "https://github.com/doimty/NetworkManagerReborn"
+SOURCE_REPO = "https://github.com/doimty/NetworkManagerReborn"
 
 # The only strings allowed to name a specific band. These report what the modem was
 # measured on, so the band number is the fact being stated. Everything else in the
@@ -146,12 +145,11 @@ class FormalSettingsUITests(unittest.TestCase):
             "TOGGLE_N78_PREFERENCE",
             "GROUP_CURRENT_STATE",
             "GROUP_RECOVERY",
-            "ORIGINAL_PROJECT",
             "MAINTAINED_SOURCE",
         ):
             self.assertIn(key, self.chinese)
             self.assertTrue(self.chinese[key].strip())
-        self.assertEqual(self.chinese["TOGGLE_N78_PREFERENCE"], "启用 NR 频段限制")
+        self.assertEqual(self.chinese["TOGGLE_N78_PREFERENCE"], "启用 NR 频段管理")
 
     def test_generic_policy_copy_does_not_name_one_band(self):
         """Policy copy describes the mechanism; only measured state may name a band.
@@ -236,11 +234,11 @@ class FormalSettingsUITests(unittest.TestCase):
 
     def test_repository_links_are_exact_and_present_once(self):
         urls = [item.get("url") for item in self.items if item.get("url")]
-        self.assertEqual(urls.count(ORIGINAL_REPO), 1)
-        self.assertEqual(urls.count(MAINTAINED_REPO), 1)
-        self.assertEqual(len(urls), 2)
+        self.assertEqual(urls.count(SOURCE_REPO), 1)
+        self.assertEqual(len(urls), 1)
         for item in self.items:
             if item.get("url"):
+                self.assertEqual(item.get("url"), SOURCE_REPO)
                 self.assertEqual(item.get("cellClass"), "CCNMRepositoryLinkCell")
                 self.assertEqual(item.get("action"), "openRepository:")
         self.assertIn('@selector(systemImageNamed:)', self.cells)
@@ -338,9 +336,10 @@ class FormalSettingsUITests(unittest.TestCase):
         version_rows = [item for item in self.items if item.get("id") == "version"]
         self.assertEqual(len(version_rows), 1)
         self.assertEqual(version_rows[0].get("value"), control_version())
-        self.assertIn("NoisyFlake", self.english["ABOUT_CREDITS_FOOTER"])
-        self.assertIn("Nixuge", self.english["ABOUT_CREDITS_FOOTER"])
-        self.assertIn("doimty", self.english["ABOUT_CREDITS_FOOTER"])
+        self.assertEqual(
+            self.english["ABOUT_CREDITS_FOOTER"],
+            "Developed and maintained by the NR Manager project.",
+        )
 
     def test_the_string_tables_and_the_bundle_reference_the_same_keys(self):
         """Both directions, because each failure mode ships something broken.

@@ -22,11 +22,11 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>English</string>
 	<key>CFBundleDisplayName</key>
-	<string>Live Band</string>
+	<string>NR Manager</string>
 	<key>CFBundleExecutable</key>
 	<string>NetworkManagerLive</string>
 	<key>CFBundleIdentifier</key>
-	<string>me.nixuge.networkmanager.livecc</string>
+	<string>com.doimty.nrmanager.livecc</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>

@@ -71,10 +71,10 @@ BINARY_PAYLOAD = (
 
 TEXT_PAYLOAD = {
     "Library/ControlCenter/Bundles/NetworkManager.bundle/Info.plist":
-        plistlib.dumps({"CFBundleIdentifier": "me.nixuge.networkmanager",
+        plistlib.dumps({"CFBundleIdentifier": "com.doimty.nrmanager",
                         "CFBundleExecutable": "NetworkManager"}),
     "Library/PreferenceBundles/NetworkManagerPrefs.bundle/Info.plist":
-        plistlib.dumps({"CFBundleIdentifier": "me.nixuge.networkmanagerprefs",
+        plistlib.dumps({"CFBundleIdentifier": "com.doimty.nrmanager.prefs",
                         "CFBundleExecutable": "NetworkManagerPrefs"}),
     "Library/PreferenceBundles/NetworkManagerPrefs.bundle/Root.plist":
         plistlib.dumps({"items": []}),

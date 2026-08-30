@@ -1,10 +1,10 @@
-"SETTINGS_TITLE" = "NetworkManagerReborn";
-"HEADER_TITLE" = "NetworkManagerReborn";
-"HEADER_SUBTITLE" = "NR 频段选择与真实驻网状态";
+"SETTINGS_TITLE" = "NR Manager";
+"HEADER_TITLE" = "NR Manager";
+"HEADER_SUBTITLE" = "NR 频段管理与真实驻网状态";
 
-"GROUP_N78_PREFERENCE" = "NR 频段限制";
+"GROUP_N78_PREFERENCE" = "NR 频段管理";
 "N78_PREFERENCE_FOOTER" = "启用后，NR 仅允许已选择的频段；LTE 频段保持不变，并可在无 5G 时回落。";
-"TOGGLE_N78_PREFERENCE" = "启用 NR 频段限制";
+"TOGGLE_N78_PREFERENCE" = "启用 NR 频段管理";
 "ROW_TRANSITION_STATE" = "转换状态";
 "TRANSITION_APPLYING" = "正在应用";
 "TRANSITION_VERIFIED" = "已验证";
@@ -54,7 +54,7 @@
 "ROW_FRESHNESS" = "更新时间";
 "REFRESH_SERVING_STATUS" = "刷新驻网状态";
 "REQUESTED_SYSTEM_DEFAULT" = "系统默认";
-"REQUESTED_N78_PREFERENCE" = "NR 频段限制";
+"REQUESTED_N78_PREFERENCE" = "NR 频段管理";
 "APPLIED_UNKNOWN" = "未知";
 "APPLIED_APPLYING" = "正在应用";
 "APPLIED_VERIFIED_SYSTEM_DEFAULT" = "已验证系统默认策略";
@@ -101,11 +101,9 @@
 "BUTTON_RESTORE" = "恢复";
 
 "GROUP_ABOUT" = "关于";
-"ABOUT_CREDITS_FOOTER" = "原项目由 NoisyFlake 开发，Nixuge 续作，现由 doimty 维护。";
-"ORIGINAL_PROJECT" = "原作者项目";
-"ORIGINAL_PROJECT_SUBTITLE" = "NetworkManager by NoisyFlake";
-"MAINTAINED_SOURCE" = "当前维护源码";
-"MAINTAINED_SOURCE_SUBTITLE" = "NetworkManagerReborn by doimty";
+"ABOUT_CREDITS_FOOTER" = "NR Manager 项目开发并维护。";
+"MAINTAINED_SOURCE" = "开源仓库";
+"MAINTAINED_SOURCE_SUBTITLE" = "NR Manager 开源代码";
 "VERSION" = "版本";
 
 "VALUE_UNKNOWN" = "未知";
@@ -113,7 +111,7 @@
 "LINK_OPEN_FAILED_MESSAGE" = "无法打开源码仓库链接。";
 "BUTTON_OK" = "好";
 
-"POLICY_ERROR_TITLE" = "无法更改 NR 频段限制";
+"POLICY_ERROR_TITLE" = "无法更改 NR 频段管理";
 "POLICY_ERROR_BUSY" = "另一个策略操作或驻网状态刷新仍在进行。";
 "POLICY_ERROR_UNSUPPORTED_TARGET" = "此操作需要可读取的设备身份和匹配的运行时频段能力证据。";
 "POLICY_ERROR_SUBSCRIPTION" = "当前数据线路的 SIM 布局或订阅身份不满足安全操作条件。";

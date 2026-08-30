@@ -108,7 +108,7 @@ class DeliveredVersionLedgerTests(unittest.TestCase):
             "control",
             "Makefile",
             "CCNetworkManager.x",
-            "layout/Library/LaunchDaemons/me.nixuge.networkmanager.maintenance.plist",
+            "layout/Library/LaunchDaemons/com.doimty.nrmanager.maintenance.plist",
             "networkmanagerprefs/Resources/Root.plist",
             "networkmanagerprefs/CCNMRootListController.m",
             "networkmanagerprefs/Resources/en.lproj/NetworkManagerPrefs.strings",

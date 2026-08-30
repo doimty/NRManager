@@ -278,9 +278,9 @@ int main(void) {
         ):
             self.assertIn(token, header + source)
         self.assertIn("CCNMServingFreshnessLifetimeMilliseconds", source)
-        self.assertIn("me.nixuge.networkmanager.serving-status.plist", source)
-        self.assertIn("me.nixuge.networkmanager.livecc.serving-status.plist", source)
-        self.assertIn("me.nixuge.networkmanager.livecc.serving-status-changed", source)
+        self.assertIn("com.doimty.nrmanager.serving-status.plist", source)
+        self.assertIn("com.doimty.nrmanager.livecc.serving-status.plist", source)
+        self.assertIn("com.doimty.nrmanager.livecc.serving-status-changed", source)
         self.assertIn("CCNM_SERVING_USE_LIVECC_NAMESPACE", source)
         self.assertIn("CCNMServingCacheLockPath", source)
         self.assertIn("CCNMServingAcquireCacheLock", source)

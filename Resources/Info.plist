@@ -3,13 +3,13 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleName</key>
-	<string>NetworkManager</string>
+	<string>NR Manager</string>
 	<key>CFBundleDisplayName</key>
-	<string>Network Manager</string>
+	<string>NR Manager</string>
 	<key>CFBundleExecutable</key>
 	<string>NetworkManager</string>
 	<key>CFBundleIdentifier</key>
-	<string>me.nixuge.networkmanager</string>
+	<string>com.doimty.nrmanager</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>English</string>
 	<key>CFBundleInfoDictionaryVersion</key>
@@ -17,7 +17,7 @@
 	<key>CFBundlePackageType</key>
 	<string>BNDL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0</string>
+	<string>1.6.4</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
 	<key>MinimumOSVersion</key>

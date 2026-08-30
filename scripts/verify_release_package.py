@@ -138,7 +138,7 @@ REQUIRED_PAYLOAD_FILES = {
     "Library/ControlCenter/Bundles/NetworkManager.bundle/NetworkManager",
     "Library/ControlCenter/Bundles/NetworkManager.bundle/SettingsIcon@2x.png",
     "Library/ControlCenter/Bundles/NetworkManager.bundle/SettingsIcon@3x.png",
-    "Library/LaunchDaemons/me.nixuge.networkmanager.maintenance.plist",
+    "Library/LaunchDaemons/com.doimty.nrmanager.maintenance.plist",
     "Library/PreferenceBundles/NetworkManagerPrefs.bundle/Info.plist",
     "Library/PreferenceBundles/NetworkManagerPrefs.bundle/NetworkManagerPrefs",
     "Library/PreferenceBundles/NetworkManagerPrefs.bundle/Root.plist",
@@ -213,13 +213,13 @@ PLIST_IDENTITIES = {
         "NetworkManager",
     ),
     "Library/PreferenceBundles/NetworkManagerPrefs.bundle/Info.plist": (
-        "me.nixuge.networkmanagerprefs",
+        "com.doimty.nrmanager.prefs",
         "NetworkManagerPrefs",
     ),
 }
 
-LAUNCHD_PLIST_RELATIVE = "Library/LaunchDaemons/me.nixuge.networkmanager.maintenance.plist"
-LAUNCHD_LABEL = "me.nixuge.networkmanager.maintenance"
+LAUNCHD_PLIST_RELATIVE = "Library/LaunchDaemons/com.doimty.nrmanager.maintenance.plist"
+LAUNCHD_LABEL = "com.doimty.nrmanager.maintenance"
 ROOTHIDE_PLACEHOLDER = "@JBROOT@"
 ROOTLESS_PREFIX = "/var/jb"
 # The token the repo template carries where a prefix belongs. Invalid on both
@@ -228,7 +228,7 @@ TEMPLATE_SENTINEL = "@PLIST_PREFIX@"
 MAINTENANCE_PROGRAM_RELATIVE = "/usr/libexec/networkmanager-maintenance"
 MAINTENANCE_BASELINE_RELATIVE = (
     "/var/mobile/Library/Preferences/"
-    "me.nixuge.networkmanager.n78-policy.baseline.plist"
+    "com.doimty.nrmanager.n78-policy.baseline.plist"
 )
 PREFERENCE_BUNDLE_BINARY_RELATIVE = (
     "Library/PreferenceBundles/NetworkManagerPrefs.bundle/NetworkManagerPrefs"

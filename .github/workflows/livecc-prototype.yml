@@ -1,4 +1,4 @@
-name: NetworkManager LiveCC prototype validation
+name: NR Manager LiveCC prototype validation
 
 on:
   workflow_dispatch:
@@ -208,7 +208,7 @@ jobs:
             exit 1
           fi
           deb="${debs[0]}"
-          test "$(dpkg-deb -f "$deb" Package)" = "me.nixuge.networkmanager.livecc"
+          test "$(dpkg-deb -f "$deb" Package)" = "com.doimty.nrmanager.livecc"
 
           rm -rf "$payload_root"
           mkdir -p "$payload_root"
@@ -273,7 +273,7 @@ jobs:
             printf 'run_id=%s\n' "$GITHUB_RUN_ID"
             printf 'run_attempt=%s\n' "$GITHUB_RUN_ATTEMPT"
             printf 'package=%s\n' "$(basename "$deb")"
-            printf 'package_id=me.nixuge.networkmanager.livecc\n'
+            printf 'package_id=com.doimty.nrmanager.livecc\n'
             printf 'package_size_bytes=%s\n' "$(stat -f '%z' "$deb")"
             printf 'package_sha256=%s\n' "$(shasum -a 256 "$deb" | awk '{print $1}')"
             printf 'architectures=arm64 arm64e\n'
@@ -297,7 +297,7 @@ jobs:
       - name: Upload LiveCC roothide package and provenance
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: NetworkManager-LiveCC-prototype-roothide-${{ github.run_id }}-${{ github.run_attempt }}
+          name: NR-Manager-LiveCC-prototype-roothide-${{ github.run_id }}-${{ github.run_attempt }}
           path: release-artifacts/livecc/*
           if-no-files-found: error
           retention-days: 30

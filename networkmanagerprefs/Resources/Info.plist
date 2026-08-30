@@ -7,13 +7,13 @@
 	<key>CFBundleExecutable</key>
 	<string>NetworkManagerPrefs</string>
 	<key>CFBundleIdentifier</key>
-	<string>me.nixuge.networkmanagerprefs</string>
+	<string>com.doimty.nrmanager.prefs</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundlePackageType</key>
 	<string>BNDL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0.0</string>
+	<string>1.6.4</string>
 	<key>CFBundleSignature</key>
 	<string>????</string>
 	<key>CFBundleVersion</key>

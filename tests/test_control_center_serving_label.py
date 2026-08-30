@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Contracts for the formal Live Band Control Center module."""
+"""Contracts for the formal NR Manager Control Center module."""
 
 from pathlib import Path
 import unittest
@@ -52,7 +52,7 @@ class ControlCenterServingLabelTests(unittest.TestCase):
 
     def test_formal_policy_state_controls_selection_only(self):
         for token in (
-            'self.title = @"Live Band";',
+            'self.title = @"NR Manager";',
             "CCNMLivePolicyRequested()",
             "self.selected = requested",
             "CCNMN78PolicyStatePath",

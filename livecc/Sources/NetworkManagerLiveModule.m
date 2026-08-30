@@ -10,7 +10,7 @@
 #if CCNM_LIVE_MAIN_BUNDLE
 FOUNDATION_EXPORT NSString *CCNMN78PolicyStatePath(void);
 static NSString *const CCNMLivePolicyChangedNotification =
-    @"me.nixuge.networkmanager/n78-policy-changed";
+    @"com.doimty.nrmanager/n78-policy-changed";
 static NSString *const CCNMLivePolicyRequestedModeKey = @"requestedMode";
 static NSString *const CCNMLivePolicyN78Preferred = @"n78Preferred";
 #endif
@@ -163,7 +163,7 @@ static void CCNMLivePolicyDidChangeCallback(
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"Live Band";
+    self.title = @"NR Manager";
     self.glyphColor = UIColor.whiteColor;
     self.selectedGlyphColor = CCNMLivePolicyAccentColor();
     [self applyGlyphText:nil];

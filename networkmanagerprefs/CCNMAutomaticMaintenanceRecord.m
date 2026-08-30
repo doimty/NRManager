@@ -21,7 +21,7 @@
 // Mark: constants
 // ---------------------------------------------------------------------------
 
-static NSString *const CCNMAOwner = @"me.nixuge.networkmanager.automatic-maintenance";
+static NSString *const CCNMAOwner = @"com.doimty.nrmanager.automatic-maintenance";
 static NSString *const CCNMAServingCapabilityReadSuccessKey = @"capabilityReadSuccess";
 static NSString *const CCNMAServingCapabilityN78SupportedKey = @"capabilityN78Supported";
 static NSString *const CCNMAServingCapabilityN78ActiveKey = @"capabilityN78Active";
@@ -40,12 +40,12 @@ static const long long CCNMAStatusSchemaVersion = 1;
 
 NSString *CCNMAutomaticMaintenanceRecordPath(void) {
     return CCNMPolicyRoot(@"/var/mobile/Library/Preferences/"
-                           "me.nixuge.networkmanager.maintenance.record.plist");
+                           "com.doimty.nrmanager.maintenance.record.plist");
 }
 
 NSString *CCNMAutomaticMaintenanceStatusPath(void) {
     return CCNMPolicyRoot(@"/var/mobile/Library/Preferences/"
-                           "me.nixuge.networkmanager.maintenance.status.plist");
+                           "com.doimty.nrmanager.maintenance.status.plist");
 }
 
 // ---------------------------------------------------------------------------

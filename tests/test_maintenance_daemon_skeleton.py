@@ -11,14 +11,14 @@ DAEMON = ROOT / "maintenance-daemon"
 SOURCE = DAEMON / "main.m"
 MAKEFILE = DAEMON / "Makefile"
 ROOT_MAKEFILE = ROOT / "Makefile"
-LAUNCHD = ROOT / "layout" / "Library" / "LaunchDaemons" / "me.nixuge.networkmanager.maintenance.plist"
+LAUNCHD = ROOT / "layout" / "Library" / "LaunchDaemons" / "com.doimty.nrmanager.maintenance.plist"
 PATCHER = ROOT / "scripts" / "patch-maintenance-launchd.py"
 READER = ROOT / "networkmanagerprefs" / "CCNMN78PolicyReader.m"
 READER_H = ROOT / "networkmanagerprefs" / "CCNMN78PolicyReader.h"
 PROGRAM = "/usr/libexec/networkmanager-maintenance"
 BASELINE = (
     "/var/mobile/Library/Preferences/"
-    "me.nixuge.networkmanager.n78-policy.baseline.plist"
+    "com.doimty.nrmanager.n78-policy.baseline.plist"
 )
 # What the repo template carries where a lane prefix belongs. Invalid on both
 # lanes by design, so a before-package patcher that never ran fails both.
@@ -155,7 +155,7 @@ class MaintenanceDaemonSkeletonTests(unittest.TestCase):
         self.assertTrue(LAUNCHD.exists(), LAUNCHD)
         with LAUNCHD.open("rb") as handle:
             payload = plistlib.load(handle)
-        self.assertEqual(payload["Label"], "me.nixuge.networkmanager.maintenance")
+        self.assertEqual(payload["Label"], "com.doimty.nrmanager.maintenance")
         self.assertEqual(payload["UserName"], "root")
         self.assertEqual(payload["EnvironmentVariables"]["DISABLE_TWEAKS"], "1")
         # The repo template carries a sentinel where the prefix belongs, not a

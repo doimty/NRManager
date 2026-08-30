@@ -96,11 +96,11 @@ describe_prefix() {
 }
 
 warn() {
-    printf 'NetworkManagerReborn: warning — %s\n' "$1" >&2
+    printf 'NR Manager: warning — %s\n' "$1" >&2
 }
 
 note() {
-    printf 'NetworkManagerReborn: %s\n' "$1" >&2
+    printf 'NR Manager: %s\n' "$1" >&2
 }
 
 # The resolved root is worth one line in the dpkg log either way. Everything this

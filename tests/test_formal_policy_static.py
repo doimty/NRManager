@@ -56,7 +56,7 @@ class FormalPolicyStaticTests(unittest.TestCase):
         # Order is correctness here: read-back is whole-dictionary equality.
         self.assertIn("sortedArrayUsingSelector:@selector(compare:)", self.source)
         self.assertIn("CCNMDictionariesEqual", self.source)
-        # The default keeps a 1.5.0 user who never opens the band pane byte-identical.
+        # The default keeps an existing user who never opens the band pane byte-identical.
         self.assertIn("@[ @78 ]", self.source.replace("@[@78]", "@[ @78 ]"))
 
     def test_policy_controller_never_writes_rat_selection(self):
@@ -145,7 +145,7 @@ class FormalPolicyStaticTests(unittest.TestCase):
             self.assertNotIn(forbidden, self.cc_source)
 
     def test_control_center_glyph_reflects_fresh_serving_summary(self):
-        self.assertIn('self.title = @"Live Band";', self.cc_source)
+        self.assertIn('self.title = @"NR Manager";', self.cc_source)
         self.assertIn("CCNMLiveTextForSummary", self.cc_source)
         self.assertIn('stringWithFormat:@"B%lld"', self.cc_source)
         self.assertIn('stringWithFormat:@"n%lld"', self.cc_source)

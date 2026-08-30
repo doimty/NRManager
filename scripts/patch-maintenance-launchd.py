@@ -72,12 +72,12 @@ import stat
 from pathlib import Path
 
 
-LABEL = "me.nixuge.networkmanager.maintenance"
+LABEL = "com.doimty.nrmanager.maintenance"
 PLIST_RELATIVE = Path("Library/LaunchDaemons") / f"{LABEL}.plist"
 PROGRAM_RELATIVE = "/usr/libexec/networkmanager-maintenance"
 BASELINE_RELATIVE = (
     "/var/mobile/Library/Preferences/"
-    "me.nixuge.networkmanager.n78-policy.baseline.plist"
+    "com.doimty.nrmanager.n78-policy.baseline.plist"
 )
 ROOTHIDE_PLACEHOLDER = "@JBROOT@"
 ROOTLESS_PREFIX = "/var/jb"

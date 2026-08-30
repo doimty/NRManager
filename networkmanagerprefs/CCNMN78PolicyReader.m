@@ -27,7 +27,7 @@
 // Mark: constants
 // ---------------------------------------------------------------------------
 
-static NSString *const CCNMPolicyOwner = @"me.nixuge.networkmanager.n78-policy";
+static NSString *const CCNMPolicyOwner = @"com.doimty.nrmanager.n78-policy";
 static NSString *const CCNMNRKey = @"kCTRegistrationRadioAccessTechnologyNR";
 static const long long CCNMMaximumBandIdentifier = 1024;
 
@@ -37,32 +37,32 @@ static const long long CCNMMaximumBandIdentifier = 1024;
 
 NSString *CCNMN78PolicyStatePath(void) {
     return CCNMPolicyRoot(@"/var/mobile/Library/Preferences/"
-                           "me.nixuge.networkmanager.n78-policy.state.plist");
+                           "com.doimty.nrmanager.n78-policy.state.plist");
 }
 
 NSString *CCNMN78PolicyBaselinePath(void) {
     return CCNMPolicyRoot(@"/var/mobile/Library/Preferences/"
-                           "me.nixuge.networkmanager.n78-policy.baseline.plist");
+                           "com.doimty.nrmanager.n78-policy.baseline.plist");
 }
 
 NSString *CCNMN78PolicyIntentPath(void) {
     return CCNMPolicyRoot(@"/var/mobile/Library/Preferences/"
-                           "me.nixuge.networkmanager.n78-policy.intent.plist");
+                           "com.doimty.nrmanager.n78-policy.intent.plist");
 }
 
 NSString *CCNMN78PolicyInFlightPath(void) {
     return CCNMPolicyRoot(@"/var/mobile/Library/Preferences/"
-                           "me.nixuge.networkmanager.n78-policy.inflight.plist");
+                           "com.doimty.nrmanager.n78-policy.inflight.plist");
 }
 
 NSString *CCNMN78PolicyLockPath(void) {
     return CCNMPolicyRoot(@"/var/mobile/Library/Preferences/"
-                           "me.nixuge.networkmanager.n78-policy.lock");
+                           "com.doimty.nrmanager.n78-policy.lock");
 }
 
 NSString *CCNMN78PolicyRemovalGuardPath(void) {
     return CCNMPolicyRoot(@"/var/mobile/Library/Preferences/"
-                           "me.nixuge.networkmanager.n78-policy.removal-guard.plist");
+                           "com.doimty.nrmanager.n78-policy.removal-guard.plist");
 }
 
 NSArray<NSString *> *CCNMN78PolicyPaths(void) {

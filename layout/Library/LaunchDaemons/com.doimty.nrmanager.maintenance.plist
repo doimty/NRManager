@@ -12,12 +12,12 @@
   <dict>
     <key>PathState</key>
     <dict>
-      <key>@PLIST_PREFIX@/var/mobile/Library/Preferences/me.nixuge.networkmanager.n78-policy.baseline.plist</key>
+      <key>@PLIST_PREFIX@/var/mobile/Library/Preferences/com.doimty.nrmanager.n78-policy.baseline.plist</key>
       <true/>
     </dict>
   </dict>
   <key>Label</key>
-  <string>me.nixuge.networkmanager.maintenance</string>
+  <string>com.doimty.nrmanager.maintenance</string>
   <key>ProcessType</key>
   <string>Background</string>
   <key>ProgramArguments</key>

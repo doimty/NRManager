@@ -9,7 +9,7 @@
 #import <unistd.h>
 
 NSString *const CCNMMaintenanceLaunchdLabel =
-    @"me.nixuge.networkmanager.maintenance";
+    @"com.doimty.nrmanager.maintenance";
 
 // The one machine-readable line the install guard writes to stdout, and only
 // after the shipped plist has been verified against the reviewed contract.
@@ -23,14 +23,14 @@ NSString *const CCNMMaintenanceLaunchdVerifiedSentinel =
     @"launchd-contract-verified";
 
 static NSString *const CCNMMaintenanceLaunchdRelativePath =
-    @"/Library/LaunchDaemons/me.nixuge.networkmanager.maintenance.plist";
+    @"/Library/LaunchDaemons/com.doimty.nrmanager.maintenance.plist";
 static NSString *const CCNMMaintenanceExecutableRelativePath =
     @"/usr/libexec/networkmanager-maintenance";
 static NSString *const CCNMMaintenanceBaselineRelativePath =
     @"/var/mobile/Library/Preferences/"
-     "me.nixuge.networkmanager.n78-policy.baseline.plist";
+     "com.doimty.nrmanager.n78-policy.baseline.plist";
 static NSString *const CCNMMaintainerErrorDomain =
-    @"me.nixuge.networkmanager.maintainer";
+    @"com.doimty.nrmanager.maintainer";
 
 typedef NS_ENUM(NSInteger, CCNMMaintainerErrorCode) {
     CCNMMaintainerErrorRoot = 1,

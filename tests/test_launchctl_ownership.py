@@ -472,7 +472,7 @@ class ShellOwnsLaunchctlTests(unittest.TestCase):
                 self.assertIn("LAUNCHD_LABEL='@LAUNCHD_LABEL@'", text)
                 self.assertIn('LAUNCHD_TARGET="system/${LAUNCHD_LABEL}"', text)
                 body = text[text.index("SCHEME_PREFIX="):]
-                self.assertNotIn("me.nixuge.networkmanager.maintenance", body)
+                self.assertNotIn("com.doimty.nrmanager.maintenance", body)
         self.assertIn("LAUNCHD_PLIST='@LAUNCHD_PLIST@'",
                       POSTINST_TEMPLATE.read_text())
 

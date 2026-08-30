@@ -28,15 +28,15 @@ POLICY_RECORD_DIR='/var/mobile/Library/Preferences'
 # asked about this one file -- is it present, and may it be deleted -- and a
 # second hand-written copy of the name is how those two would come to disagree
 # about which file they mean.
-POLICY_BASELINE_BASENAME='me.nixuge.networkmanager.n78-policy.baseline.plist'
+POLICY_BASELINE_BASENAME='com.doimty.nrmanager.n78-policy.baseline.plist'
 
 policy_records() {
     printf '%s\n' \
-        "${1}${POLICY_RECORD_DIR}/me.nixuge.networkmanager.n78-policy.state.plist" \
+        "${1}${POLICY_RECORD_DIR}/com.doimty.nrmanager.n78-policy.state.plist" \
         "${1}${POLICY_RECORD_DIR}/${POLICY_BASELINE_BASENAME}" \
-        "${1}${POLICY_RECORD_DIR}/me.nixuge.networkmanager.n78-policy.intent.plist" \
-        "${1}${POLICY_RECORD_DIR}/me.nixuge.networkmanager.n78-policy.inflight.plist" \
-        "${1}${POLICY_RECORD_DIR}/me.nixuge.networkmanager.n78-policy.removal-guard.plist"
+        "${1}${POLICY_RECORD_DIR}/com.doimty.nrmanager.n78-policy.intent.plist" \
+        "${1}${POLICY_RECORD_DIR}/com.doimty.nrmanager.n78-policy.inflight.plist" \
+        "${1}${POLICY_RECORD_DIR}/com.doimty.nrmanager.n78-policy.removal-guard.plist"
 }
 
 # The baseline alone, because it is the one record whose presence is a decision.
@@ -68,7 +68,7 @@ POLICY_BASELINE_RECORDS
 # lists is how one of those conditions would silently start applying to the other.
 policy_band_selection() {
     printf '%s\n' \
-        "${1}${POLICY_RECORD_DIR}/me.nixuge.networkmanager.n78-selection.plist"
+        "${1}${POLICY_RECORD_DIR}/com.doimty.nrmanager.n78-selection.plist"
 }
 
 # Both cleanups share this: try every candidate root, report whether anything

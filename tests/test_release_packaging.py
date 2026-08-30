@@ -34,8 +34,8 @@ import verify_release_source  # noqa: E402
 class ReleaseMetadataTests(unittest.TestCase):
     def test_control_is_neutral_release_metadata(self) -> None:
         fields = verify_release_source.read_control(REPO / "control")
-        self.assertEqual(fields["package"], "me.nixuge.networkmanager")
-        self.assertEqual(fields["name"], "NetworkManagerReborn")
+        self.assertEqual(fields["package"], "com.doimty.nrmanager")
+        self.assertEqual(fields["name"], "NR Manager")
         self.assertEqual(fields["version"], verify_release_source.RELEASE_VERSION)
         self.assertEqual(fields["architecture"], "iphoneos-arm64")
         self.assertNotRegex(fields["name"], re.compile("roothide", re.IGNORECASE))
@@ -368,7 +368,7 @@ Load command 1
             verify_release_package.FORBIDDEN_LEGACY_PAYLOAD_BASENAMES,
         )
         self.assertIn(
-            "Library/LaunchDaemons/me.nixuge.networkmanager.maintenance.plist", required
+            "Library/LaunchDaemons/com.doimty.nrmanager.maintenance.plist", required
         )
         # The guards are verified as Mach-O in the payload now, not in DEBIAN/.
         self.assertIn(
@@ -681,7 +681,7 @@ class PackageLaneMetadataTests(unittest.TestCase):
             verify_release_package.EXPECTED_ARCHITECTURE,
             {"rootless": "iphoneos-arm64", "roothide": "iphoneos-arm64e"},
         )
-        self.assertEqual(verify_release_package.PACKAGE_NAME, "NetworkManagerReborn")
+        self.assertEqual(verify_release_package.PACKAGE_NAME, "NR Manager")
         self.assertEqual(
             verify_release_package.ROOTHIDE_DYLIB,
             "@loader_path/.jbroot/usr/lib/libroothide.dylib",
