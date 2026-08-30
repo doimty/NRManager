@@ -30,8 +30,11 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
 @property (nonatomic, copy) NSDictionary<NSString *, id> *servingSummary;
 @property (nonatomic, assign) BOOL policyOperationInProgress;
 @property (nonatomic, assign) BOOL servingRefreshInProgress;
+@property (nonatomic, assign) BOOL repopulatingRebuiltSpecifiers;
 
 - (void)configureProductionHandlers;
+- (void)repopulateRebuiltSpecifiers;
+- (void)applicationWillEnterForeground:(NSNotification *)notification;
 - (void)refreshPolicyState;
 - (void)requestN78PreferenceEnabled:(BOOL)enabled;
 - (void)beginPolicyRecovery;
@@ -65,9 +68,36 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
         self.recoverySpecifiers = [self recoverySpecifiersFromArray:loaded];
         [loaded removeObjectsInArray:self.recoverySpecifiers];
         _specifiers = loaded;
+        [self repopulateRebuiltSpecifiers];
     }
 
     return _specifiers;
+}
+
+// Preferences owns the specifier lifetime and is free to discard the model of a
+// pane that is not on screen. Coming back to Settings after the app was in the
+// background is one case where it returns here for a fresh build.
+//
+// The build above only knows Root.plist, and Root.plist deliberately ships the
+// fail-closed shape: every status row reads "Unknown" and both the switch and the
+// refresh button are enabled=false, because nothing may claim policy state or
+// offer a modem operation before the state has actually been read. Only
+// -applyPolicySummary: and -applyServingSummary: lift that, and they live in
+// -viewDidLoad and -viewWillAppear:, neither of which runs for an app-level
+// foreground transition. So a rebuild that stopped at -localizeSpecifiers: left a
+// pane reading Unknown everywhere with a dead switch and a dead refresh row, with
+// no code path that would ever put the real state back.
+//
+// Re-applying is therefore part of building, not something layered on top of it.
+- (void)repopulateRebuiltSpecifiers {
+    // Re-entrancy guard, not an optimisation. The update methods below reload
+    // individual rows and the table, and this runs inside Preferences' own read
+    // of -specifiers: mutating specifier properties there is fine, asking the
+    // table to reload while the framework is still collecting the model is not.
+    self.repopulatingRebuiltSpecifiers = YES;
+    [self refreshPolicyState];
+    [self applyServingSummary:[[CCNMServingStatusProvider sharedProvider] currentSummary]];
+    self.repopulatingRebuiltSpecifiers = NO;
 }
 
 - (void)viewDidLoad {
@@ -76,9 +106,41 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
     [self configureProductionHandlers];
     [self refreshPolicyState];
 
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                            selector:@selector(applicationWillEnterForeground:)
+                                                name:UIApplicationWillEnterForegroundNotification
+                                              object:nil];
+
     self.servingSummary = [[CCNMServingStatusProvider sharedProvider] currentSummary];
     [self applyServingSummary:self.servingSummary];
     if ([self.servingSummary[CCNMServingSummaryStaleKey] boolValue]) {
+        [self beginServingRefresh];
+    }
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self
+                                                   name:UIApplicationWillEnterForegroundNotification
+                                                 object:nil];
+}
+
+// Returning from the background does not produce an appearance callback for a
+// pane that never left the screen, so -viewWillAppear: cannot be relied on to
+// notice that the cached serving sample is now minutes old. Cached state is
+// re-read here and a fresh sample is requested only under the same conditions
+// -viewWillAppear: uses, so this adds no modem operation that entering the pane
+// would not already have performed.
+- (void)applicationWillEnterForeground:(NSNotification *)notification {
+    (void)notification;
+    if (!self.isViewLoaded || self.view.window == nil) {
+        // Off screen: -viewWillAppear: will repopulate when this pane comes back.
+        return;
+    }
+    [self refreshPolicyState];
+    NSDictionary *current = [[CCNMServingStatusProvider sharedProvider] currentSummary];
+    [self applyServingSummary:current];
+    if ([current[CCNMServingSummaryStaleKey] boolValue] &&
+        ![current[CCNMServingSummaryUnsafeOutstandingKey] boolValue]) {
         [self beginServingRefresh];
     }
 }
@@ -550,7 +612,8 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
     }
 
     [specifier setProperty:displayValue forKey:CCNMPreferenceValueKey];
-    if ([_specifiers containsObject:specifier] && self.isViewLoaded) {
+    if ([_specifiers containsObject:specifier] && self.isViewLoaded &&
+        !self.repopulatingRebuiltSpecifiers) {
         [self reloadSpecifier:specifier animated:NO];
     }
 }
@@ -662,7 +725,7 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
         return;
     }
     [specifier setProperty:@(self.n78PreferenceControlAvailable) forKey:PSEnabledKey];
-    if (self.isViewLoaded) {
+    if (self.isViewLoaded && !self.repopulatingRebuiltSpecifiers) {
         [self reloadSpecifier:specifier animated:NO];
     }
 }
@@ -691,7 +754,7 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
     }
     BOOL enabled = refreshAvailable && self.refreshServingStatusHandler != nil;
     [refreshSpecifier setProperty:@(enabled) forKey:PSEnabledKey];
-    if (self.isViewLoaded) {
+    if (self.isViewLoaded && !self.repopulatingRebuiltSpecifiers) {
         [self reloadSpecifier:refreshSpecifier animated:NO];
     }
 }
@@ -760,7 +823,7 @@ static NSString * const CCNMAboutGroupSpecifierID = @"aboutGroup";
     }
 
     _specifiers = updatedSpecifiers;
-    if (self.isViewLoaded) {
+    if (self.isViewLoaded && !self.repopulatingRebuiltSpecifiers) {
         [self.table reloadData];
     }
 }

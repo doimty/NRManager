@@ -399,6 +399,75 @@ class FormalSettingsUITests(unittest.TestCase):
             self.assertNotRegex(key, r"^[A-Z0-9_]{5,}$")
             self.assertIn(key, haystack)
 
+    def test_root_plist_ships_a_fail_closed_shape(self):
+        # This is the premise of the test below. Root.plist alone must never look
+        # like real state: no status row may claim a value and no control may
+        # offer a modem operation, because nothing has been read yet.
+        by_id = {item.get("id"): item for item in self.items if item.get("id")}
+        for identifier in (
+            "transitionState", "requestedPolicy", "appliedPolicy",
+            "servingState", "dataLine", "freshness", "recoveryState",
+        ):
+            self.assertEqual(
+                by_id[identifier].get("value"), "Unknown",
+                f"{identifier} must start out with no claimed value")
+        for identifier in ("n78Preference", "refreshServingStatus"):
+            self.assertIs(
+                by_id[identifier].get("enabled"), False,
+                f"{identifier} must start out unavailable")
+
+    def test_rebuilding_specifiers_repopulates_state(self):
+        # Preferences may discard the model of a pane it is not showing and ask
+        # -specifiers for a fresh build later, including after the app returns
+        # from the background. A build that stops at Root.plist leaves the
+        # fail-closed shape asserted above on screen -- every row "Unknown", the
+        # switch and refresh row dead -- and no appearance callback follows an
+        # app-level foreground transition to undo it. Repopulating is therefore
+        # part of building, so the call must sit inside the getter itself.
+        getter = method_body(self.controller, "- (NSArray *)specifiers")
+        self.assertIn("[self repopulateRebuiltSpecifiers]", getter)
+
+        repopulate = method_body(self.controller, "- (void)repopulateRebuiltSpecifiers")
+        self.assertIn("[self refreshPolicyState]", repopulate)
+        self.assertIn("[self applyServingSummary:", repopulate)
+        # Guard set and cleared around the re-apply, because the update methods
+        # reload rows and the table while Preferences is still reading the model.
+        self.assertIn("self.repopulatingRebuiltSpecifiers = YES", repopulate)
+        self.assertIn("self.repopulatingRebuiltSpecifiers = NO", repopulate)
+
+        # Every reload reachable from the re-apply must honour the guard.
+        for signature in (
+            "- (void)setDisplayValue:",
+            "- (void)updateN78PreferenceEnabled:",
+            "- (void)updateCurrentStateWithRequestedValue:",
+            "- (void)rebuildRecoverySection",
+        ):
+            body = method_body(self.controller, signature)
+            self.assertIn(
+                "!self.repopulatingRebuiltSpecifiers", body,
+                f"{signature} reloads during a rebuild without the guard")
+
+    def test_foreground_return_refreshes_and_is_unregistered(self):
+        # A pane already on screen gets no appearance callback when the app
+        # returns from the background, so the cached sample would stay stale
+        # with no way to notice.
+        did_load = method_body(self.controller, "- (void)viewDidLoad")
+        self.assertIn("UIApplicationWillEnterForegroundNotification", did_load)
+        self.assertIn("@selector(applicationWillEnterForeground:)", did_load)
+
+        handler = method_body(self.controller, "- (void)applicationWillEnterForeground:")
+        self.assertIn("[self refreshPolicyState]", handler)
+        self.assertIn("[self applyServingSummary:", handler)
+        # Same gate as -viewWillAppear:, so returning to the foreground never
+        # starts a modem sample that entering the pane would not have started.
+        self.assertIn("CCNMServingSummaryStaleKey", handler)
+        self.assertIn("CCNMServingSummaryUnsafeOutstandingKey", handler)
+        self.assertIn("self.view.window == nil", handler)
+
+        dealloc = method_body(self.controller, "- (void)dealloc")
+        self.assertIn("removeObserver:self", dealloc)
+        self.assertIn("UIApplicationWillEnterForegroundNotification", dealloc)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
