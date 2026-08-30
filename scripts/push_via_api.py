@@ -14,7 +14,7 @@ import subprocess
 import sys
 
 REPO = "doimty/NRManager"
-BRANCH = "prototype/livecc-readonly"
+BRANCH = "feature/nr-band-selection-1.6.0"
 
 
 def git(*args):
