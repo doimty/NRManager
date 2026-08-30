@@ -161,7 +161,7 @@ Implement PullOver-style blue link cells with a Safari glyph and optional subtit
 
 - `源码仓库`
   - Subtitle: `NR Manager open-source repository`
-  - URL: `https://github.com/doimty/NetworkManagerReborn`
+  - URL: `https://github.com/doimty/NRManager`
 - `版本`
   - `1.5.0`
 

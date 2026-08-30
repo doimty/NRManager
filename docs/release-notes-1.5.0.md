@@ -10,7 +10,7 @@ Status: release candidate source, not yet approved for distribution.
 - Added adaptive Cell Monitor sampling for truthful NR n78, other NR, LTE, other, or stale/unknown serving status.
 - Added an independently implemented, localized Simplified Chinese and English Settings interface.
 - Kept the formal NR Manager Control Center button, disabled its redundant long-press expansion, and restored the orange selected glyph when the NR band restriction is enabled.
-- The source repository is the project's only published repository link: [NR Manager source repository](https://github.com/doimty/NetworkManagerReborn).
+- The source repository is the project's only published repository link: [NR Manager source repository](https://github.com/doimty/NRManager).
 
 ## Safety and recovery
 

@@ -13,7 +13,7 @@ import json
 import subprocess
 import sys
 
-REPO = "doimty/NetworkManagerReborn"
+REPO = "doimty/NRManager"
 BRANCH = "prototype/livecc-readonly"
 
 

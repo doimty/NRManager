@@ -253,7 +253,7 @@
 			<key>subtitle</key>
 			<string>MAINTAINED_SOURCE_SUBTITLE</string>
 			<key>url</key>
-			<string>https://github.com/doimty/NetworkManagerReborn</string>
+			<string>https://github.com/doimty/NRManager</string>
 		</dict>
 		<dict>
 			<key>cell</key>

@@ -24,7 +24,7 @@ CONTROL = ROOT / "control"
 KEY_LITERAL = re.compile(r'@"([A-Z][A-Z0-9_]{3,})"')
 BARE_KEY = re.compile(r"[A-Z0-9_]+")
 
-SOURCE_REPO = "https://github.com/doimty/NetworkManagerReborn"
+SOURCE_REPO = "https://github.com/doimty/NRManager"
 
 # The only strings allowed to name a specific band. These report what the modem was
 # measured on, so the band number is the fact being stated. Everything else in the

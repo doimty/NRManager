@@ -1,6 +1,6 @@
 # NR Manager
 
-NR Manager is a Control Center module for selecting allowed NR bands and viewing the actual serving network. It narrows only the NR band list selected by the user, keeps LTE available as fallback, and publishes the source code at [NR Manager source repository](https://github.com/doimty/NetworkManagerReborn).
+NR Manager is a Control Center module for selecting allowed NR bands and viewing the actual serving network. It narrows only the NR band list selected by the user, keeps LTE available as fallback, and publishes the source code at [NR Manager source repository](https://github.com/doimty/NRManager).
 
 ## What it does
 
