@@ -210,17 +210,6 @@ NSArray<NSString *> *CCNMN78PolicyPaths(void) {
 static id<CCNMCoreTelephonyClient> CCNMCreateClient(NSString **failure);
 static NSString *CCNMCurrentDataLineUUID(id<CCNMCoreTelephonyClient> client, NSString **reason);
 
-static NSString *CCNMGetActiveSubscriptionUUID(void) {
-    NSString *failure = nil;
-    id<CCNMCoreTelephonyClient> client = CCNMCreateClient(&failure);
-    if (!client) {
-        return nil;
-    }
-    NSString *reason = nil;
-    NSString *uuid = CCNMCurrentDataLineUUID(client, &reason);
-    return CCNMNormalizeUUID(uuid);
-}
-
 static void CCNMPostPolicyDidChange(void) {
     CFNotificationCenterPostNotification(
         CFNotificationCenterGetDarwinNotifyCenter(),
@@ -1868,6 +1857,19 @@ static NSString *CCNMCurrentDataLineUUID(id<CCNMCoreTelephonyClient> client, NSS
         *reason = @"the reported data line carries no stable UUID";
     }
     return uuid;
+}
+
+// Multi-SIM support: convenience wrapper to get current UUID without managing client lifetime.
+// Used by path functions to route configuration reads/writes to the active subscription.
+static NSString *CCNMGetActiveSubscriptionUUID(void) {
+    NSString *failure = nil;
+    id<CCNMCoreTelephonyClient> client = CCNMCreateClient(&failure);
+    if (!client) {
+        return nil;
+    }
+    NSString *reason = nil;
+    NSString *uuid = CCNMCurrentDataLineUUID(client, &reason);
+    return CCNMNormalizeUUID(uuid);
 }
 
 // How a write target may be obtained. Passed explicitly at every call site rather
