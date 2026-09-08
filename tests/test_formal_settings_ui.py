@@ -375,7 +375,7 @@ class FormalSettingsUITests(unittest.TestCase):
                 for key, value in node.items():
                     if key in ("label", "subtitle", "footerText", "title", "value") \
                             and isinstance(value, str) and value \
-                            and not value.startswith("http") and not value.startswith("1.6"):
+                            and not value.startswith("http") and not value.startswith(("1.6", "1.7")):
                         plist_texts.add(value)
                     walk(value)
             elif isinstance(node, list):

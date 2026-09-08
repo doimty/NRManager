@@ -204,11 +204,8 @@ NSArray<NSString *> *CCNMN78PolicyPaths(void) {
     ];
 }
 
-// Multi-SIM support: get current data line UUID for configuration routing.
-// Returns nil if UUID cannot be determined (single-SIM legacy path).
-// Declared forward because it relies on CCNMCreateClient defined later.
+// Multi-SIM support: forward declaration for CCNMCreateClient.
 static id<CCNMCoreTelephonyClient> CCNMCreateClient(NSString **failure);
-static NSString *CCNMCurrentDataLineUUID(id<CCNMCoreTelephonyClient> client, NSString **reason);
 
 static void CCNMPostPolicyDidChange(void) {
     CFNotificationCenterPostNotification(
