@@ -204,8 +204,9 @@ NSArray<NSString *> *CCNMN78PolicyPaths(void) {
     ];
 }
 
-// Multi-SIM support: forward declaration for CCNMCreateClient.
+// Multi-SIM support: forward declarations.
 static id<CCNMCoreTelephonyClient> CCNMCreateClient(NSString **failure);
+static NSString *CCNMGetActiveSubscriptionUUID(void);
 
 static void CCNMPostPolicyDidChange(void) {
     CFNotificationCenterPostNotification(
