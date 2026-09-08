@@ -49,6 +49,22 @@ class FormalPolicyStaticTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, self.source)
 
+    def test_policy_root_macro_is_not_fed_nested_format_commas(self):
+        # CCNMPolicyRoot is a function-like macro. A nested stringWithFormat
+        # comma is parsed as a second macro argument and the compile dies with
+        # "too many arguments provided to function-like macro invocation".
+        self.assertNotIn("CCNMPolicyRoot([NSString stringWithFormat:", self.source)
+
+    def test_active_subscription_uuid_is_declared_before_first_call(self):
+        decl = self.source.find("static NSString *CCNMGetActiveSubscriptionUUID(void);")
+        first_call = self.source.find("CCNMGetActiveSubscriptionUUID()")
+        self.assertNotEqual(decl, -1)
+        self.assertNotEqual(first_call, -1)
+        self.assertLess(decl, first_call)
+        # The ABI probe extracts from the first occurrence of this signature.
+        # A forward declaration would make that extract the wrong body.
+        self.assertEqual(self.source.count("static NSString *CCNMCurrentDataLineUUID"), 1)
+
     def test_enable_payload_is_the_exact_selection_and_non_nr_identity(self):
         self.assertIn('kCTRegistrationRadioAccessTechnologyNR', self.source)
         self.assertIn("CCNMValidateSelectedNRPayload", self.source)

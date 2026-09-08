@@ -105,12 +105,17 @@ static int CCNMSetterRetainedPolicyLockDescriptor = -1;
 static NSUInteger CCNMSetterRetainedPolicyLockGeneration = 0;
 
 // Multi-SIM support: per-UUID configuration paths.
-// Each subscription (identified by UUID) gets independent policy files.
+// CCNMPolicyRoot is a function-like macro. Nested commas from stringWithFormat
+// are extra macro arguments, so path construction stays outside the macro.
+static NSString *CCNMNormalizeUUID(NSString *uuid);
+static NSString *CCNMGetActiveSubscriptionUUID(void);
+
 static NSString *CCNMN78PolicyStatePathForUUID(NSString *uuid) {
     NSString *filename = uuid.length > 0
         ? [NSString stringWithFormat:@"com.doimty.nrmanager.n78-policy.%@.state.plist", uuid]
         : @"com.doimty.nrmanager.n78-policy.state.plist";
-    return CCNMPolicyRoot([NSString stringWithFormat:@"/var/mobile/Library/Preferences/%@", filename]);
+    NSString *path = [NSString stringWithFormat:@"/var/mobile/Library/Preferences/%@", filename];
+    return CCNMPolicyRoot(path);
 }
 
 static NSString *CCNMNormalizeUUID(NSString *uuid) {
@@ -123,28 +128,32 @@ static NSString *CCNMN78PolicyBaselinePathForUUID(NSString *uuid) {
     NSString *filename = uuid.length > 0
         ? [NSString stringWithFormat:@"com.doimty.nrmanager.n78-policy.%@.baseline.plist", uuid]
         : @"com.doimty.nrmanager.n78-policy.baseline.plist";
-    return CCNMPolicyRoot([NSString stringWithFormat:@"/var/mobile/Library/Preferences/%@", filename]);
+    NSString *path = [NSString stringWithFormat:@"/var/mobile/Library/Preferences/%@", filename];
+    return CCNMPolicyRoot(path);
 }
 
 static NSString *CCNMN78PolicyIntentPathForUUID(NSString *uuid) {
     NSString *filename = uuid.length > 0
         ? [NSString stringWithFormat:@"com.doimty.nrmanager.n78-policy.%@.intent.plist", uuid]
         : @"com.doimty.nrmanager.n78-policy.intent.plist";
-    return CCNMPolicyRoot([NSString stringWithFormat:@"/var/mobile/Library/Preferences/%@", filename]);
+    NSString *path = [NSString stringWithFormat:@"/var/mobile/Library/Preferences/%@", filename];
+    return CCNMPolicyRoot(path);
 }
 
 static NSString *CCNMN78PolicyInFlightPathForUUID(NSString *uuid) {
     NSString *filename = uuid.length > 0
         ? [NSString stringWithFormat:@"com.doimty.nrmanager.n78-policy.%@.inflight.plist", uuid]
         : @"com.doimty.nrmanager.n78-policy.inflight.plist";
-    return CCNMPolicyRoot([NSString stringWithFormat:@"/var/mobile/Library/Preferences/%@", filename]);
+    NSString *path = [NSString stringWithFormat:@"/var/mobile/Library/Preferences/%@", filename];
+    return CCNMPolicyRoot(path);
 }
 
 static NSString *CCNMN78PolicyLockPathForUUID(NSString *uuid) {
     NSString *filename = uuid.length > 0
         ? [NSString stringWithFormat:@"com.doimty.nrmanager.n78-policy.%@.lock", uuid]
         : @"com.doimty.nrmanager.n78-policy.lock";
-    return CCNMPolicyRoot([NSString stringWithFormat:@"/var/mobile/Library/Preferences/%@", filename]);
+    NSString *path = [NSString stringWithFormat:@"/var/mobile/Library/Preferences/%@", filename];
+    return CCNMPolicyRoot(path);
 }
 
 // Legacy wrappers: use current data line UUID.
@@ -203,10 +212,6 @@ NSArray<NSString *> *CCNMN78PolicyPaths(void) {
         CCNMN78PolicyLockPath()
     ];
 }
-
-// Multi-SIM support: forward declarations.
-static id<CCNMCoreTelephonyClient> CCNMCreateClient(NSString **failure);
-static NSString *CCNMGetActiveSubscriptionUUID(void);
 
 static void CCNMPostPolicyDidChange(void) {
     CFNotificationCenterPostNotification(
