@@ -16,10 +16,7 @@ PATCHER = ROOT / "scripts" / "patch-maintenance-launchd.py"
 READER = ROOT / "nrmanagerprefs" / "CCNMN78PolicyReader.m"
 READER_H = ROOT / "nrmanagerprefs" / "CCNMN78PolicyReader.h"
 PROGRAM = "/usr/libexec/nrmanager-maintenance"
-BASELINE = (
-    "/var/mobile/Library/Preferences/"
-    "com.doimty.nrmanager.n78-policy.baseline.plist"
-)
+PREFERENCES = "/var/mobile/Library/Preferences"
 # What the repo template carries where a lane prefix belongs. Invalid on both
 # lanes by design, so a before-package patcher that never ran fails both.
 SENTINEL = "@PLIST_PREFIX@"
@@ -143,6 +140,39 @@ class MaintenanceDaemonSkeletonTests(unittest.TestCase):
         self.assertIn("CCNMReadN78PolicyState", reader)
         self.assertIn("CCNMReadPolicyStateInternal", reader)
 
+    def test_reader_paths_follow_current_data_line_uuid(self):
+        reader = READER.read_text()
+        # Dual-SIM: Settings writes per-subscription policy files named with the
+        # normalized UUID of the SIM that owns the configuration. The daemon is
+        # compiled without the controller, so the reader has to probe the
+        # current data-line UUID itself and offer the same ForUUID path
+        # contract as the controller's write path.
+        for token in (
+            "CCNMCurrentDataLineUUID",
+            "CCNMNormalizeUUID",
+            "CCNMN78PolicyStatePathForUUID",
+            "CCNMN78PolicyBaselinePathForUUID",
+            "CCNMN78PolicyIntentPathForUUID",
+            "CCNMN78PolicyInFlightPathForUUID",
+            "CCNMN78PolicyLockPathForUUID",
+        ):
+            self.assertIn(token, reader,
+                f"Reader missing per-UUID contract: {token}")
+        # The read path must consult the per-UUID files, not merely define the
+        # helpers. Both the internal read entry and the summary builder decide
+        # what exists on disk and what the recorded target is, so both must
+        # resolve their paths through ForUUID.
+        internal = reader[
+            reader.index("static NSDictionary *CCNMReadPolicyStateInternal(void) {"):
+            reader.index("NSDictionary *CCNMReadN78PolicyState(void) {")
+        ]
+        self.assertIn("ForUUID", internal)
+        summary = reader[
+            reader.index("static NSDictionary *CCNMSummaryFromState("):
+            reader.index("static NSDictionary *CCNMReadPolicyStateInternal(void) {")
+        ]
+        self.assertIn("ForUUID", summary)
+
     def test_reader_header_exists(self):
         self.assertTrue(READER_H.exists(), READER_H)
         header = READER_H.read_text()
@@ -163,11 +193,20 @@ class MaintenanceDaemonSkeletonTests(unittest.TestCase):
         # to be @JBROOT@, which made a skipped before-package patch look correct
         # on roothide and only broke rootless.
         self.assertEqual(payload["ProgramArguments"], [SENTINEL + PROGRAM, "--daemon"])
-        self.assertEqual(payload["KeepAlive"], {
-            "PathState": {SENTINEL + BASELINE: True},
-        })
-        self.assertNotIn("RunAtLoad", payload)
-        self.assertNotIn("SuccessfulExit", payload["KeepAlive"])
+        # The daemon is started at load and whenever the preferences directory
+        # changes, and is restarted only when it did not exit cleanly. It must
+        # not be pinned to a record file: the write path names records by
+        # subscription UUID and migrates the legacy file on first read, and
+        # launchd cannot predict the next UUID. A PathState pinned to the legacy
+        # baseline either stops the job after the migration or, after a SIM
+        # switch, keeps it running against the wrong subscription's records.
+        self.assertEqual(payload["KeepAlive"], {"SuccessfulExit": False})
+        self.assertEqual(payload["RunAtLoad"], True)
+        self.assertEqual(payload["WatchPaths"], [SENTINEL + PREFERENCES])
+        self.assertEqual(payload["ThrottleInterval"], 30)
+        self.assertNotIn("PathState", payload["KeepAlive"])
+        # No record path may be pinned anywhere in the plist.
+        self.assertNotIn("n78-policy", LAUNCHD.read_text())
 
     def test_staging_patcher_emits_exact_paths_for_both_schemes(self):
         root_makefile = ROOT_MAKEFILE.read_text()
@@ -200,9 +239,13 @@ class MaintenanceDaemonSkeletonTests(unittest.TestCase):
                 self.assertNotIn(b"@JBROOT@", raw)
                 payload = plistlib.loads(raw)
                 self.assertEqual(payload["ProgramArguments"][0], prefix + PROGRAM)
-                self.assertEqual(payload["KeepAlive"]["PathState"], {
-                    prefix + BASELINE: True,
-                })
+                # Same contract as the template: not pinned to any record path,
+                # started at load and on preferences-directory changes, restarted
+                # only on unclean exit.
+                self.assertEqual(payload["KeepAlive"], {"SuccessfulExit": False})
+                self.assertEqual(payload["RunAtLoad"], True)
+                self.assertEqual(payload["WatchPaths"], [prefix + PREFERENCES])
+                self.assertNotIn(b"n78-policy", raw)
 
 
 if __name__ == "__main__":

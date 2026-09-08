@@ -545,11 +545,11 @@ class LaunchdPlistLaneTests(unittest.TestCase):
                 prefix + verify_release_package.MAINTENANCE_PROGRAM_RELATIVE,
                 "--daemon",
             ],
-            "KeepAlive": {
-                "PathState": {
-                    prefix + verify_release_package.MAINTENANCE_BASELINE_RELATIVE: True
-                }
-            },
+            "KeepAlive": {"SuccessfulExit": False},
+            "RunAtLoad": True,
+            "WatchPaths": [
+                prefix + verify_release_package.MAINTENANCE_PREFERENCES_RELATIVE
+            ],
             "UserName": "root",
             "EnvironmentVariables": {"DISABLE_TWEAKS": "1"},
             "ProcessType": "Background",
@@ -625,15 +625,21 @@ class LaunchdPlistLaneTests(unittest.TestCase):
 
     def test_the_reviewed_contract_fields_are_enforced(self) -> None:
         payload = self.staged("")
-        payload["RunAtLoad"] = True
+        del payload["RunAtLoad"]
         self.assertTrue(
             any("RunAtLoad" in failure for failure in self.check("roothide", payload))
         )
 
         payload = self.staged("")
-        payload["KeepAlive"]["SuccessfulExit"] = False
+        payload["KeepAlive"] = {"PathState": {"/some/record": True}}
         self.assertTrue(
-            any("SuccessfulExit" in failure for failure in self.check("roothide", payload))
+            any("KeepAlive" in failure for failure in self.check("roothide", payload))
+        )
+
+        payload = self.staged("")
+        payload["WatchPaths"] = ["/var/mobile/Library/Preferences/other"]
+        self.assertTrue(
+            any("WatchPaths" in failure for failure in self.check("roothide", payload))
         )
 
         payload = self.staged("")

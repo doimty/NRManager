@@ -394,8 +394,9 @@ fi
 # the silence meant -- a fair question the log should not have needed.
 #
 # Worded as loaded rather than running, which is what `print` actually confirmed.
-# The plist's KeepAlive PathState names the policy baseline, so launchd runs the
-# job while a band policy is saved and lets it stay down when none is.
+# The plist starts the job at load and whenever the preferences directory
+# changes, so launchd runs the job while a band policy is saved for the current
+# data line and lets it stay down when none is.
 #
 # Suppressed when a previous definition is known to have survived: launchd answers
 # "loaded" either way, and after that warning this line would read as though the
@@ -414,10 +415,11 @@ fi
 # start inside that window means waiting out the window -- up to twenty minutes
 # with the package manager's pipe still held open.
 #
-# It also buys nothing this script does not already have. The plist's KeepAlive
-# PathState names the policy baseline, so launchd starts the job by itself the
-# moment that file exists -- including right now, because bootstrapping a job
-# whose KeepAlive condition is already satisfied starts it. The bootout above
+# It also buys nothing this script does not already have. The plist starts the
+# job at load and whenever the preferences directory changes, so the moment a
+# band policy is saved launchd has every reason to run the job -- including
+# right now, because bootstrapping a job whose start conditions are already
+# satisfied starts it. The bootout above
 # already guarantees the running instance is this package's binary rather than a
 # previous one. So kickstart only ever meant "and start it a second time", at the
 # cost of a call that can block the package manager and a ThrottleInterval-delayed

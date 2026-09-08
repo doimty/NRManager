@@ -75,10 +75,15 @@ from pathlib import Path
 LABEL = "com.doimty.nrmanager.maintenance"
 PLIST_RELATIVE = Path("Library/LaunchDaemons") / f"{LABEL}.plist"
 PROGRAM_RELATIVE = "/usr/libexec/nrmanager-maintenance"
-BASELINE_RELATIVE = (
-    "/var/mobile/Library/Preferences/"
-    "com.doimty.nrmanager.n78-policy.baseline.plist"
-)
+# The one directory launchd is told to watch. Every record transition the daemon
+# cares about -- a baseline appearing, the legacy file being migrated to the
+# current subscription's UUID, a SIM switch renaming the active records -- writes
+# here, so a stopped job is woken exactly when the data line's records may have
+# changed. No record path itself is pinned: launchd cannot predict the next
+# subscription UUID, and a PathState pinned to the legacy unqualified baseline
+# either stops the job after the migration or keeps it running against the wrong
+# subscription's records after a SIM switch.
+PREFERENCES_RELATIVE = "/var/mobile/Library/Preferences"
 ROOTHIDE_PLACEHOLDER = "@JBROOT@"
 ROOTLESS_PREFIX = "/var/jb"
 # What the repo template carries where a prefix belongs. Deliberately invalid on
@@ -134,8 +139,9 @@ REQUIRED_PLACEHOLDERS = {
 # kickstart the job. The kickstart is gone, so neither script carries the token
 # and nothing substitutes it -- which is exactly why it stays in the residue
 # check: a reintroduced @BASELINE@ would now ship as a literal inside a path.
-# The value itself still exists as a constant here, because the plist's KeepAlive
-# PathState names it and that is what starts the job now.
+# The plist pins no record path either: it watches the preferences directory and
+# restarts only on unclean exit, because the records are named by subscription
+# UUID and launchd cannot predict the next one.
 #
 # @CARRIER_RESET_SUPPORT@ and @CARRIER_RESET_FLOOR@ join it for a different
 # reason: 1.6.0 substituted both, and a template that still carries one must fail
@@ -178,9 +184,13 @@ def patch_launchd_plist(staging: Path, prefix: str) -> Path:
         raise SystemExit(f"invalid launchd label in {path}")
 
     payload["ProgramArguments"] = [prefix + PROGRAM_RELATIVE, "--daemon"]
-    payload["KeepAlive"] = {
-        "PathState": {prefix + BASELINE_RELATIVE: True},
-    }
+    # Started at load and whenever the preferences directory changes; restarted
+    # only when the daemon did not exit cleanly. The daemon reads the current
+    # data line's records itself and exits cleanly when that subscription has no
+    # baseline, so an idle job is not kept alive and a crash still recovers.
+    payload["KeepAlive"] = {"SuccessfulExit": False}
+    payload["RunAtLoad"] = True
+    payload["WatchPaths"] = [prefix + PREFERENCES_RELATIVE]
     # Both path-bearing keys are rewritten wholesale rather than substituted, so
     # nothing unresolved can reach the device. Assert it: no on-device step
     # rewrites the plist any more, and launchctl would happily prepend the jbroot

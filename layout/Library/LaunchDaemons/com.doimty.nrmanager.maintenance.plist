@@ -10,11 +10,8 @@
   </dict>
   <key>KeepAlive</key>
   <dict>
-    <key>PathState</key>
-    <dict>
-      <key>@PLIST_PREFIX@/var/mobile/Library/Preferences/com.doimty.nrmanager.n78-policy.baseline.plist</key>
-      <true/>
-    </dict>
+    <key>SuccessfulExit</key>
+    <false/>
   </dict>
   <key>Label</key>
   <string>com.doimty.nrmanager.maintenance</string>
@@ -25,6 +22,8 @@
     <string>@PLIST_PREFIX@/usr/libexec/nrmanager-maintenance</string>
     <string>--daemon</string>
   </array>
+  <key>RunAtLoad</key>
+  <true/>
   <key>StandardErrorPath</key>
   <string>/dev/null</string>
   <key>StandardOutPath</key>
@@ -33,5 +32,9 @@
   <integer>30</integer>
   <key>UserName</key>
   <string>root</string>
+  <key>WatchPaths</key>
+  <array>
+    <string>@PLIST_PREFIX@/var/mobile/Library/Preferences</string>
+  </array>
 </dict>
 </plist>

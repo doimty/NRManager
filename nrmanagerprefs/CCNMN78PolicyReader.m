@@ -1,6 +1,15 @@
 #import "CCNMN78PolicyReader.h"
 
 #import <CoreFoundation/CoreFoundation.h>
+#import <dlfcn.h>
+
+// Silence -Werror=objc-method-access for the duck-typed getCurrentDataSubscriptionContextSync:
+// result. The protocol cannot declare -uuid because the query returns an opaque id and
+// CoreTelephony's context class is private, but the respondsToSelector: guard at runtime
+// proves the method exists before calling it.
+@interface NSObject(CCNMReaderUUID)
+- (id)uuid;
+@end
 #import <dispatch/dispatch.h>
 #import <mach-o/dyld.h>
 #import <string.h>
@@ -35,29 +44,72 @@ static const long long CCNMMaximumBandIdentifier = 1024;
 // Mark: path functions
 // ---------------------------------------------------------------------------
 
+static NSString *CCNMNormalizeUUID(NSString *uuid);
+static NSString *CCNMGetActiveSubscriptionUUID(void);
+
+// Multi-SIM support: per-UUID configuration paths, mirroring the controller's
+// write path. The filename carries the normalized (lowercase, no dashes)
+// subscription UUID; a nil or empty UUID falls back to the legacy unqualified
+// file so a single-SIM upgrade still reads its old records. CCNMPolicyRoot is
+// a function-like macro, so path construction stays outside the macro.
+static NSString *CCNMN78PolicyStatePathForUUID(NSString *uuid) {
+    NSString *filename = uuid.length > 0
+        ? [NSString stringWithFormat:@"com.doimty.nrmanager.n78-policy.%@.state.plist", uuid]
+        : @"com.doimty.nrmanager.n78-policy.state.plist";
+    NSString *path = [NSString stringWithFormat:@"/var/mobile/Library/Preferences/%@", filename];
+    return CCNMPolicyRoot(path);
+}
+
+static NSString *CCNMN78PolicyBaselinePathForUUID(NSString *uuid) {
+    NSString *filename = uuid.length > 0
+        ? [NSString stringWithFormat:@"com.doimty.nrmanager.n78-policy.%@.baseline.plist", uuid]
+        : @"com.doimty.nrmanager.n78-policy.baseline.plist";
+    NSString *path = [NSString stringWithFormat:@"/var/mobile/Library/Preferences/%@", filename];
+    return CCNMPolicyRoot(path);
+}
+
+static NSString *CCNMN78PolicyIntentPathForUUID(NSString *uuid) {
+    NSString *filename = uuid.length > 0
+        ? [NSString stringWithFormat:@"com.doimty.nrmanager.n78-policy.%@.intent.plist", uuid]
+        : @"com.doimty.nrmanager.n78-policy.intent.plist";
+    NSString *path = [NSString stringWithFormat:@"/var/mobile/Library/Preferences/%@", filename];
+    return CCNMPolicyRoot(path);
+}
+
+static NSString *CCNMN78PolicyInFlightPathForUUID(NSString *uuid) {
+    NSString *filename = uuid.length > 0
+        ? [NSString stringWithFormat:@"com.doimty.nrmanager.n78-policy.%@.inflight.plist", uuid]
+        : @"com.doimty.nrmanager.n78-policy.inflight.plist";
+    NSString *path = [NSString stringWithFormat:@"/var/mobile/Library/Preferences/%@", filename];
+    return CCNMPolicyRoot(path);
+}
+
+static NSString *CCNMN78PolicyLockPathForUUID(NSString *uuid) {
+    NSString *filename = uuid.length > 0
+        ? [NSString stringWithFormat:@"com.doimty.nrmanager.n78-policy.%@.lock", uuid]
+        : @"com.doimty.nrmanager.n78-policy.lock";
+    NSString *path = [NSString stringWithFormat:@"/var/mobile/Library/Preferences/%@", filename];
+    return CCNMPolicyRoot(path);
+}
+
 NSString *CCNMN78PolicyStatePath(void) {
-    return CCNMPolicyRoot(@"/var/mobile/Library/Preferences/"
-                           "com.doimty.nrmanager.n78-policy.state.plist");
+    return CCNMN78PolicyStatePathForUUID(CCNMGetActiveSubscriptionUUID());
 }
 
 NSString *CCNMN78PolicyBaselinePath(void) {
-    return CCNMPolicyRoot(@"/var/mobile/Library/Preferences/"
-                           "com.doimty.nrmanager.n78-policy.baseline.plist");
+    return CCNMN78PolicyBaselinePathForUUID(CCNMGetActiveSubscriptionUUID());
 }
 
 NSString *CCNMN78PolicyIntentPath(void) {
-    return CCNMPolicyRoot(@"/var/mobile/Library/Preferences/"
-                           "com.doimty.nrmanager.n78-policy.intent.plist");
+    return CCNMN78PolicyIntentPathForUUID(CCNMGetActiveSubscriptionUUID());
 }
 
 NSString *CCNMN78PolicyInFlightPath(void) {
-    return CCNMPolicyRoot(@"/var/mobile/Library/Preferences/"
-                           "com.doimty.nrmanager.n78-policy.inflight.plist");
+    return CCNMN78PolicyInFlightPathForUUID(CCNMGetActiveSubscriptionUUID());
 }
 
 NSString *CCNMN78PolicyLockPath(void) {
-    return CCNMPolicyRoot(@"/var/mobile/Library/Preferences/"
-                           "com.doimty.nrmanager.n78-policy.lock");
+    return CCNMN78PolicyLockPathForUUID(CCNMGetActiveSubscriptionUUID());
 }
 
 NSString *CCNMN78PolicyRemovalGuardPath(void) {
@@ -73,6 +125,157 @@ NSArray<NSString *> *CCNMN78PolicyPaths(void) {
         CCNMN78PolicyInFlightPath(),
         CCNMN78PolicyLockPath()
     ];
+}
+
+// ---------------------------------------------------------------------------
+// Mark: current data line
+// ---------------------------------------------------------------------------
+
+// The daemon is compiled without the controller, so the reader carries its own
+// read-only probe for the current data line. It mirrors the controller's probe
+// and deliberately stops short of it: no setter is declared, validated, or
+// called here, and every failure degrades to nil so callers fall back to the
+// legacy unqualified files instead of guessing a SIM.
+@protocol CCNMReaderCoreTelephonyClient <NSObject>
+- (instancetype)initWithQueue:(dispatch_queue_t)queue;
+// CoreTelephony's own answer to "which subscription is the data line". Declared
+// @optional so -respondsToSelector: can be asked for it without a compiler
+// warning; it is only ever called after an ABI check.
+@optional
+- (id)getCurrentDataSubscriptionContextSync:(NSError **)error;
+@end
+
+static const char *CCNMReaderSkipTypeQualifiers(const char *type) {
+    while (type && strchr("rnNoORV", *type)) {
+        type++;
+    }
+    return type;
+}
+
+static BOOL CCNMReaderValidateObjectErrorABI(id object,
+                                             SEL selector,
+                                             NSString **failure) {
+    if (!object || ![object respondsToSelector:selector]) {
+        if (failure) {
+            *failure = [NSString stringWithFormat:@"%@ is unavailable.",
+                NSStringFromSelector(selector)];
+        }
+        return NO;
+    }
+    NSMethodSignature *signature = [object methodSignatureForSelector:selector];
+    const char *returnType = signature
+        ? CCNMReaderSkipTypeQualifiers(signature.methodReturnType) : NULL;
+    const char *errorType = signature && signature.numberOfArguments > 2
+        ? CCNMReaderSkipTypeQualifiers([signature getArgumentTypeAtIndex:2]) : NULL;
+    BOOL valid = signature && signature.numberOfArguments == 3 &&
+        returnType && returnType[0] == '@' &&
+        errorType && errorType[0] == '^' && errorType[1] == '@';
+    if (!valid && failure) {
+        *failure = [NSString stringWithFormat:@"%@ has an unexpected private ABI.",
+            NSStringFromSelector(selector)];
+    }
+    return valid;
+}
+
+static id<CCNMReaderCoreTelephonyClient> CCNMReaderCreateClient(NSString **failure) {
+    static void *handle;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        handle = dlopen("/System/Library/Frameworks/CoreTelephony.framework/CoreTelephony",
+            RTLD_LAZY | RTLD_LOCAL);
+    });
+    Class clientClass = NSClassFromString(@"CoreTelephonyClient");
+    if (!handle || !clientClass) {
+        if (failure) {
+            *failure = @"CoreTelephonyClient is unavailable.";
+        }
+        return nil;
+    }
+    id<CCNMReaderCoreTelephonyClient> client = [(id)clientClass alloc];
+    if (![client respondsToSelector:@selector(initWithQueue:)]) {
+        if (failure) {
+            *failure = @"CoreTelephonyClient does not expose initWithQueue:.";
+        }
+        return nil;
+    }
+    @try {
+        client = [client initWithQueue:dispatch_get_global_queue(QOS_CLASS_UTILITY, 0)];
+    } @catch (NSException *exception) {
+        if (failure) {
+            *failure = [NSString stringWithFormat:
+                @"CoreTelephonyClient initialization raised %@: %@",
+                exception.name, exception.reason ?: @"(no reason)"];
+        }
+        return nil;
+    }
+    if (!client && failure) {
+        *failure = @"CoreTelephonyClient could not be created.";
+    }
+    return client;
+}
+
+// CoreTelephony's own answer to "which subscription is the data line". Every
+// no-answer path returns nil with a reason instead of a fallback guess. This is
+// the read-only counterpart of the controller's probe; on the daemon there is no
+// write to aim, so a nil UUID simply selects the legacy unqualified files.
+static NSString *CCNMCurrentDataLineUUID(id<CCNMReaderCoreTelephonyClient> client,
+                                         NSString **reason) {
+    SEL selector = @selector(getCurrentDataSubscriptionContextSync:);
+    if (!CCNMReaderValidateObjectErrorABI(client, selector, NULL)) {
+        if (reason) {
+            *reason = @"this build of CoreTelephony does not vend a usable data-line query";
+        }
+        return nil;
+    }
+    NSError *error = nil;
+    id context = nil;
+    @try {
+        context = [client getCurrentDataSubscriptionContextSync:&error];
+    } @catch (NSException *exception) {
+        if (reason) {
+            *reason = [NSString stringWithFormat:@"the data-line query raised %@", exception.name];
+        }
+        return nil;
+    }
+    if (error) {
+        if (reason) {
+            *reason = @"the data-line query returned an error";
+        }
+        return nil;
+    }
+    if (!context || ![context respondsToSelector:@selector(uuid)]) {
+        if (reason) {
+            *reason = @"the data-line query named no subscription";
+        }
+        return nil;
+    }
+    id rawUUID = [context uuid];
+    NSString *uuid = [rawUUID isKindOfClass:[NSUUID class]] ? [(NSUUID *)rawUUID UUIDString] : nil;
+    if (!uuid && reason) {
+        *reason = @"the reported data line carries no stable UUID";
+    }
+    return uuid;
+}
+
+// Convenience wrapper: the normalized UUID of the current data line, or nil.
+// Used by the path functions to route reads to the active subscription's files,
+// mirroring the controller's write path.
+static NSString *CCNMGetActiveSubscriptionUUID(void) {
+    NSString *failure = nil;
+    id<CCNMReaderCoreTelephonyClient> client = CCNMReaderCreateClient(&failure);
+    if (!client) {
+        return nil;
+    }
+    NSString *reason = nil;
+    NSString *uuid = CCNMCurrentDataLineUUID(client, &reason);
+    return CCNMNormalizeUUID(uuid);
+}
+
+static NSString *CCNMNormalizeUUID(NSString *uuid) {
+    // Normalize UUID to lowercase without dashes for filename safety, matching
+    // the controller's per-UUID file naming.
+    if (!uuid || uuid.length == 0) return nil;
+    return [[uuid stringByReplacingOccurrencesOfString:@"-" withString:@""] lowercaseString];
 }
 
 // ---------------------------------------------------------------------------
@@ -647,18 +850,19 @@ static NSDictionary *CCNMSummaryFromState(NSDictionary *state,
                                            NSString *error,
                                            NSDictionary *details) {
     NSDictionary *base = state ?: CCNMDefaultState();
-    BOOL baselinePresent = CCNMFileExists(CCNMN78PolicyBaselinePath());
+    NSString *uuid = CCNMGetActiveSubscriptionUUID();
+    BOOL baselinePresent = CCNMFileExists(CCNMN78PolicyBaselinePathForUUID(uuid));
     NSDictionary *baselineRecord = baselinePresent
-        ? [NSDictionary dictionaryWithContentsOfFile:CCNMN78PolicyBaselinePath()] : nil;
+        ? [NSDictionary dictionaryWithContentsOfFile:CCNMN78PolicyBaselinePathForUUID(uuid)] : nil;
     BOOL baselineValid = baselinePresent && CCNMValidateBaselineRecord(baselineRecord, NULL);
-    BOOL transitionPresent = CCNMFileExists(CCNMN78PolicyIntentPath()) ||
-        CCNMFileExists(CCNMN78PolicyInFlightPath());
+    BOOL transitionPresent = CCNMFileExists(CCNMN78PolicyIntentPathForUUID(uuid)) ||
+        CCNMFileExists(CCNMN78PolicyInFlightPathForUUID(uuid));
     CCNMRecoveryState recovery = base[@"recoveryState"] ?: CCNMRecoveryStateRecoveryFailed;
     CCNMAppliedPolicy applied = base[@"appliedPolicy"] ?: CCNMAppliedPolicyUnknown;
     BOOL currentBootInFlight = NO;
-    if (CCNMFileExists(CCNMN78PolicyInFlightPath())) {
+    if (CCNMFileExists(CCNMN78PolicyInFlightPathForUUID(uuid))) {
         NSDictionary *record = [NSDictionary dictionaryWithContentsOfFile:
-            CCNMN78PolicyInFlightPath()];
+            CCNMN78PolicyInFlightPathForUUID(uuid)];
         currentBootInFlight = !record ||
             CCNMBootRelationForRecord(record) != CCNMBootRelationEarlier;
     }
@@ -704,11 +908,11 @@ static NSDictionary *CCNMSummaryFromState(NSDictionary *state,
         @"operationGeneration": base[@"operationGeneration"] ?: @0,
         @"subscriptionUUID": base[@"subscriptionUUID"] ?: @"",
         @"uncertain": base[@"uncertain"] ?: @NO,
-        @"statePath": CCNMN78PolicyStatePath(),
-        @"baselinePath": CCNMN78PolicyBaselinePath(),
-        @"intentPath": CCNMN78PolicyIntentPath(),
-        @"inFlightPath": CCNMN78PolicyInFlightPath(),
-        @"lockPath": CCNMN78PolicyLockPath(),
+        @"statePath": CCNMN78PolicyStatePathForUUID(uuid),
+        @"baselinePath": CCNMN78PolicyBaselinePathForUUID(uuid),
+        @"intentPath": CCNMN78PolicyIntentPathForUUID(uuid),
+        @"inFlightPath": CCNMN78PolicyInFlightPathForUUID(uuid),
+        @"lockPath": CCNMN78PolicyLockPathForUUID(uuid),
         @"legacyRemovalGuardPath": CCNMN78PolicyRemovalGuardPath()
     } mutableCopy];
     if (appliedSelection) {
@@ -725,12 +929,13 @@ static NSDictionary *CCNMSummaryFromState(NSDictionary *state,
 // ---------------------------------------------------------------------------
 
 static NSDictionary *CCNMReadPolicyStateInternal(void) {
+    NSString *uuid = CCNMGetActiveSubscriptionUUID();
     BOOL stateExists = NO, baselineExists = NO, intentExists = NO;
     BOOL inFlightExists = NO;
-    NSDictionary *state = CCNMLoadRecord(CCNMN78PolicyStatePath(), &stateExists);
-    NSDictionary *baseline = CCNMLoadRecord(CCNMN78PolicyBaselinePath(), &baselineExists);
-    NSDictionary *intent = CCNMLoadRecord(CCNMN78PolicyIntentPath(), &intentExists);
-    NSDictionary *inFlight = CCNMLoadRecord(CCNMN78PolicyInFlightPath(), &inFlightExists);
+    NSDictionary *state = CCNMLoadRecord(CCNMN78PolicyStatePathForUUID(uuid), &stateExists);
+    NSDictionary *baseline = CCNMLoadRecord(CCNMN78PolicyBaselinePathForUUID(uuid), &baselineExists);
+    NSDictionary *intent = CCNMLoadRecord(CCNMN78PolicyIntentPathForUUID(uuid), &intentExists);
+    NSDictionary *inFlight = CCNMLoadRecord(CCNMN78PolicyInFlightPathForUUID(uuid), &inFlightExists);
 
     if (!stateExists && !baselineExists && !intentExists && !inFlightExists) {
         return CCNMSummaryFromState(CCNMDefaultState(), YES, @"read",

@@ -15,7 +15,7 @@ nrmanager-maintenance_FILES = main.m \
 	../nrmanagerprefs/CCNMAutomaticMaintenanceDecision.c \
 	../nrmanagerprefs/CCNMAutomaticMaintenanceRecord.m
 nrmanager-maintenance_FRAMEWORKS = CoreTelephony Foundation
-nrmanager-maintenance_CFLAGS = -fobjc-arc -DCCNM_MAINTENANCE_DAEMON
+nrmanager-maintenance_CFLAGS = -fobjc-arc -DCCNM_MAINTENANCE_DAEMON "-Wno-error=objc-method-access"
 nrmanager-maintenance_INSTALL_PATH = /usr/libexec
 
 # libroothide is deliberately not linked, on any lane.

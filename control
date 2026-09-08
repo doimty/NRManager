@@ -1,7 +1,7 @@
 Package: com.doimty.nrmanager
 Name: NR Manager
 Depends: mobilesubstrate, com.opa334.ccsupport
-Version: 1.7.0
+Version: 1.7.1
 Architecture: iphoneos-arm64
 Description: Select NR bands and view live serving status in Control Center
 Maintainer: doimty

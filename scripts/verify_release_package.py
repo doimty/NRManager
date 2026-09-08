@@ -225,10 +225,13 @@ ROOTLESS_PREFIX = "/var/jb"
 # lanes by design, so a before-package patcher that never ran fails both.
 TEMPLATE_SENTINEL = "@PLIST_PREFIX@"
 MAINTENANCE_PROGRAM_RELATIVE = "/usr/libexec/nrmanager-maintenance"
-MAINTENANCE_BASELINE_RELATIVE = (
-    "/var/mobile/Library/Preferences/"
-    "com.doimty.nrmanager.n78-policy.baseline.plist"
-)
+# The one directory launchd watches. Every record transition the daemon cares
+# about -- a baseline appearing, the legacy file migrating to the current
+# subscription's UUID, a SIM switch renaming the active records -- writes here,
+# so a stopped job is woken exactly when the data line's records may have
+# changed. Record files themselves are named by subscription UUID, launchd
+# cannot predict the next one, and none of them may be pinned in the plist.
+MAINTENANCE_PREFERENCES_RELATIVE = "/var/mobile/Library/Preferences"
 PREFERENCE_BUNDLE_BINARY_RELATIVE = (
     "Library/PreferenceBundles/NRManagerPrefs.bundle/NRManagerPrefs"
 )
@@ -644,24 +647,31 @@ def verify_launchd_plist(payload_root: Path, lane: str, failures: List[str]) -> 
         )
 
     keep_alive = payload.get("KeepAlive")
-    path_state = keep_alive.get("PathState") if isinstance(keep_alive, dict) else None
-    watched = sorted(path_state) if isinstance(path_state, dict) else []
-    evidence["watched_paths"] = watched
-    expected_baseline = expected_prefix + MAINTENANCE_BASELINE_RELATIVE
-    if watched != [expected_baseline]:
+    watch_paths = payload.get("WatchPaths")
+    evidence["watch_paths"] = watch_paths
+    expected_preferences = expected_prefix + MAINTENANCE_PREFERENCES_RELATIVE
+    if watch_paths != [expected_preferences]:
         failures.append(
-            "launchd plist KeepAlive/PathState is %r, expected exactly %r for the %s lane"
-            % (watched, [expected_baseline], lane)
+            "launchd plist WatchPaths is %r, expected exactly %r for the %s lane"
+            % (watch_paths, [expected_preferences], lane)
         )
 
     if payload.get("Label") != LAUNCHD_LABEL:
         failures.append("launchd plist Label is %r" % payload.get("Label"))
     if payload.get("UserName") != "root":
         failures.append("launchd plist UserName must be root")
-    if payload.get("RunAtLoad") is not None:
-        failures.append("launchd plist must not set RunAtLoad")
-    if isinstance(keep_alive, dict) and keep_alive.get("SuccessfulExit") is not None:
-        failures.append("launchd plist must not set KeepAlive/SuccessfulExit")
+    # Restart on unclean exit only: the daemon reads the current data line's
+    # records itself and exits cleanly when that subscription has no baseline,
+    # so an idle job must not be kept alive and a crash still recovers. No
+    # record path may be pinned: the records are named by subscription UUID and
+    # launchd cannot predict the next one.
+    if keep_alive != {"SuccessfulExit": False}:
+        failures.append(
+            "launchd plist KeepAlive is %r, expected exactly %r"
+            % (keep_alive, {"SuccessfulExit": False})
+        )
+    if payload.get("RunAtLoad") is not True:
+        failures.append("launchd plist must set RunAtLoad true")
 
     # The wrong lane's prefix anywhere in the file is worth naming on its own: the
     # checks above only look at the two paths that must match exactly. Only

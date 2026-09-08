@@ -132,9 +132,9 @@ def staged_plist(prefix):
             prefix + patcher.PROGRAM_RELATIVE,
             "--daemon",
         ],
-        "KeepAlive": {
-            "PathState": {prefix + patcher.BASELINE_RELATIVE: True}
-        },
+        "KeepAlive": {"SuccessfulExit": False},
+        "RunAtLoad": True,
+        "WatchPaths": [prefix + patcher.PREFERENCES_RELATIVE],
         "UserName": "root",
         "EnvironmentVariables": {"DISABLE_TWEAKS": "1"},
         "StandardOutPath": "/dev/null",
@@ -405,7 +405,7 @@ class ShellScriptBase(unittest.TestCase):
             pass
 
     def install_baseline(self):
-        path = self.prefix / patcher.BASELINE_RELATIVE.lstrip("/")
+        path = self.policy_baseline()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(plistlib.dumps({"createdAt": 0}))
         return path
@@ -552,8 +552,9 @@ class RenderingTests(unittest.TestCase):
                     payload = plistlib.loads(raw)
                     self.assertEqual(payload["ProgramArguments"][0],
                                      expected + patcher.PROGRAM_RELATIVE)
-                    self.assertEqual(list(payload["KeepAlive"]["PathState"]),
-                                     [expected + patcher.BASELINE_RELATIVE])
+                    self.assertEqual(payload["KeepAlive"], {"SuccessfulExit": False})
+                    self.assertEqual(payload["WatchPaths"],
+                                     [expected + patcher.PREFERENCES_RELATIVE])
 
     def test_a_sentinel_that_survives_patching_is_refused(self):
         # The patcher rewrites both path-bearing keys wholesale, so this can only
@@ -586,8 +587,8 @@ class PostinstLaunchdPlistTests(ShellScriptBase):
         payload = self.read_plist()
         self.assertEqual(payload["ProgramArguments"][0],
                          patcher.PROGRAM_RELATIVE)
-        self.assertEqual(list(payload["KeepAlive"]["PathState"]),
-                         [patcher.BASELINE_RELATIVE])
+        self.assertEqual(payload["KeepAlive"], {"SuccessfulExit": False})
+        self.assertEqual(payload["WatchPaths"], [patcher.PREFERENCES_RELATIVE])
 
     def test_no_scratch_file_is_left_beside_the_plist(self):
         self.run_script("configure")
@@ -656,8 +657,9 @@ class PostinstPrefixHandoffTests(ShellScriptBase):
         payload = self.read_plist()
         self.assertEqual(payload["ProgramArguments"][0],
                          launchd + patcher.PROGRAM_RELATIVE)
-        self.assertEqual(list(payload["KeepAlive"]["PathState"]),
-                         [launchd + patcher.BASELINE_RELATIVE])
+        self.assertEqual(payload["KeepAlive"], {"SuccessfulExit": False})
+        self.assertEqual(payload["WatchPaths"],
+                         [launchd + patcher.PREFERENCES_RELATIVE])
 
     def test_the_install_prefix_is_reported(self):
         # Which prefix the maintainer-script shell actually sees is the open
@@ -766,8 +768,9 @@ class PostinstRootlessTests(ShellScriptBase):
         payload = self.read_plist()
         self.assertEqual(payload["ProgramArguments"][0],
                          environment["launchd"] + patcher.PROGRAM_RELATIVE)
-        self.assertEqual(list(payload["KeepAlive"]["PathState"]),
-                         [environment["launchd"] + patcher.BASELINE_RELATIVE])
+        self.assertEqual(payload["KeepAlive"], {"SuccessfulExit": False})
+        self.assertEqual(payload["WatchPaths"],
+                         [environment["launchd"] + patcher.PREFERENCES_RELATIVE])
 
 
 class PostinstGuardDelegationTests(ShellScriptBase):
@@ -861,11 +864,11 @@ class PostinstLaunchdLoadTests(ShellScriptBase):
 
     def test_the_install_never_kickstarts_the_job(self):
         # kickstart was the only call that ever hit the deadline on the reporting
-        # device. It is also redundant: the plist's KeepAlive PathState names the
-        # policy baseline, so bootstrapping a job whose condition is already
-        # satisfied starts it, and bootout+bootstrap already replaced any earlier
-        # definition. Both with and without the baseline, because the old code
-        # made the call conditional on it.
+        # device. It is also redundant: the plist starts the job at load and
+        # whenever the preferences directory changes, so bootstrapping starts it,
+        # and bootout+bootstrap already replaced any earlier definition. Both
+        # with and without the baseline, because the old code made the call
+        # conditional on it.
         self.install_launchctl()
         result = self.run_script("configure")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -958,8 +961,8 @@ class PostinstLaunchdLoadTests(ShellScriptBase):
         # from the absence of warnings, which is not something a log should ask
         # anyone to do.
         #
-        # Loaded, not running: `print` confirms launchd holds the job, and the
-        # KeepAlive PathState decides whether it is up.
+        # Loaded, not running: `print` confirms launchd holds the job, and
+        # RunAtLoad plus the WatchPaths decide when it comes up.
         self.install_launchctl(loaded=False)
         result = self.run_script("configure")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -1361,9 +1364,9 @@ class PrermLaunchdBootoutTests(ShellScriptBase):
 
     def test_the_records_are_read_before_the_daemon_is_stopped(self):
         # Ordering is load-bearing in one direction only: the baseline decides
-        # what this script reports and deletes, and the daemon's KeepAlive watches
-        # that same file. Reading it first means the verdict cannot be affected by
-        # launchd tearing anything down.
+        # what this script reports and deletes, and it is also the file the
+        # daemon keeps running against. Reading it first means the verdict cannot
+        # be affected by launchd tearing anything down.
         self.install_launchctl(loaded=True)
         self.policy_records(create=True)
         result = self.run_script("remove")
