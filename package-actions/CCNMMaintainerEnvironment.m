@@ -29,6 +29,8 @@ static NSString *const CCNMMaintenanceExecutableRelativePath =
 static NSString *const CCNMMaintenanceBaselineRelativePath =
     @"/var/mobile/Library/Preferences/"
      "com.doimty.nrmanager.n78-policy.baseline.plist";
+static NSString *const CCNMMaintenancePreferencesDirectory =
+    @"/var/mobile/Library/Preferences";
 static NSString *const CCNMMaintainerErrorDomain =
     @"com.doimty.nrmanager.maintainer";
 
@@ -351,9 +353,7 @@ BOOL CCNMVerifyMaintenanceLaunchdContract(NSError **error) {
     // prefix to open anything.
     NSString *expectedProgram = CCNMMaintainerLaunchdPath(
         CCNMMaintenanceExecutableRelativePath);
-    NSString *expectedBaseline = CCNMMaintainerLaunchdPath(
-        CCNMMaintenanceBaselineRelativePath);
-    if (!expectedProgram || !expectedBaseline) {
+    if (!expectedProgram) {
         const char *raw = getenv(CCNMLaunchdPrefixVariable.UTF8String);
         return CCNMSetError(error, CCNMMaintainerErrorRoot,
             [NSString stringWithFormat:
@@ -428,20 +428,28 @@ BOOL CCNMVerifyMaintenanceLaunchdContract(NSError **error) {
         ? installed[@"ProgramArguments"] : nil;
     NSDictionary *keepAlive = [installed[@"KeepAlive"] isKindOfClass:NSDictionary.class]
         ? installed[@"KeepAlive"] : nil;
-    NSDictionary *pathState = [keepAlive[@"PathState"] isKindOfClass:NSDictionary.class]
-        ? keepAlive[@"PathState"] : nil;
+    NSArray *watchPaths = [installed[@"WatchPaths"] isKindOfClass:NSArray.class]
+        ? installed[@"WatchPaths"] : nil;
     NSString *program = [arguments.firstObject isKindOfClass:NSString.class]
         ? arguments.firstObject : nil;
-    NSString *watchedPath = [pathState.allKeys.firstObject isKindOfClass:NSString.class]
-        ? pathState.allKeys.firstObject : nil;
+    NSString *watchedDirectory = [watchPaths.firstObject isKindOfClass:NSString.class]
+        ? watchPaths.firstObject : nil;
     NSDictionary *environment = [installed[@"EnvironmentVariables"]
         isKindOfClass:NSDictionary.class] ? installed[@"EnvironmentVariables"] : nil;
+    // New KeepAlive contract (1.7.1+): RunAtLoad boots the daemon on startup;
+    // KeepAlive.SuccessfulExit=false restarts on crash but not on clean exit;
+    // WatchPaths on Preferences directory wakes the daemon when Settings writes
+    // a per-UUID baseline or renames a legacy one during SIM migration. The old
+    // PathState contract (盯无 UUID baseline 文件) no longer works after dual-SIM
+    // adaptation, because switching SIMs renames the baseline and the file the
+    // plist watches disappears, causing idle restarts or a death loop.
     if (arguments.count != 2 || ![arguments[1] isEqual:@"--daemon"] ||
-        pathState.count != 1 || ![pathState[watchedPath] boolValue] ||
-        keepAlive[@"SuccessfulExit"] != nil ||
+        ![installed[@"RunAtLoad"] boolValue] ||
+        ![keepAlive isEqual:@{@"SuccessfulExit": @NO}] ||
+        watchPaths.count != 1 ||
+        ![watchedDirectory hasSuffix:@"/var/mobile/Library/Preferences"] ||
         ![installed[@"UserName"] isEqual:@"root"] ||
-        ![environment[@"DISABLE_TWEAKS"] isEqual:@"1"] ||
-        installed[@"RunAtLoad"] != nil) {
+        ![environment[@"DISABLE_TWEAKS"] isEqual:@"1"]) {
         return CCNMSetError(error, CCNMMaintainerErrorPlist,
             @"The installed launchd plist violates the reviewed maintenance contract.");
     }
@@ -478,24 +486,25 @@ BOOL CCNMVerifyMaintenanceLaunchdContract(NSError **error) {
     BOOL launchctlRewrote = [installed[@"__Patched"] isKindOfClass:NSNumber.class] &&
         [installed[@"__Patched"] boolValue];
     NSString *rewrittenProgram = executablePath;
-    NSString *rewrittenBaseline = CCNMMaintainerRootedPath(
-        CCNMMaintenanceBaselineRelativePath);
+    NSString *expectedDirectory = CCNMMaintenancePreferencesDirectory;
+    NSString *rewrittenDirectory = CCNMMaintainerRootedPath(
+        CCNMMaintenancePreferencesDirectory);
     BOOL programMatches = [program isEqualToString:expectedProgram] ||
         (launchctlRewrote && rewrittenProgram && [program isEqualToString:rewrittenProgram]);
-    BOOL baselineMatches = [watchedPath isEqualToString:expectedBaseline] ||
-        (launchctlRewrote && rewrittenBaseline && [watchedPath isEqualToString:rewrittenBaseline]);
-    if (!programMatches || !baselineMatches) {
+    BOOL directoryMatches = [watchedDirectory isEqualToString:expectedDirectory] ||
+        (launchctlRewrote && rewrittenDirectory && [watchedDirectory isEqualToString:rewrittenDirectory]);
+    if (!programMatches || !directoryMatches) {
         return CCNMSetError(error, CCNMMaintainerErrorPlist,
             [NSString stringWithFormat:
                 @"The installed launchd plist does not point at this install. "
-                 "Program is %@ and the watched path is %@; expected %@ and %@%@.",
-                program ?: @"absent", watchedPath ?: @"absent",
-                expectedProgram, expectedBaseline,
+                 "Program is %@ and the watched directory is %@; expected %@ and %@%@.",
+                program ?: @"absent", watchedDirectory ?: @"absent",
+                expectedProgram, expectedDirectory,
                 launchctlRewrote
                     ? [NSString stringWithFormat:
                         @", or %@ and %@ once launchctl has rewritten them",
                         rewrittenProgram ?: @"an unresolved path",
-                        rewrittenBaseline ?: @"an unresolved path"]
+                        rewrittenDirectory ?: @"an unresolved path"]
                     : @""]);
     }
     return YES;
