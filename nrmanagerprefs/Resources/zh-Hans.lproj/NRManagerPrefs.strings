@@ -110,3 +110,5 @@
 "When enabled, NR allows only the selected bands. LTE bands remain unchanged and can be used when 5G is unavailable." = "启用后，NR 仅允许已选择的频段；LTE 频段保持不变，并可在无 5G 时回落。";
 "mmWave" = "毫米波";
 "none" = "无";
+"Author" = "作者";
+"doimty" = "doimty";
