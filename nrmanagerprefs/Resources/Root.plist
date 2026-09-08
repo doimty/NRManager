@@ -10,7 +10,7 @@
 			<key>cellClass</key>
 			<string>CCNMHeaderCell</string>
 			<key>height</key>
-			<real>88.0</real>
+			<real>148.0</real>
 			<key>id</key>
 			<string>productHeader</string>
 			<key>label</key>
@@ -231,6 +231,20 @@
 			<string>aboutGroup</string>
 			<key>label</key>
 			<string>About</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSStaticTextCell</string>
+			<key>cellClass</key>
+			<string>CCNMStatusCell</string>
+			<key>height</key>
+			<real>54.0</real>
+			<key>id</key>
+			<string>author</string>
+			<key>label</key>
+			<string>Author</string>
+			<key>value</key>
+			<string>doimty</string>
 		</dict>
 		<dict>
 			<key>action</key>
