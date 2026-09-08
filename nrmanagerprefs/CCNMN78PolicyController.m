@@ -104,24 +104,79 @@ static NSTimeInterval CCNMSetterStartedMonotonic = 0;
 static int CCNMSetterRetainedPolicyLockDescriptor = -1;
 static NSUInteger CCNMSetterRetainedPolicyLockGeneration = 0;
 
+// Multi-SIM support: per-UUID configuration paths.
+// Each subscription (identified by UUID) gets independent policy files.
+static NSString *CCNMN78PolicyStatePathForUUID(NSString *uuid) {
+    NSString *filename = uuid.length > 0
+        ? [NSString stringWithFormat:@"com.doimty.nrmanager.n78-policy.%@.state.plist", uuid]
+        : @"com.doimty.nrmanager.n78-policy.state.plist";
+    return CCNMPolicyRoot([NSString stringWithFormat:@"/var/mobile/Library/Preferences/%@", filename]);
+}
+
+static NSString *CCNMNormalizeUUID(NSString *uuid) {
+    // Normalize UUID to lowercase without dashes for filename safety
+    if (!uuid || uuid.length == 0) return nil;
+    return [[uuid stringByReplacingOccurrencesOfString:@"-" withString:@""] lowercaseString];
+}
+
+static NSString *CCNMN78PolicyBaselinePathForUUID(NSString *uuid) {
+    NSString *filename = uuid.length > 0
+        ? [NSString stringWithFormat:@"com.doimty.nrmanager.n78-policy.%@.baseline.plist", uuid]
+        : @"com.doimty.nrmanager.n78-policy.baseline.plist";
+    return CCNMPolicyRoot([NSString stringWithFormat:@"/var/mobile/Library/Preferences/%@", filename]);
+}
+
+static NSString *CCNMN78PolicyIntentPathForUUID(NSString *uuid) {
+    NSString *filename = uuid.length > 0
+        ? [NSString stringWithFormat:@"com.doimty.nrmanager.n78-policy.%@.intent.plist", uuid]
+        : @"com.doimty.nrmanager.n78-policy.intent.plist";
+    return CCNMPolicyRoot([NSString stringWithFormat:@"/var/mobile/Library/Preferences/%@", filename]);
+}
+
+static NSString *CCNMN78PolicyInFlightPathForUUID(NSString *uuid) {
+    NSString *filename = uuid.length > 0
+        ? [NSString stringWithFormat:@"com.doimty.nrmanager.n78-policy.%@.inflight.plist", uuid]
+        : @"com.doimty.nrmanager.n78-policy.inflight.plist";
+    return CCNMPolicyRoot([NSString stringWithFormat:@"/var/mobile/Library/Preferences/%@", filename]);
+}
+
+static NSString *CCNMN78PolicyLockPathForUUID(NSString *uuid) {
+    NSString *filename = uuid.length > 0
+        ? [NSString stringWithFormat:@"com.doimty.nrmanager.n78-policy.%@.lock", uuid]
+        : @"com.doimty.nrmanager.n78-policy.lock";
+    return CCNMPolicyRoot([NSString stringWithFormat:@"/var/mobile/Library/Preferences/%@", filename]);
+}
+
+// Legacy wrappers: use current data line UUID.
+// These functions maintain backward compatibility and are called when no UUID context is available.
 NSString *CCNMN78PolicyStatePath(void) {
-    return CCNMPolicyRoot(@"/var/mobile/Library/Preferences/com.doimty.nrmanager.n78-policy.state.plist");
+    NSString *uuid = CCNMGetActiveSubscriptionUUID();
+    return uuid ? CCNMN78PolicyStatePathForUUID(uuid) 
+                : CCNMPolicyRoot(@"/var/mobile/Library/Preferences/com.doimty.nrmanager.n78-policy.state.plist");
 }
 
 NSString *CCNMN78PolicyBaselinePath(void) {
-    return CCNMPolicyRoot(@"/var/mobile/Library/Preferences/com.doimty.nrmanager.n78-policy.baseline.plist");
+    NSString *uuid = CCNMGetActiveSubscriptionUUID();
+    return uuid ? CCNMN78PolicyBaselinePathForUUID(uuid)
+                : CCNMPolicyRoot(@"/var/mobile/Library/Preferences/com.doimty.nrmanager.n78-policy.baseline.plist");
 }
 
 NSString *CCNMN78PolicyIntentPath(void) {
-    return CCNMPolicyRoot(@"/var/mobile/Library/Preferences/com.doimty.nrmanager.n78-policy.intent.plist");
+    NSString *uuid = CCNMGetActiveSubscriptionUUID();
+    return uuid ? CCNMN78PolicyIntentPathForUUID(uuid)
+                : CCNMPolicyRoot(@"/var/mobile/Library/Preferences/com.doimty.nrmanager.n78-policy.intent.plist");
 }
 
 NSString *CCNMN78PolicyInFlightPath(void) {
-    return CCNMPolicyRoot(@"/var/mobile/Library/Preferences/com.doimty.nrmanager.n78-policy.inflight.plist");
+    NSString *uuid = CCNMGetActiveSubscriptionUUID();
+    return uuid ? CCNMN78PolicyInFlightPathForUUID(uuid)
+                : CCNMPolicyRoot(@"/var/mobile/Library/Preferences/com.doimty.nrmanager.n78-policy.inflight.plist");
 }
 
 NSString *CCNMN78PolicyLockPath(void) {
-    return CCNMPolicyRoot(@"/var/mobile/Library/Preferences/com.doimty.nrmanager.n78-policy.lock");
+    NSString *uuid = CCNMGetActiveSubscriptionUUID();
+    return uuid ? CCNMN78PolicyLockPathForUUID(uuid)
+                : CCNMPolicyRoot(@"/var/mobile/Library/Preferences/com.doimty.nrmanager.n78-policy.lock");
 }
 
 NSString *CCNMN78PolicyRemovalGuardPath(void) {
@@ -147,6 +202,23 @@ NSArray<NSString *> *CCNMN78PolicyPaths(void) {
         CCNMN78PolicyInFlightPath(),
         CCNMN78PolicyLockPath()
     ];
+}
+
+// Multi-SIM support: get current data line UUID for configuration routing.
+// Returns nil if UUID cannot be determined (single-SIM legacy path).
+// Declared forward because it relies on CCNMCreateClient defined later.
+static id<CCNMCoreTelephonyClient> CCNMCreateClient(NSString **failure);
+static NSString *CCNMCurrentDataLineUUID(id<CCNMCoreTelephonyClient> client, NSString **reason);
+
+static NSString *CCNMGetActiveSubscriptionUUID(void) {
+    NSString *failure = nil;
+    id<CCNMCoreTelephonyClient> client = CCNMCreateClient(&failure);
+    if (!client) {
+        return nil;
+    }
+    NSString *reason = nil;
+    NSString *uuid = CCNMCurrentDataLineUUID(client, &reason);
+    return CCNMNormalizeUUID(uuid);
 }
 
 static void CCNMPostPolicyDidChange(void) {
@@ -1317,7 +1389,90 @@ static NSDictionary *CCNMSummaryFromState(NSDictionary *state,
     return [summary copy];
 }
 
+// Multi-SIM configuration migration: migrate legacy single-SIM config to UUID-based storage.
+// Called once at first read after upgrade. Renames legacy files to current UUID format.
+// Returns YES if migration was performed (or attempted), NO if no migration needed.
+static BOOL CCNMMigrateLegacyConfigToUUIDIfNeeded(void) {
+    // Legacy paths (without UUID)
+    NSString *legacyStatePath = CCNMPolicyRoot(@"/var/mobile/Library/Preferences/com.doimty.nrmanager.n78-policy.state.plist");
+    NSString *legacyBaselinePath = CCNMPolicyRoot(@"/var/mobile/Library/Preferences/com.doimty.nrmanager.n78-policy.baseline.plist");
+    NSString *legacyIntentPath = CCNMPolicyRoot(@"/var/mobile/Library/Preferences/com.doimty.nrmanager.n78-policy.intent.plist");
+    NSString *legacyInFlightPath = CCNMPolicyRoot(@"/var/mobile/Library/Preferences/com.doimty.nrmanager.n78-policy.inflight.plist");
+    NSString *legacyLockPath = CCNMPolicyRoot(@"/var/mobile/Library/Preferences/com.doimty.nrmanager.n78-policy.lock");
+    
+    // Check if any legacy file exists
+    BOOL legacyExists = CCNMFileExists(legacyStatePath) || CCNMFileExists(legacyBaselinePath) ||
+                        CCNMFileExists(legacyIntentPath) || CCNMFileExists(legacyInFlightPath);
+    
+    if (!legacyExists) {
+        return NO; // No migration needed
+    }
+    
+    // Get current UUID for migration target
+    NSString *currentUUID = CCNMGetActiveSubscriptionUUID();
+    if (!currentUUID || currentUUID.length == 0) {
+        // Cannot migrate without UUID; keep legacy files and let them be read as-is
+        return NO;
+    }
+    
+    // Check if UUID-based config already exists (avoid double migration)
+    NSString *uuidStatePath = CCNMN78PolicyStatePathForUUID(currentUUID);
+    if (CCNMFileExists(uuidStatePath)) {
+        // UUID config already exists, skip migration (legacy files are orphaned)
+        return NO;
+    }
+    
+    // Perform migration: rename legacy files to UUID-based names
+    BOOL migrated = NO;
+    
+    if (CCNMFileExists(legacyStatePath)) {
+        NSString *targetPath = CCNMN78PolicyStatePathForUUID(currentUUID);
+        if (rename(legacyStatePath.fileSystemRepresentation, targetPath.fileSystemRepresentation) == 0) {
+            migrated = YES;
+        }
+    }
+    
+    if (CCNMFileExists(legacyBaselinePath)) {
+        NSString *targetPath = CCNMN78PolicyBaselinePathForUUID(currentUUID);
+        if (rename(legacyBaselinePath.fileSystemRepresentation, targetPath.fileSystemRepresentation) == 0) {
+            migrated = YES;
+        }
+    }
+    
+    if (CCNMFileExists(legacyIntentPath)) {
+        NSString *targetPath = CCNMN78PolicyIntentPathForUUID(currentUUID);
+        if (rename(legacyIntentPath.fileSystemRepresentation, targetPath.fileSystemRepresentation) == 0) {
+            migrated = YES;
+        }
+    }
+    
+    if (CCNMFileExists(legacyInFlightPath)) {
+        NSString *targetPath = CCNMN78PolicyInFlightPathForUUID(currentUUID);
+        if (rename(legacyInFlightPath.fileSystemRepresentation, targetPath.fileSystemRepresentation) == 0) {
+            migrated = YES;
+        }
+    }
+    
+    if (CCNMFileExists(legacyLockPath)) {
+        NSString *targetPath = CCNMN78PolicyLockPathForUUID(currentUUID);
+        rename(legacyLockPath.fileSystemRepresentation, targetPath.fileSystemRepresentation);
+    }
+    
+    // Sync parent directory to ensure renames are durable
+    if (migrated) {
+        CCNMSyncParentDirectory(uuidStatePath, NULL);
+    }
+    
+    return migrated;
+}
+
 static NSDictionary *CCNMReadPolicyStateInternal(void) {
+    // Multi-SIM support: attempt to migrate legacy config on first read
+    static dispatch_once_t migrationToken;
+    dispatch_once(&migrationToken, ^{
+        CCNMMigrateLegacyConfigToUUIDIfNeeded();
+    });
+    
     BOOL stateExists = NO, baselineExists = NO, intentExists = NO, inFlightExists = NO;
     NSDictionary *state = CCNMLoadRecord(CCNMN78PolicyStatePath(), &stateExists);
     NSDictionary *baseline = CCNMLoadRecord(CCNMN78PolicyBaselinePath(), &baselineExists);
