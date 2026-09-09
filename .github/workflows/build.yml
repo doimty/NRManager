@@ -1,4 +1,4 @@
-name: NR Manager 1.7.2 validation
+name: NR Manager 1.7.3 validation
 
 on:
   push:
@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 env:
-  RELEASE_VERSION: 1.7.2
+  RELEASE_VERSION: 1.7.3
   THEOS_COMMIT: 88506b2c22e9e07dd4ed055f23c9e398a117a2c7
   THEOS_SDK_COMMIT: 0222fd5413cf4b9af096f37b4621afa2688572f7
   CCSUPPORT_COMMIT: ec20c982b3f74f2f0500a83761363384e92a0ca3
@@ -199,7 +199,7 @@ jobs:
         id: upload_rootless
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: NR-Manager-1.7.2-rootless-${{ github.run_id }}
+          name: NR-Manager-1.7.3-rootless-${{ github.run_id }}
           path: |
             packages-rootless/*.deb
             release-artifacts/rootless/*
@@ -213,7 +213,7 @@ jobs:
           mkdir -p release-artifacts/rootless
           {
             printf 'lane=rootless\n'
-            printf 'artifact_name=NR-Manager-1.7.2-rootless-%s\n' "$GITHUB_RUN_ID"
+            printf 'artifact_name=NR-Manager-1.7.3-rootless-%s\n' "$GITHUB_RUN_ID"
             printf 'artifact_id=%s\n' "${{ steps.upload_rootless.outputs.artifact-id }}"
             printf 'source_sha=%s\n' "$GITHUB_SHA"
             printf 'run_id=%s\n' "$GITHUB_RUN_ID"
@@ -224,7 +224,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: NR-Manager-1.7.2-rootless-provenance-${{ github.run_id }}
+          name: NR-Manager-1.7.3-rootless-provenance-${{ github.run_id }}
           path: release-artifacts/rootless/uploaded-artifact.txt
           if-no-files-found: error
           retention-days: 30
@@ -400,7 +400,7 @@ jobs:
         id: upload_roothide
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: NR-Manager-1.7.2-roothide-${{ github.run_id }}
+          name: NR-Manager-1.7.3-roothide-${{ github.run_id }}
           path: |
             packages-roothide/*.deb
             release-artifacts/roothide/*
@@ -414,7 +414,7 @@ jobs:
           mkdir -p release-artifacts/roothide
           {
             printf 'lane=roothide\n'
-            printf 'artifact_name=NR-Manager-1.7.2-roothide-%s\n' "$GITHUB_RUN_ID"
+            printf 'artifact_name=NR-Manager-1.7.3-roothide-%s\n' "$GITHUB_RUN_ID"
             printf 'artifact_id=%s\n' "${{ steps.upload_roothide.outputs.artifact-id }}"
             printf 'source_sha=%s\n' "$GITHUB_SHA"
             printf 'run_id=%s\n' "$GITHUB_RUN_ID"
@@ -425,7 +425,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: NR-Manager-1.7.2-roothide-provenance-${{ github.run_id }}
+          name: NR-Manager-1.7.3-roothide-provenance-${{ github.run_id }}
           path: release-artifacts/roothide/uploaded-artifact.txt
           if-no-files-found: error
           retention-days: 30
