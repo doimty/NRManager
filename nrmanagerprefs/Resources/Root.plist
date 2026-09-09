@@ -10,7 +10,7 @@
 			<key>cellClass</key>
 			<string>CCNMHeaderCell</string>
 			<key>height</key>
-			<real>88.0</real>
+			<real>148.0</real>
 			<key>id</key>
 			<string>productHeader</string>
 			<key>label</key>
@@ -276,7 +276,7 @@
 			<key>label</key>
 			<string>Version</string>
 			<key>value</key>
-			<string>1.7.1</string>
+			<string>1.7.2</string>
 		</dict>
 	</array>
 	<key>title</key>

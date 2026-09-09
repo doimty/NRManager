@@ -236,15 +236,20 @@ class FormalSettingsUITests(unittest.TestCase):
         self.assertIn("[self applyServingSummary:self.servingSummary]", refresh)
         self.assertNotIn("CCNMAReadStatus", self.controller)
 
-    def test_pull_over_inspired_header_is_compact_and_independent(self):
+    def test_pull_over_inspired_header_is_centered_and_independent(self):
         headers = [item for item in self.items if item.get("cellClass") == "CCNMHeaderCell"]
         self.assertEqual(len(headers), 1)
         self.assertIs(self.items[0], headers[0])
-        self.assertEqual(headers[0].get("height"), 88.0)
+        self.assertEqual(headers[0].get("height"), 148.0)
         self.assertEqual(headers[0].get("label"), "NR Manager")
         self.assertEqual(headers[0].get("subtitle"), "NR band management and actual serving status")
         for token in (
-            "constraintEqualToConstant:46.0",
+            "constraintEqualToConstant:56.0",
+            "layer.cornerRadius = 18.0",
+            "weight:UIFontWeightSemibold",
+            "_productIconView.centerXAnchor",
+            "_productTitleLabel.centerXAnchor",
+            "_productSubtitleLabel.centerXAnchor",
             "preferredFontForTextStyle",
             "secondaryLabelColor",
             "adjustsFontForContentSizeCategory",

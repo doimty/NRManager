@@ -164,7 +164,7 @@ class ContractVerificationTests(unittest.TestCase):
         # A doubled prefix and a bare path both end with the right relative
         # path, and only one of them is loadable. The doubled shape is what the
         # reporting device actually ran, so suffix matching would have passed it.
-        # New contract (1.7.1+): WatchPaths monitors Preferences directory
+        # New contract (1.7.2+): WatchPaths monitors Preferences directory
         # instead of PathState monitoring a per-UUID baseline file.
         source = MAINTAINER_SOURCE.read_text()
         body = source[source.index("BOOL CCNMVerifyMaintenanceLaunchdContract"):]

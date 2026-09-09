@@ -91,51 +91,44 @@ static void CCNMHideStandardCellContent(PSTableCell *cell) {
     _productIconView = [[UIImageView alloc] initWithFrame:CGRectZero];
     _productIconView.translatesAutoresizingMaskIntoConstraints = NO;
     _productIconView.contentMode = UIViewContentModeScaleAspectFit;
+    _productIconView.layer.cornerRadius = 18.0;
+    _productIconView.clipsToBounds = YES;
     _productIconView.image = [UIImage imageNamed:@"icon"
                                        inBundle:[NSBundle bundleForClass:self.class]
                   compatibleWithTraitCollection:self.traitCollection];
 
     _productTitleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
     _productTitleLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    _productTitleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
-    _productTitleLabel.adjustsFontForContentSizeCategory = YES;
+    _productTitleLabel.font = [UIFont systemFontOfSize:24.0 weight:UIFontWeightSemibold];
     _productTitleLabel.textColor = CCNMPrimaryTextColor();
+    _productTitleLabel.textAlignment = NSTextAlignmentCenter;
     _productTitleLabel.numberOfLines = 1;
-    _productTitleLabel.adjustsFontSizeToFitWidth = YES;
-    _productTitleLabel.minimumScaleFactor = 0.75;
 
     _productSubtitleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
     _productSubtitleLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    _productSubtitleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
-    _productSubtitleLabel.adjustsFontForContentSizeCategory = YES;
+    _productSubtitleLabel.font = [UIFont systemFontOfSize:13.0 weight:UIFontWeightRegular];
     _productSubtitleLabel.textColor = CCNMSecondaryTextColor();
+    _productSubtitleLabel.textAlignment = NSTextAlignmentCenter;
     _productSubtitleLabel.numberOfLines = 2;
-    _productSubtitleLabel.adjustsFontSizeToFitWidth = YES;
-    _productSubtitleLabel.minimumScaleFactor = 0.75;
-
-    UIStackView *textStack = [[UIStackView alloc] initWithArrangedSubviews:@[
-        _productTitleLabel,
-        _productSubtitleLabel,
-    ]];
-    textStack.translatesAutoresizingMaskIntoConstraints = NO;
-    textStack.axis = UILayoutConstraintAxisVertical;
-    textStack.alignment = UIStackViewAlignmentFill;
-    textStack.spacing = 2.0;
 
     [self.contentView addSubview:_productIconView];
-    [self.contentView addSubview:textStack];
+    [self.contentView addSubview:_productTitleLabel];
+    [self.contentView addSubview:_productSubtitleLabel];
 
-    UILayoutGuide *margins = self.contentView.layoutMarginsGuide;
     [NSLayoutConstraint activateConstraints:@[
-        [_productIconView.leadingAnchor constraintEqualToAnchor:margins.leadingAnchor],
-        [_productIconView.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor],
-        [_productIconView.widthAnchor constraintEqualToConstant:46.0],
-        [_productIconView.heightAnchor constraintEqualToConstant:46.0],
-        [textStack.leadingAnchor constraintEqualToAnchor:_productIconView.trailingAnchor constant:12.0],
-        [textStack.trailingAnchor constraintEqualToAnchor:margins.trailingAnchor],
-        [textStack.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor],
-        [textStack.topAnchor constraintGreaterThanOrEqualToAnchor:self.contentView.topAnchor constant:8.0],
-        [textStack.bottomAnchor constraintLessThanOrEqualToAnchor:self.contentView.bottomAnchor constant:-8.0],
+        [_productIconView.centerXAnchor constraintEqualToAnchor:self.contentView.centerXAnchor],
+        [_productIconView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:16.0],
+        [_productIconView.widthAnchor constraintEqualToConstant:56.0],
+        [_productIconView.heightAnchor constraintEqualToConstant:56.0],
+        [_productTitleLabel.centerXAnchor constraintEqualToAnchor:self.contentView.centerXAnchor],
+        [_productTitleLabel.topAnchor constraintEqualToAnchor:_productIconView.bottomAnchor constant:10.0],
+        [_productTitleLabel.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.contentView.leadingAnchor constant:20.0],
+        [_productTitleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:self.contentView.trailingAnchor constant:-20.0],
+        [_productSubtitleLabel.centerXAnchor constraintEqualToAnchor:self.contentView.centerXAnchor],
+        [_productSubtitleLabel.topAnchor constraintEqualToAnchor:_productTitleLabel.bottomAnchor constant:4.0],
+        [_productSubtitleLabel.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.contentView.leadingAnchor constant:24.0],
+        [_productSubtitleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:self.contentView.trailingAnchor constant:-24.0],
+        [_productSubtitleLabel.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-16.0]
     ]];
 
     [self refreshCellContentsWithSpecifier:specifier];
@@ -154,7 +147,7 @@ static void CCNMHideStandardCellContent(PSTableCell *cell) {
 
 - (CGFloat)preferredHeightForWidth:(CGFloat)width {
     (void)width;
-    return 88.0;
+    return 148.0;
 }
 
 @end
