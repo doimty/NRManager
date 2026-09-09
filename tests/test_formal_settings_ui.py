@@ -250,6 +250,7 @@ class FormalSettingsUITests(unittest.TestCase):
             "_productIconView.centerXAnchor",
             "_productTitleLabel.centerXAnchor",
             "_productSubtitleLabel.centerXAnchor",
+            "self.backgroundView = nil",
             "self.backgroundColor = [UIColor clearColor]",
             "self.contentView.backgroundColor = [UIColor clearColor]",
             "UIFontMetrics metricsForTextStyle",
