@@ -87,7 +87,6 @@ static void CCNMHideStandardCellContent(PSTableCell *cell) {
 
     self.selectionStyle = UITableViewCellSelectionStyleNone;
     CCNMHideStandardCellContent(self);
-    self.backgroundView = nil;
     self.backgroundColor = [UIColor clearColor];
     self.contentView.backgroundColor = [UIColor clearColor];
 
