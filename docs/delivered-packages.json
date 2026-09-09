@@ -85,6 +85,14 @@
       "sizeBytes": 273124
     },
     {
+      "version": "1.7.2",
+      "sourceSha": "6c7e0fe9484ba863a2b5fc9043df54344b4a7629",
+      "shippingDigest": "0db210b4b1fe217096ca7ef05674714583b9a25231602ed0199167bd8e379785",
+      "runId": "34299730921",
+      "sha256": "9b0a181f658793b79177f87bf7caac8e21f64da2def59c6145c89a7f68b87ac4",
+      "sizeBytes": 274584
+    },
+    {
       "version": "1.7.3",
       "sourceSha": "88d150b8dc3987bb412aecf29bd1c549082e9dfb",
       "shippingDigest": "d40608503366ada409b7bb851ae7da6259d6ba0b02e1142b53d470fc0d7f24b3",
