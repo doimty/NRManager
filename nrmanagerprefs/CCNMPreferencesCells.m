@@ -87,8 +87,6 @@ static void CCNMHideStandardCellContent(PSTableCell *cell) {
 
     self.selectionStyle = UITableViewCellSelectionStyleNone;
     CCNMHideStandardCellContent(self);
-    self.backgroundColor = [UIColor clearColor];
-    self.contentView.backgroundColor = [UIColor clearColor];
 
     _productIconView = [[UIImageView alloc] initWithFrame:CGRectZero];
     _productIconView.translatesAutoresizingMaskIntoConstraints = NO;
@@ -101,17 +99,14 @@ static void CCNMHideStandardCellContent(PSTableCell *cell) {
 
     _productTitleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
     _productTitleLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    _productTitleLabel.font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleTitle1] scaledFontForFont:[UIFont systemFontOfSize:24.0 weight:UIFontWeightSemibold]];
-    _productTitleLabel.adjustsFontForContentSizeCategory = YES;
-    _productTitleLabel.adjustsFontForContentSizeCategory = YES;
+    _productTitleLabel.font = [UIFont systemFontOfSize:24.0 weight:UIFontWeightSemibold];
     _productTitleLabel.textColor = CCNMPrimaryTextColor();
     _productTitleLabel.textAlignment = NSTextAlignmentCenter;
     _productTitleLabel.numberOfLines = 1;
 
     _productSubtitleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
     _productSubtitleLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    _productSubtitleLabel.font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleFootnote] scaledFontForFont:[UIFont systemFontOfSize:13.0 weight:UIFontWeightRegular]];
-    _productSubtitleLabel.adjustsFontForContentSizeCategory = YES;
+    _productSubtitleLabel.font = [UIFont systemFontOfSize:13.0 weight:UIFontWeightRegular];
     _productSubtitleLabel.textColor = CCNMSecondaryTextColor();
     _productSubtitleLabel.textAlignment = NSTextAlignmentCenter;
     _productSubtitleLabel.numberOfLines = 2;
